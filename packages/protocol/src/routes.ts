@@ -5,4 +5,11 @@ export const ROUTES = [
   { method: "POST",   path: "/projects",     description: "保存项目 {repoRoot}" },
   { method: "DELETE", path: "/projects/:id", description: "忘记项目（只删记录）" },
   { method: "GET",    path: "/events",       description: "事件流游标读取 ?after=&limit=&workspace=" },
+  { method: "GET",    path: "/workspaces",               description: "列出 workspace ?project=" },
+  { method: "POST",   path: "/workspaces",               description: "创建 workspace {projectId, branchSlug?, name?}（同步跑完流水线才返回）" },
+  { method: "POST",   path: "/workspaces/:id/archive",   description: "归档：删 worktree 留 branch {force?}" },
+  { method: "POST",   path: "/workspaces/:id/unarchive", description: "从保留的 branch 重建 worktree" },
+  { method: "POST",   path: "/workspaces/:id/retry",     description: "error 状态重跑创建流水线" },
+  { method: "DELETE", path: "/workspaces/:id",           description: "删 worktree+记录，branch 保留 ?force=1" },
+  { method: "GET",    path: "/events/stream",            description: "SSE：durable replay + live 推送 ?after=&workspace=" },
 ] as const satisfies ReadonlyArray<{ method: "GET" | "POST" | "DELETE"; path: string; description: string }>

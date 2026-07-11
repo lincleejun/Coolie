@@ -3,6 +3,22 @@ import { Schema } from "effect"
 export const WorkspaceStatus = Schema.Literal("creating", "active", "archived", "error")
 export type WorkspaceStatus = typeof WorkspaceStatus.Type
 
+export class Workspace extends Schema.Class<Workspace>("Workspace")({
+  id: Schema.String,
+  projectId: Schema.String,
+  name: Schema.String,
+  path: Schema.String,
+  branch: Schema.String,
+  baseBranch: Schema.String,
+  baseRef: Schema.String,
+  status: WorkspaceStatus,
+  pinned: Schema.Boolean,
+  createdAt: Schema.Number,
+  archivedAt: Schema.NullOr(Schema.Number),
+  portBase: Schema.Number,
+}) {}
+export const decodeWorkspace = Schema.decodeUnknownSync(Workspace)
+
 export class Project extends Schema.Class<Project>("Project")({
   id: Schema.String,
   name: Schema.String,
