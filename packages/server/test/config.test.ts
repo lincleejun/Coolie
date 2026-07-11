@@ -5,7 +5,12 @@ import { CoolieConfig, CoolieConfigLive } from "../src/config.js"
 const load = () => Effect.runSync(CoolieConfig.pipe(Effect.provide(CoolieConfigLive)))
 
 describe("CoolieConfig", () => {
-  afterEach(() => { delete process.env.COOLIE_HOME; delete process.env.COOLIE_WORKSPACES_ROOT })
+  afterEach(() => {
+    delete process.env.COOLIE_HOME
+    delete process.env.COOLIE_WORKSPACES_ROOT
+    delete process.env.COOLIE_TMUX_SOCKET
+    delete process.env.COOLIE_CLAUDE_HOME
+  })
   it("respects COOLIE_HOME", () => {
     process.env.COOLIE_HOME = "/tmp/coolie-test-home"
     const c = load()
@@ -22,5 +27,17 @@ describe("CoolieConfig", () => {
     process.env.COOLIE_WORKSPACES_ROOT = "/tmp/coolie-test-ws"
     const c = load()
     expect(c.workspacesRoot).toBe("/tmp/coolie-test-ws")
+  })
+  it("respects COOLIE_TMUX_SOCKET and COOLIE_CLAUDE_HOME", () => {
+    process.env.COOLIE_TMUX_SOCKET = "coolie-test-x"
+    process.env.COOLIE_CLAUDE_HOME = "/tmp/fake-claude-home"
+    const c = load()
+    expect(c.tmuxSocket).toBe("coolie-test-x")
+    expect(c.claudeHome).toBe("/tmp/fake-claude-home")
+  })
+  it("defaults tmuxSocket=coolie and claudeHome under homedir", () => {
+    const c = load()
+    expect(c.tmuxSocket).toBe("coolie")
+    expect(c.claudeHome.endsWith("/.claude")).toBe(true)
   })
 })
