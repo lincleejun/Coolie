@@ -1,0 +1,9 @@
+{
+  "name": "@coolie/cli",
+  "type": "module",
+  "exports": { ".": "./src/index.ts" },
+  "dependencies": {
+    "effect": "latest",
+    "@coolie/protocol": "workspace:*"
+  }
+}

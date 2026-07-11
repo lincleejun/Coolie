@@ -6,3 +6,10 @@ refs/opcode/
 refs/tux/
 
 .DS_Store
+.superpowers/
+
+# Node/TypeScript
+node_modules/
+dist/
+*.tsbuildinfo
+bun.lock

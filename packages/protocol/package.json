@@ -1,0 +1,6 @@
+{
+  "name": "@coolie/protocol",
+  "type": "module",
+  "exports": { ".": "./src/index.ts" },
+  "dependencies": { "effect": "latest" }
+}
