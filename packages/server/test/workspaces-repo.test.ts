@@ -108,8 +108,45 @@ describe("WorkspacesRepo", () => {
     const { run } = make()
     const exit = await run(Effect.gen(function* () {
       const repo = yield* WorkspacesRepo
-      return yield* repo.get("nope")
+      yield* repo.get("nope")
     }))
     expect(failTag(exit)).toBe("NotFoundError")
+    const { run: run2 } = make()
+    const removeExit = await run2(Effect.gen(function* () {
+      const repo = yield* WorkspacesRepo
+      return yield* repo.remove("nope")
+    }))
+    expect(failTag(removeExit)).toBe("NotFoundError")
+  })
+  it("setBaseRef updates baseRef and can be read back", async () => {
+    const { run } = make()
+    const exit = await run(Effect.gen(function* () {
+      const repo = yield* WorkspacesRepo
+      const ws = yield* repo.insertCreating(w1)
+      yield* repo.setBaseRef(ws.id, "abc123")
+      return yield* repo.get(ws.id)
+    }))
+    expect(Exit.isSuccess(exit)).toBe(true)
+    if (Exit.isSuccess(exit)) expect(exit.value.baseRef).toBe("abc123")
+  })
+  it("setLastError stores shape with tag, message, and numeric at", async () => {
+    const { db, run } = make()
+    const exit = await run(Effect.gen(function* () {
+      const repo = yield* WorkspacesRepo
+      const ws = yield* repo.insertCreating(w1)
+      yield* repo.setLastError(ws.id, { tag: "GitError", message: "boom" })
+      return ws.id
+    }))
+    expect(Exit.isSuccess(exit)).toBe(true)
+    if (Exit.isSuccess(exit)) {
+      const wsId = exit.value
+      const row = db.prepare("SELECT data FROM workspaces WHERE id = ?").get(wsId) as any
+      const data = JSON.parse(row.data)
+      expect(data.lastError).toBeDefined()
+      expect(data.lastError.tag).toBe("GitError")
+      expect(data.lastError.message).toBe("boom")
+      expect(typeof data.lastError.at).toBe("number")
+      expect(data.portBase).toBe(40000) // ensure portBase still present (merge, not overwrite)
+    }
   })
 })

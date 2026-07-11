@@ -74,4 +74,21 @@ describe("ProjectsRepo", () => {
     expect(Exit.isFailure(exit)).toBe(true)
     expect(failureTag(exit)).toBe("NotFoundError")
   })
+  it("get returns added project by id", async () => {
+    const exit = await run(Effect.gen(function* () {
+      const repo = yield* ProjectsRepo
+      const p = yield* repo.add(repoRoot)
+      return yield* repo.get(p.id)
+    }))
+    expect(Exit.isSuccess(exit)).toBe(true)
+    if (Exit.isSuccess(exit)) expect(exit.value.name).toBe(path.basename(repoRoot))
+  })
+  it("get nonexistent project fails with NotFoundError", async () => {
+    const exit = await run(Effect.gen(function* () {
+      const repo = yield* ProjectsRepo
+      return yield* repo.get("nonexistent")
+    }))
+    expect(Exit.isFailure(exit)).toBe(true)
+    expect(failureTag(exit)).toBe("NotFoundError")
+  })
 })
