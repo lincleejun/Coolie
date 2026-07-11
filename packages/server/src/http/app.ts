@@ -21,11 +21,25 @@ const send = (res: ServerResponse, status: number, body?: unknown) => {
 const err = (res: ServerResponse, status: number, code: ApiErrorBody["code"], message: string) =>
   send(res, status, { code, message } satisfies ApiErrorBody)
 
+// Marks "the request body isn't valid JSON" as a distinct, recoverable failure
+// so the outer route catch can map exactly this to 400 Validation — and let
+// every other (unexpected) exception fall through to 500 Internal instead of
+// being lumped in as a client-input problem.
+export class BadJsonError extends Error {
+  constructor(message: string) {
+    super(message)
+    this.name = "BadJsonError"
+  }
+}
+
 const readJson = (req: IncomingMessage): Promise<any> =>
   new Promise((resolve, reject) => {
     let buf = ""
     req.on("data", (c) => { buf += c })
-    req.on("end", () => { try { resolve(buf ? JSON.parse(buf) : {}) } catch (e) { reject(e) } })
+    req.on("end", () => {
+      try { resolve(buf ? JSON.parse(buf) : {}) }
+      catch (e) { reject(new BadJsonError(e instanceof Error ? e.message : String(e))) }
+    })
     req.on("error", reject)
   })
 
@@ -70,7 +84,14 @@ export const createApp = ({ runtime, token, onShutdown }: AppDeps) =>
       if (!got || !tokenEquals(got, token)) return err(res, 401, "Validation", "missing or bad token")
 
       try {
-        if (route === "POST /shutdown") { send(res, 202, { ok: true }); onShutdown(); return }
+        if (route === "POST /shutdown") {
+          send(res, 202, { ok: true })
+          // The 202 is already on the wire; a throwing onShutdown() must never
+          // turn into a second (failing) response write. The daemon owns its
+          // own shutdown-error handling — we just swallow it here.
+          try { onShutdown() } catch { /* swallow: response already sent */ }
+          return
+        }
         if (route === "GET /projects")
           return await runRoute(
             res, runtime,
@@ -96,7 +117,11 @@ export const createApp = ({ runtime, token, onShutdown }: AppDeps) =>
         }
         return err(res, 404, "NotFound", `no route: ${route}`)
       } catch (e: any) {
-        return err(res, 400, "Validation", e?.message ?? String(e))
+        // Headers may already be sent (e.g. a defect surfacing after a prior
+        // write in this route) — never attempt a second writeHead.
+        if (res.headersSent) return
+        if (e instanceof BadJsonError) return err(res, 400, "Validation", e.message)
+        return err(res, 500, "Internal", e?.message ?? String(e))
       }
-    })()
+    })().catch(() => { /* last-resort: never let a rejection escape as an unhandled rejection */ })
   }

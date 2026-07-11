@@ -60,4 +60,68 @@ describe("http app", () => {
     expect((await req("/shutdown", { method: "POST" })).status).toBe(202)
     expect(shutdownCalled).toBe(true)
   })
+  it("duplicate POST /projects with same repoRoot -> 409 Conflict", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "coolie-http-"))
+    execSync("git init -b main", { cwd: dir })
+    const first = await req("/projects", { method: "POST", body: JSON.stringify({ repoRoot: dir }) })
+    expect(first.status).toBe(201)
+    const dup = await req("/projects", { method: "POST", body: JSON.stringify({ repoRoot: dir }) })
+    expect(dup.status).toBe(409)
+    expect((await dup.json()).code).toBe("Conflict")
+  })
+  it("unknown route -> 404 NotFound", async () => {
+    const r = await req("/nope")
+    expect(r.status).toBe(404)
+    expect((await r.json()).code).toBe("NotFound")
+  })
+  it("wrong non-empty token -> 401", async () => {
+    const r = await fetch(base + "/projects", { headers: { Authorization: `Bearer ${"f".repeat(token.length)}` } })
+    expect(r.status).toBe(401)
+  })
+  it("malformed JSON body to POST /projects -> 400 Validation", async () => {
+    const r = await req("/projects", { method: "POST", body: "{not json" })
+    expect(r.status).toBe(400)
+    expect((await r.json()).code).toBe("Validation")
+  })
+  it("onShutdown that throws: response is still 202 and the server survives", async () => {
+    const db = new Database(":memory:"); runMigrations(db)
+    const layer = ProjectsRepoLive.pipe(Layer.provide(Layer.succeed(Db, db)))
+    const tok = newToken()
+    const app = createApp({
+      runtime: (eff) => Effect.runPromiseExit(Effect.provide(eff, layer)),
+      token: tok,
+      onShutdown: () => { throw new Error("shutdown hook boom") },
+    })
+    const s = http.createServer(app)
+    await new Promise<void>((r) => s.listen(0, "127.0.0.1", r))
+    const addr = s.address() as { port: number }
+    const b = `http://127.0.0.1:${addr.port}`
+    try {
+      const r = await fetch(b + "/shutdown", { method: "POST", headers: { Authorization: `Bearer ${tok}` } })
+      expect(r.status).toBe(202)
+      // give the (thrown, swallowed) onShutdown rejection a tick to misbehave if it's going to
+      await new Promise((resolve) => setTimeout(resolve, 10))
+      const health = await fetch(b + "/health")
+      expect(health.status).toBe(200)
+      expect(await health.json()).toEqual({ ok: true })
+    } finally {
+      s.close()
+    }
+  })
+  it("unexpected internal defect -> 500 Internal (not misclassified as Validation)", async () => {
+    const boomRuntime = (() => { throw new Error("internal defect: runtime broke its no-reject contract") }) as unknown as
+      Parameters<typeof createApp>[0]["runtime"]
+    const app = createApp({ runtime: boomRuntime, token, onShutdown: () => {} })
+    const s = http.createServer(app)
+    await new Promise<void>((r) => s.listen(0, "127.0.0.1", r))
+    const addr = s.address() as { port: number }
+    const b = `http://127.0.0.1:${addr.port}`
+    try {
+      const r = await fetch(b + "/projects", { headers: { Authorization: `Bearer ${token}` } })
+      expect(r.status).toBe(500)
+      expect((await r.json()).code).toBe("Internal")
+    } finally {
+      s.close()
+    }
+  })
 })
