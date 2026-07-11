@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import * as http from "node:http"
 import * as fs from "node:fs"
+import * as path from "node:path"
 import { Effect, Layer, Exit, Scope } from "effect"
 import { CoolieConfig, CoolieConfigLive } from "./config.js"
 import { DbLive } from "./db/sqlite.js"
@@ -8,6 +9,8 @@ import { ProjectsRepo, ProjectsRepoLive } from "./repo/projects.js"
 import { EventsRepo, EventsRepoLive } from "./repo/events.js"
 import { createApp, newToken } from "./http/app.js"
 import { readServerInfo, writeServerInfo, probeAlive } from "./daemon/info.js"
+import { rotateLogIfNeeded } from "./log/rotate.js"
+import { createLogger, installCrashNet } from "./log/logger.js"
 
 const cfg = Effect.runSync(CoolieConfig.pipe(Effect.provide(CoolieConfigLive)))
 
@@ -27,6 +30,11 @@ const cmdStop = async (): Promise<never> => {
 }
 
 const cmdStart = async (): Promise<void> => {
+  const logPath = path.join(cfg.home, "logs", "server.log")
+  rotateLogIfNeeded(logPath)
+  const logger = createLogger(logPath, "server")
+  installCrashNet(logger)
+
   const existing = readServerInfo(cfg.serverInfoPath)
   if (existing && (await probeAlive(existing))) {
     console.error(`already running pid=${existing.pid} port=${existing.port}`); process.exit(1)
@@ -46,16 +54,24 @@ const cmdStart = async (): Promise<void> => {
 
   const token = newToken()
   const shutdown = async () => {
+    logger.info("shutdown")
     fs.rmSync(cfg.serverInfoPath, { force: true })
     server.close()
     await Effect.runPromise(Scope.close(scope, Exit.void))
+    // fire-and-forget writes only land on disk once the pending promise chain
+    // resolves — without this, process.exit(0) can kill the process before
+    // the "shutdown" line (or an earlier one) is actually appended.
+    await logger.flush()
     process.exit(0)
   }
-  const server = http.createServer(createApp({ runtime, token, onShutdown: () => void shutdown() }))
+  const server = http.createServer(createApp({
+    runtime, token, onShutdown: () => void shutdown(),
+    onError: (e) => logger.error("http 500", e),
+  }))
   server.listen(0, "127.0.0.1", () => {
     const port = (server.address() as { port: number }).port
     writeServerInfo(cfg.serverInfoPath, { port, token, pid: process.pid })
-    console.log(`coolie-server listening on 127.0.0.1:${port}`)
+    logger.info(`coolie-server listening on 127.0.0.1:${port}`)
   })
   process.on("SIGINT", () => void shutdown())
   process.on("SIGTERM", () => void shutdown())

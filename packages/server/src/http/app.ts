@@ -13,7 +13,13 @@ export { newToken } from "./token.js"
 // `Effect.runPromiseExit` and unwrapping with `Exit.match` + `Cause.failureOption`
 // (mirrors the pattern already used in test/projects-repo.test.ts) is robust.
 type Runtime = <A, E>(eff: Effect.Effect<A, E, ProjectsRepo | EventsRepo>) => Promise<Exit.Exit<A, E>>
-export interface AppDeps { readonly runtime: Runtime; readonly token: string; readonly onShutdown: () => void }
+export interface AppDeps {
+  readonly runtime: Runtime
+  readonly token: string
+  readonly onShutdown: () => void
+  /** optional diagnostic hook: called once per HTTP 500 fallback path (defect / unexpected exception). */
+  readonly onError?: (e: unknown) => void
+}
 
 const send = (res: ServerResponse, status: number, body?: unknown) => {
   if (body === undefined) { res.writeHead(status).end(); return }
@@ -44,7 +50,10 @@ const readJson = (req: IncomingMessage): Promise<any> =>
     req.on("error", reject)
   })
 
-const errorFromCause = (cause: Cause.Cause<unknown>): { status: number; body: ApiErrorBody } => {
+const errorFromCause = (
+  cause: Cause.Cause<unknown>,
+  onError?: (e: unknown) => void,
+): { status: number; body: ApiErrorBody } => {
   const failure = Cause.failureOption(cause)
   if (Option.isSome(failure)) {
     const e = failure.value as { _tag?: string; message?: string }
@@ -55,6 +64,7 @@ const errorFromCause = (cause: Cause.Cause<unknown>): { status: number; body: Ap
     return { status: 500, body: { code: "Internal", message } }
   }
   // defect / interruption: no typed failure to recover, fall back to a pretty cause dump
+  onError?.(Cause.squash(cause))
   return { status: 500, body: { code: "Internal", message: Cause.pretty(cause) } }
 }
 
@@ -63,12 +73,13 @@ const runRoute = async <A, E>(
   runtime: Runtime,
   eff: Effect.Effect<A, E, ProjectsRepo | EventsRepo>,
   onSuccess: (value: A) => void | Promise<void>,
+  onError?: (e: unknown) => void,
 ): Promise<void> => {
   const exit = await runtime(eff)
   await Exit.match(exit, {
     onSuccess,
     onFailure: (cause) => {
-      const { status, body } = errorFromCause(cause)
+      const { status, body } = errorFromCause(cause, onError)
       send(res, status, body)
     },
   })
@@ -92,18 +103,19 @@ const emitThenRespond = async (
   type: string,
   payload: unknown,
   onEmitted: () => void,
+  onError?: (e: unknown) => void,
 ): Promise<void> => {
   const exit = await emit(runtime, workspaceId, type, payload)
   Exit.match(exit, {
     onSuccess: onEmitted,
     onFailure: (cause) => {
-      const { status, body } = errorFromCause(cause)
+      const { status, body } = errorFromCause(cause, onError)
       send(res, status, body)
     },
   })
 }
 
-export const createApp = ({ runtime, token, onShutdown }: AppDeps) =>
+export const createApp = ({ runtime, token, onShutdown, onError }: AppDeps) =>
   (req: IncomingMessage, res: ServerResponse): void => {
     void (async () => {
       const url = new URL(req.url ?? "/", "http://local")
@@ -132,6 +144,7 @@ export const createApp = ({ runtime, token, onShutdown }: AppDeps) =>
               return yield* (yield* EventsRepo).listAfter({ after, limit, ...(ws ? { workspaceId: ws } : {}) })
             }),
             (events) => send(res, 200, events),
+            onError,
           )
         }
         if (route === "GET /projects")
@@ -139,6 +152,7 @@ export const createApp = ({ runtime, token, onShutdown }: AppDeps) =>
             res, runtime,
             Effect.gen(function* () { return yield* (yield* ProjectsRepo).list() }),
             (list) => send(res, 200, list),
+            onError,
           )
         if (route === "POST /projects") {
           const body = await readJson(req)
@@ -146,7 +160,8 @@ export const createApp = ({ runtime, token, onShutdown }: AppDeps) =>
           return await runRoute(
             res, runtime,
             Effect.gen(function* () { return yield* (yield* ProjectsRepo).add(body.repoRoot) }),
-            (p) => emitThenRespond(res, runtime, null, "project.added", { id: p.id, repoRoot: p.repoRoot }, () => send(res, 201, p)),
+            (p) => emitThenRespond(res, runtime, null, "project.added", { id: p.id, repoRoot: p.repoRoot }, () => send(res, 201, p), onError),
+            onError,
           )
         }
         const del = url.pathname.match(/^\/projects\/([^/]+)$/)
@@ -154,7 +169,8 @@ export const createApp = ({ runtime, token, onShutdown }: AppDeps) =>
           return await runRoute(
             res, runtime,
             Effect.gen(function* () { yield* (yield* ProjectsRepo).remove(del[1]!) }),
-            () => emitThenRespond(res, runtime, null, "project.removed", { id: del[1] }, () => send(res, 204)),
+            () => emitThenRespond(res, runtime, null, "project.removed", { id: del[1] }, () => send(res, 204), onError),
+            onError,
           )
         }
         return err(res, 404, "NotFound", `no route: ${route}`)
@@ -163,6 +179,7 @@ export const createApp = ({ runtime, token, onShutdown }: AppDeps) =>
         // write in this route) — never attempt a second writeHead.
         if (res.headersSent) return
         if (e instanceof BadJsonError) return err(res, 400, "Validation", e.message)
+        onError?.(e)
         return err(res, 500, "Internal", e?.message ?? String(e))
       }
     })().catch(() => { /* last-resort: never let a rejection escape as an unhandled rejection */ })
