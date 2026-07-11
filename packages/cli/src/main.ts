@@ -3,7 +3,11 @@ import { Command } from "commander"
 import { ROUTES } from "@coolie/protocol"
 import { readServerInfo, probeAlive } from "@coolie/server"
 import * as os from "node:os"; import * as path from "node:path"
+import * as fs from "node:fs"
+import { spawnSync } from "node:child_process"
+import Database from "better-sqlite3"
 import { api, home } from "./client.js"
+import { toCsv, toTable } from "./export-format.js"
 
 const program = new Command("coolie").showHelpAfterError()
 const fail = (e: unknown): never => { console.error(String(e instanceof Error ? e.message : e)); process.exit(1) }
@@ -52,6 +56,113 @@ program.command("api").command("schema").action(() => {
     const head = `${r.method} ${r.path}`
     console.log(`${head.padEnd(28)} ${r.description}`)
   }
+})
+
+// ---------- export（daemon-free） ----------
+const EXPORT_COLUMNS = {
+  projects: ["id", "name", "repoRoot", "defaultBaseBranch", "createdAt"],
+  workspaces: ["id", "projectId", "name", "branch", "status", "path"],
+  events: ["seq", "ts", "workspaceId", "type", "payload"],
+} as const
+type ExportWhat = keyof typeof EXPORT_COLUMNS
+
+const EXPORT_SQL: Record<ExportWhat, string> = {
+  projects: "SELECT id, name, repo_root AS repoRoot, default_base_branch AS defaultBaseBranch, created_at AS createdAt FROM projects ORDER BY created_at",
+  workspaces: "SELECT id, project_id AS projectId, name, branch, status, path FROM workspaces ORDER BY created_at",
+  events: "SELECT seq, ts, workspace_id AS workspaceId, type, payload FROM events WHERE seq > ? ORDER BY seq",
+}
+
+const usageExit = (msg: string): never => { console.error(`coolie export: ${msg}`); process.exit(2) }
+
+program
+  .command("export")
+  .argument("[what]", "projects|workspaces|events", "projects")
+  .option("--json", "JSON 数组（默认）")
+  .option("--csv", "RFC-4180 CSV 带表头")
+  .option("--format <fmt>", "json|csv|table")
+  .option("--after <seq>", "仅 events：只导出该 seq 之后", "0")
+  .action((what: string, opts: { json?: boolean; csv?: boolean; format?: string; after: string }) => {
+    if (!(what in EXPORT_COLUMNS)) usageExit(`未知对象：${what}（可用 projects|workspaces|events）`)
+    const fmt = opts.format ?? (opts.csv ? "csv" : "json")
+    if (!["json", "csv", "table"].includes(fmt)) usageExit(`未知格式：${fmt}`)
+    const dbPath = path.join(home(), "coolie.db")
+    let rows: Record<string, unknown>[] = []
+    if (fs.existsSync(dbPath)) {
+      const db = new Database(dbPath, { readonly: true })
+      try {
+        rows = what === "events"
+          ? db.prepare(EXPORT_SQL.events).all(Number(opts.after)) as any[]
+          : db.prepare(EXPORT_SQL[what as ExportWhat]).all() as any[]
+      } catch { rows = [] } // 表还没建（新库）→ 空集
+      finally { db.close() }
+    }
+    const columns = EXPORT_COLUMNS[what as ExportWhat]
+    if (fmt === "json") process.stdout.write(JSON.stringify(rows, null, 2) + "\n")
+    else if (fmt === "csv") process.stdout.write(toCsv(columns, rows))
+    else process.stdout.write(toTable(columns, rows))
+  })
+
+// ---------- events tail（需要 server） ----------
+const events = program.command("events")
+events.command("tail")
+  .option("--after <seq>", "起始游标", "0")
+  .option("--follow", "持续轮询")
+  .option("--interval <ms>", "轮询间隔", "1000")
+  .action(async (opts: { after: string; follow?: boolean; interval: string }) => {
+    let cursor = Number(opts.after)
+    const printBatch = async (): Promise<void> => {
+      const batch: any[] = await api("GET", `/events?after=${cursor}`)
+      for (const e of batch) {
+        console.log(`${e.seq}\t${new Date(e.ts).toISOString()}\t${e.type}\t${e.workspaceId ?? "-"}\t${JSON.stringify(e.payload)}`)
+        cursor = Math.max(cursor, e.seq)
+      }
+    }
+    try {
+      await printBatch()
+      while (opts.follow) {
+        await new Promise((r) => setTimeout(r, Number(opts.interval)))
+        await printBatch()
+      }
+    } catch (e) { fail(e) }
+  })
+
+// ---------- doctor（只读） ----------
+program.command("doctor").action(async () => {
+  type Level = "ok" | "warn" | "fail"
+  const lines: Array<[Level, string, string]> = []
+  const check = (level: Level, name: string, detail: string) => lines.push([level, name, detail])
+
+  const h = home()
+  check(fs.existsSync(h) ? "ok" : "warn", "home", fs.existsSync(h) ? h : `${h}（尚未创建，首次使用时自动建）`)
+
+  const dbPath = path.join(h, "coolie.db")
+  if (!fs.existsSync(dbPath)) check("warn", "db", "尚无数据库")
+  else {
+    try { new Database(dbPath, { readonly: true }).close(); check("ok", "db", dbPath) }
+    catch (e) { check("fail", "db", `无法打开：${String(e)}`) }
+  }
+
+  const info = readServerInfo(path.join(h, "server.json"))
+  if (!info) check("warn", "server", "stopped")
+  else {
+    const alive = await probeAlive(info)
+    let pidAlive = false
+    try { process.kill(info.pid, 0); pidAlive = true } catch { /* dead */ }
+    if (alive) check("ok", "server", `running pid=${info.pid} port=${info.port}`)
+    else check(pidAlive ? "fail" : "warn", "server", pidAlive ? "pid 活着但 /health 不通" : "server.json 陈旧（进程已死）")
+  }
+
+  const logPath = path.join(h, "logs", "server.log")
+  check("ok", "log", fs.existsSync(logPath) ? `${logPath}（${fs.statSync(logPath).size} bytes）` : "尚无日志")
+
+  for (const bin of ["git", "tmux", "claude"] as const) {
+    const found = spawnSync("which", [bin], { encoding: "utf8" })
+    if (found.status === 0) check("ok", bin, found.stdout.trim())
+    else check(bin === "git" ? "fail" : "warn", bin, "不在 PATH（tmux/claude 为 Plan 3 依赖）")
+  }
+
+  for (const [level, name, detail] of lines) console.log(`${level}\t${name}\t${detail}`)
+  process.exit(lines.some(([l]) => l === "fail") ? 1 : 0)
 })
 
 program.parseAsync().catch(fail)

@@ -19,8 +19,12 @@
       "dependencies": {
         "@coolie/protocol": "workspace:*",
         "@coolie/server": "workspace:*",
+        "better-sqlite3": "^12.11.1",
         "commander": "^15.0.0",
         "effect": "latest",
+      },
+      "devDependencies": {
+        "@types/better-sqlite3": "^7.6.13",
       },
     },
     "packages/protocol": {
