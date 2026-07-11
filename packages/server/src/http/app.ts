@@ -1,0 +1,102 @@
+import type { IncomingMessage, ServerResponse } from "node:http"
+import { Effect, Exit, Cause, Option } from "effect"
+import type { ApiErrorBody } from "@coolie/protocol"
+import { ProjectsRepo } from "../repo/projects.js"
+import { tokenEquals } from "./token.js"
+export { newToken } from "./token.js"
+
+// `runtime` runs a ProjectsRepo-dependent Effect to completion and hands back
+// its `Exit` (never rejects). We deliberately avoid `Effect.runPromise` here:
+// its rejection is a FiberFailure wrapper, and probing `e?._tag`/`e?.error?._tag`
+// on it is not a reliable way to recover the original TaggedError. Running via
+// `Effect.runPromiseExit` and unwrapping with `Exit.match` + `Cause.failureOption`
+// (mirrors the pattern already used in test/projects-repo.test.ts) is robust.
+type Runtime = <A, E>(eff: Effect.Effect<A, E, ProjectsRepo>) => Promise<Exit.Exit<A, E>>
+export interface AppDeps { readonly runtime: Runtime; readonly token: string; readonly onShutdown: () => void }
+
+const send = (res: ServerResponse, status: number, body?: unknown) => {
+  if (body === undefined) { res.writeHead(status).end(); return }
+  res.writeHead(status, { "content-type": "application/json" }).end(JSON.stringify(body))
+}
+const err = (res: ServerResponse, status: number, code: ApiErrorBody["code"], message: string) =>
+  send(res, status, { code, message } satisfies ApiErrorBody)
+
+const readJson = (req: IncomingMessage): Promise<any> =>
+  new Promise((resolve, reject) => {
+    let buf = ""
+    req.on("data", (c) => { buf += c })
+    req.on("end", () => { try { resolve(buf ? JSON.parse(buf) : {}) } catch (e) { reject(e) } })
+    req.on("error", reject)
+  })
+
+const errorFromCause = (cause: Cause.Cause<unknown>): { status: number; body: ApiErrorBody } => {
+  const failure = Cause.failureOption(cause)
+  if (Option.isSome(failure)) {
+    const e = failure.value as { _tag?: string; message?: string }
+    const message = e.message ?? String(e)
+    if (e._tag === "ValidationError") return { status: 400, body: { code: "Validation", message } }
+    if (e._tag === "ConflictError") return { status: 409, body: { code: "Conflict", message } }
+    if (e._tag === "NotFoundError") return { status: 404, body: { code: "NotFound", message } }
+    return { status: 500, body: { code: "Internal", message } }
+  }
+  // defect / interruption: no typed failure to recover, fall back to a pretty cause dump
+  return { status: 500, body: { code: "Internal", message: Cause.pretty(cause) } }
+}
+
+const runRoute = async <A, E>(
+  res: ServerResponse,
+  runtime: Runtime,
+  eff: Effect.Effect<A, E, ProjectsRepo>,
+  onSuccess: (value: A) => void,
+): Promise<void> => {
+  const exit = await runtime(eff)
+  Exit.match(exit, {
+    onSuccess,
+    onFailure: (cause) => {
+      const { status, body } = errorFromCause(cause)
+      send(res, status, body)
+    },
+  })
+}
+
+export const createApp = ({ runtime, token, onShutdown }: AppDeps) =>
+  (req: IncomingMessage, res: ServerResponse): void => {
+    void (async () => {
+      const url = new URL(req.url ?? "/", "http://local")
+      const route = `${req.method} ${url.pathname}`
+      if (route === "GET /health") return send(res, 200, { ok: true })
+
+      const got = (req.headers.authorization ?? "").replace(/^Bearer /, "")
+      if (!got || !tokenEquals(got, token)) return err(res, 401, "Validation", "missing or bad token")
+
+      try {
+        if (route === "POST /shutdown") { send(res, 202, { ok: true }); onShutdown(); return }
+        if (route === "GET /projects")
+          return await runRoute(
+            res, runtime,
+            Effect.gen(function* () { return yield* (yield* ProjectsRepo).list() }),
+            (list) => send(res, 200, list),
+          )
+        if (route === "POST /projects") {
+          const body = await readJson(req)
+          if (typeof body.repoRoot !== "string") return err(res, 400, "Validation", "repoRoot required")
+          return await runRoute(
+            res, runtime,
+            Effect.gen(function* () { return yield* (yield* ProjectsRepo).add(body.repoRoot) }),
+            (p) => send(res, 201, p),
+          )
+        }
+        const del = url.pathname.match(/^\/projects\/([^/]+)$/)
+        if (req.method === "DELETE" && del) {
+          return await runRoute(
+            res, runtime,
+            Effect.gen(function* () { yield* (yield* ProjectsRepo).remove(del[1]!) }),
+            () => send(res, 204),
+          )
+        }
+        return err(res, 404, "NotFound", `no route: ${route}`)
+      } catch (e: any) {
+        return err(res, 400, "Validation", e?.message ?? String(e))
+      }
+    })()
+  }
