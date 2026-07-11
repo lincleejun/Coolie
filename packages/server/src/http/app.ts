@@ -272,6 +272,8 @@ export const createApp = ({ runtime, token, onShutdown, onError, bus, sseHeartbe
             return err(res, 400, "Validation", "branchSlug must be a string")
           if (body.name !== undefined && typeof body.name !== "string")
             return err(res, 400, "Validation", "name must be a string")
+          if (body.initialPrompt !== undefined && typeof body.initialPrompt !== "string")
+            return err(res, 400, "Validation", "initialPrompt must be a string")
           return await runRoute(
             res, runtime,
             Effect.gen(function* () {
@@ -279,6 +281,7 @@ export const createApp = ({ runtime, token, onShutdown, onError, bus, sseHeartbe
                 projectId: body.projectId,
                 ...(body.branchSlug ? { branchSlug: body.branchSlug } : {}),
                 ...(body.name ? { name: body.name } : {}),
+                ...(typeof body.initialPrompt === "string" && body.initialPrompt !== "" ? { initialPrompt: body.initialPrompt } : {}),
               })
             }),
             (ws) => send(res, 201, ws),

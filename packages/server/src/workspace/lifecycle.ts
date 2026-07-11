@@ -1,7 +1,7 @@
-import { Context, Data, Effect, Layer } from "effect"
+import { Context, Data, Effect, Layer, Option } from "effect"
 import * as fs from "node:fs"
 import * as path from "node:path"
-import { Workspace } from "@coolie/protocol"
+import { Workspace, tmuxSessionName } from "@coolie/protocol"
 import { CoolieConfig } from "../config.js"
 import { ProjectsRepo } from "../repo/projects.js"
 import { WorkspacesRepo } from "../repo/workspaces.js"
@@ -12,10 +12,13 @@ import { SetupRunner, SetupScriptError, resolveSetupScripts } from "./setup.js"
 import { pickName, sanitizeSlug } from "./names.js"
 import { allocatePortBase, portEnv } from "./ports.js"
 import { injectInfoExclude, readWorktreeIncludePatterns, copyIncludedFiles } from "./include.js"
+import { TmuxService } from "../tmux/service.js"
+import { TabsRepo } from "../repo/tabs.js"
 
-/** Plan 3 插拔点：tmux session / engine 启动 / 首条 prompt 投递以 hook 形式挂进 create 流水线末尾。 */
+/** Plan 3 插拔点落地：tmux session / engine 启动 / 首条 prompt 投递以 hook 形式挂进 create 流水线末尾。 */
 export class HookError extends Data.TaggedError("HookError")<{ readonly message: string }> {}
-export type PostCreateHook = (ws: Workspace) => Effect.Effect<void, HookError>
+export interface PostCreateContext { readonly initialPrompt?: string }
+export type PostCreateHook = (ws: Workspace, ctx: PostCreateContext) => Effect.Effect<void, HookError>
 export class PostCreateHooks extends Context.Tag("PostCreateHooks")<PostCreateHooks, ReadonlyArray<PostCreateHook>>() {}
 export const PostCreateHooksEmpty = Layer.succeed(PostCreateHooks, [])
 
@@ -23,7 +26,9 @@ export type CreateError = ValidationError | NotFoundError | ConflictError | GitE
 export type LifecycleError = NotFoundError | ConflictError | GitError
 
 export interface WorkspaceLifecycleShape {
-  readonly create: (opts: { projectId: string; branchSlug?: string; name?: string }) => Effect.Effect<Workspace, CreateError>
+  readonly create: (opts: {
+    projectId: string; branchSlug?: string; name?: string; initialPrompt?: string
+  }) => Effect.Effect<Workspace, CreateError>
   readonly retry: (id: string) => Effect.Effect<Workspace, CreateError>
   readonly archive: (id: string, opts?: { force?: boolean }) => Effect.Effect<Workspace, LifecycleError>
   readonly unarchive: (id: string) => Effect.Effect<Workspace, LifecycleError>
@@ -41,16 +46,29 @@ export const WorkspaceLifecycleLive = Layer.effect(
     const git = yield* GitService
     const setup = yield* SetupRunner
     const hooks = yield* PostCreateHooks
+    // 运行时拆除依赖：可选注入（生产 main.ts 提供；单测不提供时 teardown 自动 no-op）
+    const tmuxOpt = yield* Effect.serviceOption(TmuxService)
+    const tabsOpt = yield* Effect.serviceOption(TabsRepo)
 
     const emit = (workspaceId: string | null, type: string, payload: unknown) =>
       events.append({ workspaceId, type, payload })
+
+    /** archive/delete 共用：杀 tmux session（engine 归 tmux，拆除是唯一合法杀点）+ 清 tabs 行。全程容错。 */
+    const teardownRuntime = (ws: Workspace, reason: "archive" | "delete"): Effect.Effect<void> =>
+      Effect.gen(function* () {
+        if (Option.isSome(tmuxOpt)) {
+          yield* tmuxOpt.value.killSession(tmuxSessionName(ws.id)).pipe(Effect.ignore)
+          yield* emit(ws.id, "workspace.tmux.killed", { sessionName: tmuxSessionName(ws.id), reason }).pipe(Effect.ignore)
+        }
+        if (Option.isSome(tabsOpt)) yield* tabsOpt.value.removeByWorkspace(ws.id).pipe(Effect.ignore)
+      })
 
     /**
      * create/retry 共用的置备流水线（设计文档 §四，本计划裁掉 tmux/engine 段）：
      * fetch → prune → 解析 startPoint/baseRef → worktree add（或复用既有 branch）→
      * branch.<name>.base → info/exclude 注入 → .worktreeinclude 复制 → 三层 setup → hooks → active
      */
-    const provision = (ws: Workspace, repoRoot: string): Effect.Effect<Workspace, CreateError> =>
+    const provision = (ws: Workspace, repoRoot: string, ctx: PostCreateContext): Effect.Effect<Workspace, CreateError> =>
       Effect.gen(function* () {
         if (yield* git.remoteExists(repoRoot, "origin")) yield* git.fetchOrigin(repoRoot)
         yield* git.worktreePrune(repoRoot)
@@ -111,7 +129,7 @@ export const WorkspaceLifecycleLive = Layer.effect(
         // （create 上 baseRef=""，retry 上是上次失败尝试记的旧值），直接传它会让 hook 读到假 baseRef。
         // create/retry 走的是同一条 provision 流水线，这一次重读对两条路径统一生效。
         const fresh = yield* repo.get(ws.id)
-        for (const hook of hooks) yield* hook(fresh)
+        for (const hook of hooks) yield* hook(fresh, ctx)
         const active = yield* repo.setStatus(ws.id, "active")
         yield* emit(ws.id, "workspace.created", { id: ws.id, branch: ws.branch, path: ws.path })
         return active
@@ -145,7 +163,7 @@ export const WorkspaceLifecycleLive = Layer.effect(
           baseBranch: project.defaultBaseBranch, portBase,
         })
         yield* emit(ws.id, "workspace.creating", { id: ws.id, projectId: project.id, name, branch, path: wsPath, portBase })
-        return yield* provision(ws, project.repoRoot).pipe(
+        return yield* provision(ws, project.repoRoot, { ...(opts.initialPrompt !== undefined ? { initialPrompt: opts.initialPrompt } : {}) }).pipe(
           Effect.catchAll((e) => rollbackToError(ws, project.repoRoot, e)),
         )
       })
@@ -158,7 +176,7 @@ export const WorkspaceLifecycleLive = Layer.effect(
         const project = yield* projects.get(ws0.projectId)
         const ws = yield* repo.setStatus(id, "creating")
         yield* emit(id, "workspace.creating", { id, retry: true, name: ws.name, branch: ws.branch, path: ws.path, portBase: ws.portBase })
-        return yield* provision(ws, project.repoRoot).pipe(
+        return yield* provision(ws, project.repoRoot, {}).pipe(
           Effect.catchAll((e) => rollbackToError(ws, project.repoRoot, e)),
         )
       })
@@ -169,7 +187,17 @@ export const WorkspaceLifecycleLive = Layer.effect(
         Effect.map((wts) => wts.some((w) => path.resolve(w.path) === path.resolve(wsPath))),
       )
 
-    /** archive/delete 共用：脏树守卫 + 唯一删除入口（git worktree remove）+ prune。不存在则只 prune。 */
+    /** 脏树守卫（不删任何东西）：worktree 在且脏且未 force → 409 */
+    const guardClean = (
+      repoRoot: string, ws: Workspace, force: boolean, action: string,
+    ): Effect.Effect<void, ConflictError | GitError> =>
+      Effect.gen(function* () {
+        if (!(yield* worktreePresent(repoRoot, ws.path))) return
+        if (!force && (yield* git.isDirty(ws.path)))
+          return yield* new ConflictError({ message: `worktree 有未提交改动，拒绝${action}；确认丢弃请带 force 重试` })
+      })
+
+    /** archive/delete 共用：唯一删除入口（git worktree remove）+ prune。不存在则只 prune。 */
     const removeWorktreeGuarded = (
       repoRoot: string, ws: Workspace, force: boolean, action: string,
     ): Effect.Effect<void, ConflictError | GitError> =>
@@ -178,8 +206,7 @@ export const WorkspaceLifecycleLive = Layer.effect(
           yield* git.worktreePrune(repoRoot)
           return
         }
-        if (!force && (yield* git.isDirty(ws.path)))
-          return yield* new ConflictError({ message: `worktree 有未提交改动，拒绝${action}；确认丢弃请带 force 重试` })
+        yield* guardClean(repoRoot, ws, force, action)
         yield* git.worktreeRemove(repoRoot, ws.path, { force })
         yield* git.worktreePrune(repoRoot)
       })
@@ -190,9 +217,14 @@ export const WorkspaceLifecycleLive = Layer.effect(
         if (ws.status !== "active")
           return yield* new ConflictError({ message: `只能归档 active 的 workspace（当前 ${ws.status}）` })
         const project = yield* projects.get(ws.projectId)
-        yield* removeWorktreeGuarded(project.repoRoot, ws, opts?.force === true, "归档")
+        const force = opts?.force === true
+        // 顺序：先守卫（脏树 409 时 session 不能已被杀）→ 拆 tmux/tabs → 删 worktree。
+        // 守卫与删除之间 engine 理论上可再写文件——窗口极小，且 removeWorktreeGuarded 内层守卫兜底（二次 409 可重试）。
+        yield* guardClean(project.repoRoot, ws, force, "归档")
+        yield* teardownRuntime(ws, "archive")
+        yield* removeWorktreeGuarded(project.repoRoot, ws, force, "归档")
         const out = yield* repo.setStatus(id, "archived")
-        yield* emit(id, "workspace.archived", { id, force: opts?.force === true })
+        yield* emit(id, "workspace.archived", { id, force })
         return out
       })
 
@@ -232,7 +264,10 @@ export const WorkspaceLifecycleLive = Layer.effect(
       Effect.gen(function* () {
         const ws = yield* repo.get(id)
         const project = yield* projects.get(ws.projectId)
-        yield* removeWorktreeGuarded(project.repoRoot, ws, opts?.force === true, "删除")
+        const force = opts?.force === true
+        yield* guardClean(project.repoRoot, ws, force, "删除")
+        yield* teardownRuntime(ws, "delete")
+        yield* removeWorktreeGuarded(project.repoRoot, ws, force, "删除")
         yield* repo.remove(id)
         yield* emit(id, "workspace.deleted", { id, branch: ws.branch }) // branch 保留，事件记下名字便于追溯
       })

@@ -134,4 +134,8 @@ describe("workspace HTTP API", () => {
     expect(types).toContain("workspace.creating")
     expect(types).toContain("workspace.created")
   })
+  it("POST /workspaces rejects non-string initialPrompt", async () => {
+    const r = await req("/workspaces", { method: "POST", body: JSON.stringify({ projectId: "p", initialPrompt: 42 }) })
+    expect(r.status).toBe(400)
+  })
 })
