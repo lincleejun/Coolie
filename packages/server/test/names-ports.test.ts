@@ -2,6 +2,9 @@ import { describe, it, expect } from "vitest"
 import { NATIONAL_PARKS, pickName, sanitizeSlug } from "../src/workspace/names.js"
 import { PORT_BLOCK_SIZE, PORT_BASE_START, allocatePortBase, portEnv } from "../src/workspace/ports.js"
 
+// Import PORT_BASE_MAX for exhaustion test (it's private so we calculate it)
+const PORT_BASE_MAX = 64_990
+
 describe("name pool", () => {
   it("national-parks pool has >=40 unique country-park slugs", () => {
     expect(NATIONAL_PARKS.id).toBe("national-parks")
@@ -25,6 +28,14 @@ describe("name pool", () => {
     expect(sanitizeSlug("--weird__Case--")).toBe("weird-case")
     expect(sanitizeSlug("!!!")).toBe("")
   })
+  it("sanitizeSlug does not emit trailing hyphen after slice", () => {
+    // 59 a's + "-tail" = 65 chars total
+    // slice(0, 60) would give 59 a's + "-" without the fix
+    expect(sanitizeSlug("a".repeat(59) + "-tail")).toBe("a".repeat(59))
+  })
+  it("sanitizeSlug enforces 60-char limit", () => {
+    expect(sanitizeSlug("x".repeat(100)).length).toBe(60)
+  })
 })
 
 describe("port block allocation", () => {
@@ -41,5 +52,13 @@ describe("port block allocation", () => {
     expect(env.COOLIE_PORT_0).toBe("40020")
     expect(env.COOLIE_PORT_9).toBe("40029")
     expect(Object.keys(env)).toHaveLength(10)
+  })
+  it("allocatePortBase throws when all blocks are exhausted", () => {
+    // Build array of all allocated blocks from PORT_BASE_START to PORT_BASE_MAX
+    const allBlocks: number[] = []
+    for (let base = PORT_BASE_START; base <= PORT_BASE_MAX; base += PORT_BLOCK_SIZE) {
+      allBlocks.push(base)
+    }
+    expect(() => allocatePortBase(allBlocks)).toThrow("端口段耗尽")
   })
 })

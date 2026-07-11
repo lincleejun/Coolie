@@ -38,4 +38,4 @@ export const pickName = (
 
 /** branch slug 消毒：小写、非字母数字折叠为 '-'、去首尾 '-'、限 60 字符。空结果由调用方判 Validation。 */
 export const sanitizeSlug = (input: string): string =>
-  input.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 60)
+  input.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 60).replace(/-+$/, "")
