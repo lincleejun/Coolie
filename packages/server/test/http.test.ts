@@ -17,7 +17,7 @@ beforeEach(async () => {
   const layer = Layer.mergeAll(ProjectsRepoLive, EventsRepoLive).pipe(Layer.provide(Layer.succeed(Db, db)))
   token = newToken()
   const app = createApp({
-    runtime: (eff) => Effect.runPromiseExit(Effect.provide(eff, layer)),
+    runtime: (eff) => Effect.runPromiseExit(Effect.provide(eff, layer) as Effect.Effect<any, any, never>),
     token,
     onShutdown: () => { shutdownCalled = true },
   })
@@ -98,7 +98,7 @@ describe("http app", () => {
     const layer = Layer.mergeAll(ProjectsRepoLive, EventsRepoLive).pipe(Layer.provide(Layer.succeed(Db, db)))
     const tok = newToken()
     const app = createApp({
-      runtime: (eff) => Effect.runPromiseExit(Effect.provide(eff, layer)),
+      runtime: (eff) => Effect.runPromiseExit(Effect.provide(eff, layer) as Effect.Effect<any, any, never>),
       token: tok,
       onShutdown: () => { throw new Error("shutdown hook boom") },
     })

@@ -4,16 +4,19 @@ import { Effect, Exit, Cause, Option } from "effect"
 import type { ApiErrorBody } from "@coolie/protocol"
 import { ProjectsRepo } from "../repo/projects.js"
 import { EventsRepo } from "../repo/events.js"
+import { WorkspacesRepo } from "../repo/workspaces.js"
+import { WorkspaceLifecycle } from "../workspace/lifecycle.js"
 import { tokenEquals } from "./token.js"
 export { newToken } from "./token.js"
 
-// `runtime` runs a ProjectsRepo|EventsRepo-dependent Effect to completion and hands
+// `runtime` runs an AppServices-dependent Effect to completion and hands
 // back its `Exit` (never rejects). We deliberately avoid `Effect.runPromise` here:
 // its rejection is a FiberFailure wrapper, and probing `e?._tag`/`e?.error?._tag`
 // on it is not a reliable way to recover the original TaggedError. Running via
 // `Effect.runPromiseExit` and unwrapping with `Exit.match` + `Cause.failureOption`
 // (mirrors the pattern already used in test/projects-repo.test.ts) is robust.
-type Runtime = <A, E>(eff: Effect.Effect<A, E, ProjectsRepo | EventsRepo>) => Promise<Exit.Exit<A, E>>
+export type AppServices = ProjectsRepo | EventsRepo | WorkspacesRepo | WorkspaceLifecycle
+export type Runtime = <A, E>(eff: Effect.Effect<A, E, AppServices>) => Promise<Exit.Exit<A, E>>
 export interface AppDeps {
   readonly runtime: Runtime
   readonly token: string
@@ -62,6 +65,9 @@ const errorFromCause = (
     if (e._tag === "ValidationError") return { status: 400, body: { code: "Validation", message } }
     if (e._tag === "ConflictError") return { status: 409, body: { code: "Conflict", message } }
     if (e._tag === "NotFoundError") return { status: 404, body: { code: "NotFound", message } }
+    if (e._tag === "GitError") return { status: 500, body: { code: "GitError", message } }
+    if (e._tag === "SetupScriptError") return { status: 500, body: { code: "SetupScriptError", message } }
+    if (e._tag === "HookError") return { status: 500, body: { code: "Internal", message } }
     return { status: 500, body: { code: "Internal", message } }
   }
   // defect / interruption: no typed failure to recover, fall back to a pretty cause dump
@@ -72,7 +78,7 @@ const errorFromCause = (
 const runRoute = async <A, E>(
   res: ServerResponse,
   runtime: Runtime,
-  eff: Effect.Effect<A, E, ProjectsRepo | EventsRepo>,
+  eff: Effect.Effect<A, E, AppServices>,
   onSuccess: (value: A) => void | Promise<void>,
   onError?: (e: unknown) => void,
 ): Promise<void> => {
@@ -175,6 +181,66 @@ export const createApp = ({ runtime, token, onShutdown, onError }: AppDeps) =>
             res, runtime,
             Effect.gen(function* () { yield* (yield* ProjectsRepo).remove(del[1]!) }),
             () => emitThenRespond(res, runtime, null, "project.removed", { id: del[1] }, () => send(res, 204), onError),
+            onError,
+          )
+        }
+        if (route === "GET /workspaces") {
+          const project = url.searchParams.get("project")
+          return await runRoute(
+            res, runtime,
+            Effect.gen(function* () {
+              return yield* (yield* WorkspacesRepo).list(project ? { projectId: project } : {})
+            }),
+            (list) => send(res, 200, list),
+            onError,
+          )
+        }
+        if (route === "POST /workspaces") {
+          const body = await readJson(req)
+          if (typeof body.projectId !== "string") return err(res, 400, "Validation", "projectId required")
+          if (body.branchSlug !== undefined && typeof body.branchSlug !== "string")
+            return err(res, 400, "Validation", "branchSlug must be a string")
+          if (body.name !== undefined && typeof body.name !== "string")
+            return err(res, 400, "Validation", "name must be a string")
+          return await runRoute(
+            res, runtime,
+            Effect.gen(function* () {
+              return yield* (yield* WorkspaceLifecycle).create({
+                projectId: body.projectId,
+                ...(body.branchSlug ? { branchSlug: body.branchSlug } : {}),
+                ...(body.name ? { name: body.name } : {}),
+              })
+            }),
+            (ws) => send(res, 201, ws),
+            onError,
+          )
+        }
+        const wsAction = url.pathname.match(/^\/workspaces\/([^/]+)\/(archive|unarchive|retry)$/)
+        if (req.method === "POST" && wsAction) {
+          const id = wsAction[1]!
+          const action = wsAction[2]!
+          const body = await readJson(req)
+          const force = body.force === true
+          return await runRoute(
+            res, runtime,
+            Effect.gen(function* () {
+              const lc = yield* WorkspaceLifecycle
+              if (action === "archive") return yield* lc.archive(id, { force })
+              if (action === "unarchive") return yield* lc.unarchive(id)
+              return yield* lc.retry(id)
+            }),
+            (ws) => send(res, 200, ws),
+            onError,
+          )
+        }
+        const wsDel = url.pathname.match(/^\/workspaces\/([^/]+)$/)
+        if (req.method === "DELETE" && wsDel) {
+          return await runRoute(
+            res, runtime,
+            Effect.gen(function* () {
+              yield* (yield* WorkspaceLifecycle).delete(wsDel[1]!, { force: url.searchParams.get("force") === "1" })
+            }),
+            () => send(res, 204),
             onError,
           )
         }

@@ -45,7 +45,7 @@ describe("http app events integration", () => {
     const l = Layer.mergeAll(ProjectsRepoLive, EventsRepoLive).pipe(Layer.provide(Layer.succeed(Db, db)))
     token = newToken()
     const app = createApp({
-      runtime: (eff) => Effect.runPromiseExit(Effect.provide(eff, l)),
+      runtime: (eff) => Effect.runPromiseExit(Effect.provide(eff, l) as Effect.Effect<any, any, never>),
       token,
       onShutdown: () => {},
     })
