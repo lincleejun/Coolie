@@ -1,0 +1,8 @@
+# 第三方参考仓库的本地 clone（体积大，不入库；refs/research/ 与截图保留可提交）
+refs/kobe/
+refs/opencode/
+refs/agent-deck/
+refs/opcode/
+refs/tux/
+
+.DS_Store
