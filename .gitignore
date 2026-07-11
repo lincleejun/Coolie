@@ -12,4 +12,3 @@ refs/tux/
 node_modules/
 dist/
 *.tsbuildinfo
-bun.lock
