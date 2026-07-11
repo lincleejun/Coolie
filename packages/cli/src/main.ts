@@ -28,6 +28,56 @@ project.command("remove <id>").action(async (id) => {
   try { await api("DELETE", `/projects/${id}`); console.log(`removed ${id}`) } catch (e) { fail(e) }
 })
 
+// ---------- workspace lifecycle（Plan 2） ----------
+program.command("create")
+  .argument("<projectIdOrPath>", "项目 id，或 git 仓库路径（未注册时自动注册）")
+  .option("--slug <slug>", "branch 语义名（branch = coolie/<slug>；缺省用目录名）")
+  .option("--name <name>", "指定目录名（缺省从 national-parks 名池取）")
+  .action(async (arg: string, opts: { slug?: string; name?: string }) => {
+    try {
+      let projectId = arg
+      if (fs.existsSync(arg)) {
+        const abs = path.resolve(arg)
+        const projects: any[] = await api("GET", "/projects")
+        let p = projects.find((x) => x.repoRoot === abs)
+        if (!p) p = await api("POST", "/projects", { repoRoot: abs })
+        projectId = p.id
+      }
+      const ws = await api("POST", "/workspaces", {
+        projectId,
+        ...(opts.slug ? { branchSlug: opts.slug } : {}),
+        ...(opts.name ? { name: opts.name } : {}),
+      })
+      console.log(`created ${ws.name} (${ws.id}) branch=${ws.branch} path=${ws.path}`)
+    } catch (e) { fail(e) }
+  })
+
+program.command("list").action(async () => {
+  try {
+    for (const w of await api("GET", "/workspaces"))
+      console.log(`${w.id}\t${w.name}\t${w.status}\t${w.branch}\t${w.path}`)
+  } catch (e) { fail(e) }
+})
+
+program.command("archive <wsId>")
+  .option("--force", "脏树也归档（丢弃未提交改动）")
+  .action(async (id: string, opts: { force?: boolean }) => {
+    try { await api("POST", `/workspaces/${id}/archive`, { force: !!opts.force }); console.log(`archived ${id}`) }
+    catch (e) { fail(e) }
+  })
+
+program.command("unarchive <wsId>").action(async (id: string) => {
+  try { await api("POST", `/workspaces/${id}/unarchive`, {}); console.log(`unarchived ${id}`) }
+  catch (e) { fail(e) }
+})
+
+program.command("delete <wsId>")
+  .option("--force", "脏树也删（丢弃未提交改动）")
+  .action(async (id: string, opts: { force?: boolean }) => {
+    try { await api("DELETE", `/workspaces/${id}${opts.force ? "?force=1" : ""}`); console.log(`deleted ${id}`) }
+    catch (e) { fail(e) }
+  })
+
 const server = program.command("server")
 server.command("status").action(async () => {
   const info = readServerInfo(path.join(home(), "server.json"))

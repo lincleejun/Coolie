@@ -1,0 +1,57 @@
+import { describe, it, expect, beforeAll, afterAll } from "vitest"
+import { execFileSync } from "node:child_process"
+import * as fs from "node:fs"; import * as os from "node:os"; import * as path from "node:path"
+
+const TSX = path.resolve(__dirname, "../../../node_modules/.bin/tsx")
+const CLI = path.resolve(__dirname, "../src/main.ts")
+let home: string, wsRoot: string, repo: string
+let wsId: string, wsPath: string
+
+const coolie = (...args: string[]) =>
+  execFileSync(TSX, [CLI, ...args], {
+    env: { ...process.env, COOLIE_HOME: home, COOLIE_WORKSPACES_ROOT: wsRoot },
+    encoding: "utf8",
+  })
+const sh = (cwd: string, ...args: string[]) => execFileSync("git", args, { cwd, encoding: "utf8" })
+
+beforeAll(() => {
+  home = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "coolie-we2e-home-")))
+  wsRoot = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "coolie-we2e-ws-")))
+  repo = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "coolie-we2e-repo-")))
+  sh(repo, "init", "-b", "main")
+  sh(repo, "config", "user.email", "t@t"); sh(repo, "config", "user.name", "t")
+  fs.writeFileSync(path.join(repo, "README.md"), "hi\n")
+  sh(repo, "add", "-A"); sh(repo, "commit", "-m", "init")
+})
+afterAll(() => { try { coolie("server", "stop") } catch {} })
+
+describe("coolie workspace commands e2e", () => {
+  it("create by repo path auto-registers the project and prints the workspace line", () => {
+    const out = coolie("create", repo, "--slug", "cli-e2e")
+    const m = out.match(/^created (\S+) \((\S+)\) branch=coolie\/cli-e2e path=(.+)$/m)
+    expect(m).not.toBeNull()
+    wsId = m![2]!
+    wsPath = m![3]!
+    expect(fs.existsSync(path.join(wsPath, "README.md"))).toBe(true)
+    expect(coolie("list")).toContain(`${wsId}\t`)
+    expect(coolie("list")).toContain("active")
+  }, 60_000)
+  it("archive removes the worktree dir, keeps the branch", () => {
+    expect(coolie("archive", wsId)).toContain(`archived ${wsId}`)
+    expect(fs.existsSync(wsPath)).toBe(false)
+    expect(coolie("list")).toContain("archived")
+    expect(sh(repo, "rev-parse", "--verify", "refs/heads/coolie/cli-e2e").trim()).toMatch(/^[0-9a-f]{40}$/)
+  }, 30_000)
+  it("unarchive rebuilds the worktree", () => {
+    expect(coolie("unarchive", wsId)).toContain(`unarchived ${wsId}`)
+    expect(fs.existsSync(path.join(wsPath, "README.md"))).toBe(true)
+    expect(coolie("list")).toContain("active")
+  }, 30_000)
+  it("delete refuses a dirty tree without --force, succeeds with it; branch survives", () => {
+    fs.writeFileSync(path.join(wsPath, "junk.txt"), "x") // untracked → 脏
+    expect(() => coolie("delete", wsId)).toThrow() // exit 1（409 Conflict）
+    expect(coolie("delete", wsId, "--force")).toContain(`deleted ${wsId}`)
+    expect(coolie("list")).not.toContain(wsId)
+    expect(sh(repo, "rev-parse", "--verify", "refs/heads/coolie/cli-e2e").trim()).toMatch(/^[0-9a-f]{40}$/)
+  }, 30_000)
+})
