@@ -68,4 +68,12 @@ describe("coolie CLI e2e", () => {
     // shutdown — its absence is a true signal that no daemon process ever ran.
     expect(fs.existsSync(path.join(freshHome, "coolie.db"))).toBe(false)
   })
+  it("events tail prints structured events (e2e, non-follow)", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "coolie-tail-repo-"))
+    execFileSync("git", ["init", "-b", "main"], { cwd: dir })
+    coolie("project", "add", dir)
+    const out = coolie("events", "tail", "--after", "0")
+    expect(out).toContain("project.added")
+    expect(out).toMatch(/^\d+\t\d{4}-\d{2}-\d{2}T/m) // seq \t ISO 时间戳开头
+  })
 })

@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { Command } from "commander"
-import { ROUTES } from "@coolie/protocol"
+import { ROUTES, decodeProject, decodeWorkspace, decodeCoolieEvent, tmuxSessionName } from "@coolie/protocol"
 import { readServerInfo, probeAlive } from "@coolie/server"
 import * as path from "node:path"
 import * as fs from "node:fs"
@@ -21,7 +21,7 @@ project.command("add <path>").action(async (p) => {
   catch (e) { fail(e) }
 })
 project.command("list").action(async () => {
-  try { for (const p of await api("GET", "/projects")) console.log(`${p.id}\t${p.name}\t${p.repoRoot}`) }
+  try { for (const p of ((await api("GET", "/projects")) as unknown[]).map((x) => decodeProject(x))) console.log(`${p.id}\t${p.name}\t${p.repoRoot}`) }
   catch (e) { fail(e) }
 })
 project.command("remove <id>").action(async (id) => {
@@ -33,7 +33,8 @@ program.command("create")
   .argument("<projectIdOrPath>", "项目 id，或 git 仓库路径（未注册时自动注册）")
   .option("--slug <slug>", "branch 语义名（branch = coolie/<slug>；缺省用目录名）")
   .option("--name <name>", "指定目录名（缺省从 national-parks 名池取）")
-  .action(async (arg: string, opts: { slug?: string; name?: string }) => {
+  .option("--prompt <text>", "workspace 就绪后投递给 engine 的首条 prompt")
+  .action(async (arg: string, opts: { slug?: string; name?: string; prompt?: string }) => {
     try {
       let projectId = arg
       if (fs.existsSync(arg)) {
@@ -43,18 +44,19 @@ program.command("create")
         if (!p) p = await api("POST", "/projects", { repoRoot: abs })
         projectId = p.id
       }
-      const ws = await api("POST", "/workspaces", {
+      const ws = decodeWorkspace(await api("POST", "/workspaces", {
         projectId,
         ...(opts.slug ? { branchSlug: opts.slug } : {}),
         ...(opts.name ? { name: opts.name } : {}),
-      })
+        ...(opts.prompt ? { initialPrompt: opts.prompt } : {}),
+      }))
       console.log(`created ${ws.name} (${ws.id}) branch=${ws.branch} path=${ws.path}`)
     } catch (e) { fail(e) }
   })
 
 program.command("list").action(async () => {
   try {
-    for (const w of await api("GET", "/workspaces"))
+    for (const w of ((await api("GET", "/workspaces")) as unknown[]).map((x) => decodeWorkspace(x)))
       console.log(`${w.id}\t${w.name}\t${w.status}\t${w.branch}\t${w.path}`)
   } catch (e) { fail(e) }
 })
@@ -76,6 +78,26 @@ program.command("delete <wsId>")
   .action(async (id: string, opts: { force?: boolean }) => {
     try { await api("DELETE", `/workspaces/${id}${opts.force ? "?force=1" : ""}`); console.log(`deleted ${id}`) }
     catch (e) { fail(e) }
+  })
+
+const tmuxSocketName = () => process.env.COOLIE_TMUX_SOCKET ?? "coolie"
+
+program.command("enter <wsId>")
+  .description("attach 进 workspace 的 tmux session（Ctrl-b d 返回）")
+  .action((id: string) => {
+    const sock = tmuxSocketName()
+    const session = tmuxSessionName(id)
+    const has = spawnSync("tmux", ["-L", sock, "has-session", "-t", `=${session}`], { stdio: "ignore" })
+    if (has.status !== 0)
+      fail(`tmux session ${session} 不存在（workspace 可能已归档/尚未创建，或 session 被外力清理；M1 不自动重建——Plan 4 ensure-or-heal）`)
+    const r = spawnSync("tmux", ["-L", sock, "attach", "-t", `=${session}`], { stdio: "inherit" })
+    process.exit(r.status ?? 0)
+  })
+
+program.command("open <wsId>")
+  .description("打印 iTerm2 逃生舱命令（GUI 的 Open in iTerm2 按钮复用此命令）")
+  .action((id: string) => {
+    console.log(`tmux -L ${tmuxSocketName()} attach -t ${tmuxSessionName(id)}`)
   })
 
 const server = program.command("server")
@@ -165,7 +187,7 @@ events.command("tail")
   .action(async (opts: { after: string; follow?: boolean; interval: string }) => {
     let cursor = Number(opts.after)
     const printBatch = async (): Promise<void> => {
-      const batch: any[] = await api("GET", `/events?after=${cursor}`)
+      const batch = ((await api("GET", `/events?after=${cursor}`)) as unknown[]).map((x) => decodeCoolieEvent(x))
       for (const e of batch) {
         console.log(`${e.seq}\t${new Date(e.ts).toISOString()}\t${e.type}\t${e.workspaceId ?? "-"}\t${JSON.stringify(e.payload)}`)
         cursor = Math.max(cursor, e.seq)

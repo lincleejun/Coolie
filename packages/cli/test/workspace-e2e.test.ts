@@ -62,4 +62,27 @@ describe("coolie workspace commands e2e", () => {
     expect(coolie("list")).not.toContain(wsId)
     expect(sh(repo, "rev-parse", "--verify", "refs/heads/coolie/cli-e2e").trim()).toMatch(/^[0-9a-f]{40}$/)
   }, 30_000)
+
+  it("open prints the attach command for the test socket", () => {
+    const out = coolie("open", "someid")
+    expect(out.trim()).toBe(`tmux -L ${TMUX_SOCK} attach -t coolie-someid`)
+  })
+
+  it("enter exits non-zero with guidance when the session is missing", () => {
+    let failed = false
+    try { coolie("enter", "no-such-ws") } catch (e: any) {
+      failed = true
+      expect(String(e.stderr)).toContain("tmux session")
+    }
+    expect(failed).toBe(true)
+  })
+
+  it("create --prompt delivers the first prompt into the engine window", () => {
+    const out = coolie("create", repo, "--name", "prompted-ws", "--slug", "prompted", "--prompt", "hello-e2e-prompt")
+    const id = out.match(/created \S+ \(([^)]+)\)/)![1]!
+    // create 是同步流水线：返回时 prompt 已投递（cat 引擎回显）
+    const cap = execFileSync("tmux", ["-L", TMUX_SOCK, "capture-pane", "-p", "-t", `=coolie-${id}:0`], { encoding: "utf8" })
+    expect(cap).toContain("hello-e2e-prompt")
+    coolie("delete", id, "--force") // 清理：session + worktree + 记录
+  }, 30_000)
 })

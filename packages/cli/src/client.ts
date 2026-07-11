@@ -1,4 +1,6 @@
 import { spawn } from "node:child_process"
+import * as http from "node:http"
+import * as fs from "node:fs"
 import * as os from "node:os"; import * as path from "node:path"
 import { createRequire } from "node:module"
 import { readServerInfo, probeAlive, type ServerInfo } from "@coolie/server"
@@ -37,18 +39,45 @@ export const ensureServer = async (): Promise<ServerInfo> => {
   throw new Error("无法启动 coolie-server（10s 超时）")
 }
 
+interface RawResponse { status: number; text: string }
+
+/** unix socket 优先（设计文档 §2.1：本地零端口依赖）；sock 缺席/失联回退 TCP。token 两路一致。 */
+const rawRequest = (
+  info: ServerInfo, method: string, p: string, body: string | undefined, forceTcp: boolean,
+): Promise<RawResponse> =>
+  new Promise((resolve, reject) => {
+    const viaSock = !forceTcp && info.sock !== undefined && fs.existsSync(info.sock)
+    const base = viaSock ? { socketPath: info.sock! } : { host: "127.0.0.1", port: info.port }
+    const req = http.request({
+      ...base, path: p, method,
+      headers: {
+        "content-type": "application/json",
+        Authorization: `Bearer ${info.token}`,
+        ...(body !== undefined ? { "content-length": Buffer.byteLength(body) } : {}),
+      },
+    }, (res) => {
+      let buf = ""
+      res.setEncoding("utf8")
+      res.on("data", (c) => { buf += c })
+      res.on("end", () => resolve({ status: res.statusCode ?? 0, text: buf }))
+    })
+    req.on("error", reject)
+    if (body !== undefined) req.write(body)
+    req.end()
+  })
+
 export const api = async (method: string, p: string, body?: unknown): Promise<any> => {
   const info = await ensureServer()
-  // exactOptionalPropertyTypes forbids `body: undefined` (RequestInit's body is
-  // `BodyInit | null`, not `| undefined`) — omit the key entirely via spread
-  // instead of assigning it undefined.
-  const r = await fetch(`http://127.0.0.1:${info.port}${p}`, {
-    method,
-    headers: { "content-type": "application/json", Authorization: `Bearer ${info.token}` },
-    ...(body === undefined ? {} : { body: JSON.stringify(body) }),
-  })
+  const payload = body === undefined ? undefined : JSON.stringify(body)
+  let r: RawResponse
+  try {
+    r = await rawRequest(info, method, p, payload, false)
+  } catch {
+    r = await rawRequest(info, method, p, payload, true) // 陈旧 sock → TCP 重试一次
+  }
   if (r.status === 204) return undefined
-  const json = await r.json().catch(() => ({}))
-  if (!r.ok) throw new Error(`${json.code ?? r.status}: ${json.message ?? "request failed"}`)
+  let json: any = {}
+  try { json = r.text ? JSON.parse(r.text) : {} } catch { /* 非 JSON 保持 {} */ }
+  if (r.status < 200 || r.status >= 300) throw new Error(`${json.code ?? r.status}: ${json.message ?? "request failed"}`)
   return json
 }
