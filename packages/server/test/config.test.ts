@@ -18,4 +18,9 @@ describe("CoolieConfig", () => {
     expect(c.home.endsWith("/.coolie")).toBe(true)
     expect(c.workspacesRoot.endsWith("/coolie/workspaces")).toBe(true)
   })
+  it("respects COOLIE_WORKSPACES_ROOT", () => {
+    process.env.COOLIE_WORKSPACES_ROOT = "/tmp/coolie-test-ws"
+    const c = load()
+    expect(c.workspacesRoot).toBe("/tmp/coolie-test-ws")
+  })
 })
