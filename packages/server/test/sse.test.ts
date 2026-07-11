@@ -81,7 +81,7 @@ describe("GET /events/stream", () => {
     expect(all[1].seq).toBeGreaterThan(all[0].seq)
     ac.abort()
   })
-  it("filters by ?workspace=", async () => {
+  it("filters by ?workspace= (replay path)", async () => {
     await append("w1", "a.w1")
     await append("w2", "b.w2")
     const ac = new AbortController()
@@ -90,6 +90,23 @@ describe("GET /events/stream", () => {
     const all = dataEvents(buf)
     expect(all).toHaveLength(1)
     expect(all[0].type).toBe("b.w2")
+    ac.abort()
+  })
+  it("filters by ?workspace= (live path)", async () => {
+    // connect with no pre-existing events so replay is minimal
+    const ac = new AbortController()
+    const reader = await connect("?after=0&workspace=w1", ac)
+    // read until replay is done (heartbeat or minimal initial data)
+    let buf = await readUntil(reader, (b) => b.includes(":hb") || b.includes(":ok\n\n"))
+    // after connection is live, append events for w2 and w1
+    await append("w2", "b.w2")
+    await append("w1", "a.w1")
+    // read until the w1 event arrives
+    buf += await readUntil(reader, (b) => dataEvents(buf + b).some((e) => e.type === "a.w1"))
+    const all = dataEvents(buf)
+    const types = all.map((e) => e.type)
+    expect(types).toContain("a.w1")
+    expect(types).not.toContain("b.w2")
     ac.abort()
   })
   it("sends heartbeat comments", async () => {
