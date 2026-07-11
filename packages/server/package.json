@@ -13,7 +13,7 @@
   "dependencies": {
     "@coolie/protocol": "workspace:*",
     "better-sqlite3": "^12.11.1",
-    "effect": "latest",
+    "effect": "^3.21.4",
     "ulid": "^3.0.2"
   },
   "devDependencies": {

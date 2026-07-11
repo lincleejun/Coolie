@@ -3,6 +3,7 @@
   "private": true,
   "type": "module",
   "workspaces": ["packages/*"],
+  "engines": { "node": ">=22" },
   "scripts": {
     "test": "vitest run",
     "typecheck": "tsc -b packages/protocol packages/server packages/cli"

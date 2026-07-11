@@ -2,5 +2,5 @@
   "name": "@coolie/protocol",
   "type": "module",
   "exports": { ".": "./src/index.ts" },
-  "dependencies": { "effect": "latest" }
+  "dependencies": { "effect": "^3.21.4" }
 }
