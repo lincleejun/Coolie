@@ -169,9 +169,19 @@ codex（M2）已有完整调研（[codex.md](../../../refs/research/codex.md)）
 
 ## 八、CLI
 
-范本 = kobe：`coolie` 命令 + `coolie api` 脚本化面（分级 schema 发现：紧凑索引/--verb/--group），供 coding agent 自己驱动。M1 基础集：`create/list/enter/archive/delete/api schema`。未知子命令报错退出（不落进 TUI）。M2：fan-out（`--agents claude:2,codex:1`）、`coolie://` deep links（标准 URL 结构）。
+范本 = kobe：`coolie` 命令 + `coolie api` 脚本化面（分级 schema 发现：紧凑索引/--verb/--group），供 coding agent 自己驱动。M1 基础集：`create/list/enter/archive/delete/api schema` + 下节的 `export/events/doctor`。未知子命令报错退出（不落进 TUI）。M2：fan-out（`--agents claude:2,codex:1`）、`coolie://` deep links（标准 URL 结构）。
 
-## 九、错误处理
+## 九、诊断与可观测性（问题排查 + 信息查看 + 事件流导出）
+
+范本 = kobe 的诊断三件套（详见 [kobe.md](../../../refs/research/kobe.md) 补充研究一节），Coolie 在其上叠加 SQLite events 的结构化优势：
+
+- **结构化事件流**：一切状态变化写 `events` 表（durable、seq 游标），server 提供 `GET /events?after=<seq>&workspace=` 游标读取（SSE 推送为其流式视图）。kobe 的 engine 事件只进内存通道不落盘、排查历史只能翻文本日志——Coolie 两者都要。
+- **`coolie export <projects|workspaces|events> [--json|--csv|--format table]`**：**daemon-free**——readonly 直开 SQLite 导出，server 挂了也能导（kobe `export` vs `api list` 的分工同款）；三种格式共用单一 COLUMNS 字段真源；CSV 为 RFC-4180 风格带表头。
+- **`coolie events tail [--after <seq>] [--follow]`**：经 API 轮询打印事件流，排查时人看。
+- **`coolie doctor`**：只读诊断（home/db/server 探活/pid/日志大小/tmux/git），**绝不杀进程、绝不删文件**（kobe doctor 纪律）。
+- **诊断日志** `~/.coolie/logs/server.log`：append-only + **10MB 轮转保一代 `.old`**（kobe issue #26：无上限日志曾涨到 736MB）+ fire-and-forget 异步 append（日志失败绝不影响主流程）+ **crash net**（unhandledRejection/uncaughtException 记 stack 后继续服务，不退程——长命 daemon 不能被一个野 promise 打死）。GUI/CLI 客户端日志后续同款纪律（client.log，带 process context + pid）。
+
+## 十、错误处理
 
 - **server**：Effect typed errors 按域建模（`GitError/TmuxError/EngineError/SetupScriptError`），API 统一错误信封。
 - **tmux session 丢失**：ensure-or-heal 三段式（observe→decide→apply，kobe）重建 session，engine `--resume` 复活。
@@ -179,13 +189,13 @@ codex（M2）已有完整调研（[codex.md](../../../refs/research/codex.md)）
 - **server 崩**：客户端指数退避重连并重新拉起 daemon；SSE 从 events 游标 replay；终端画面因 tmux 无损。
 - **磁盘**：见第四节 delete 纪律；branch 永不删。
 
-## 十、测试策略
+## 十一、测试策略
 
 - **单测**：Effect Layer 注入假 Git/Tmux service + 内存 SQLite（DI 直接红利）。
 - **集成**：临时 git repo + 专用 `tmux -L coolie-test` socket，真跑 create→active→archive→delete 状态机。
 - **终端 E2E**：发版前 5 分钟人工清单（claude TUI 渲染、Ctrl+A/E 穿透、Cmd 快捷键、中文 IME、resize、WebGL context loss）。
 
-## 十一、磁盘布局与约定
+## 十二、磁盘布局与约定
 
 - worktree：`~/coolie/workspaces/<repo>/<园名>`（可浏览，学 `~/conductor` 习惯）
 - 数据/配置：`~/.coolie/`（coolie.db、settings、logs、projects/<id>/ 本机覆盖层）
@@ -193,9 +203,9 @@ codex（M2）已有完整调研（[codex.md](../../../refs/research/codex.md)）
 - macOS 打包：关 App Sandbox（spawn CLI 必需）→ DMG + notarization，不上 MAS；claude 二进制发现抄 opcode（多路径 + 版本择优 + env 白名单），不打包 sidecar（锁版本=永远落后）
 - tmux 为非自带依赖（`brew install tmux`），首启检测 + 引导
 
-## 十二、里程碑
+## 十三、里程碑
 
-- **M1（Claude 全链路）**：monorepo + protocol + server（daemon/refcount/SQLite/三通道）+ tmux 链路 + claude adapter + client（左栏/终端 tabs/Changes/Composer 三档发送/核心快捷键）+ lifecycle 四项 + CLI 基础集 + Open in iTerm2。
+- **M1（Claude 全链路）**：monorepo + protocol + server（daemon/refcount/SQLite/三通道）+ tmux 链路 + claude adapter + client（左栏/终端 tabs/Changes/Composer 三档发送/核心快捷键）+ lifecycle 四项 + CLI 基础集 + 可观测性三件套（export/events/doctor + 诊断日志）+ Open in iTerm2。
 - **M2**：codex adapter、fan-out、diff 行评论写回 PTY、deep links、通知与注意力管理、外部终端模式（per task）、主题/i18n、web client。
 - **刻意不做**：自渲染对话流（除非 M3+ 做 headless 兜底三档）、双 UI 栈、云端执行、SSH 远程（CS 架构下近乎免费，后置）。
 
