@@ -1,5 +1,6 @@
-import { describe, it, expect, afterEach } from "vitest"
-import { spawn, execFileSync, type ChildProcess } from "node:child_process"
+import { describe, it, expect, afterEach, afterAll } from "vitest"
+import { spawn, spawnSync, execFileSync, type ChildProcess } from "node:child_process"
+import * as http from "node:http"
 import * as fs from "node:fs"; import * as os from "node:os"; import * as path from "node:path"
 import { readServerInfo } from "../src/daemon/info.js"
 
@@ -7,13 +8,17 @@ let child: ChildProcess | undefined
 let home: string
 const MAIN = path.resolve(__dirname, "../src/main.ts")
 const TSX = path.resolve(__dirname, "../../../node_modules/.bin/tsx")
+const DAEMON_TMUX_SOCK = `coolie-test-${process.pid}-d`
 
 const startServer = async () => {
   home = fs.mkdtempSync(path.join(os.tmpdir(), "coolie-daemon-"))
   // detached: true → child leads its own process group. tsx's CLI re-execs into a
   // grandchild node process, so killing only child.pid orphans the actual server;
   // cleanup must kill the whole group (see afterEach).
-  child = spawn(TSX, [MAIN, "start"], { env: { ...process.env, COOLIE_HOME: home }, stdio: "pipe", detached: true })
+  child = spawn(TSX, [MAIN, "start"], {
+    env: { ...process.env, COOLIE_HOME: home, COOLIE_TMUX_SOCKET: DAEMON_TMUX_SOCK, COOLIE_DISABLE_HOOKS: "1" },
+    stdio: "pipe", detached: true,
+  })
   const deadline = Date.now() + 15_000
   while (Date.now() < deadline) {
     const info = readServerInfo(path.join(home, "server.json"))
@@ -31,6 +36,11 @@ afterEach(() => {
   if (child?.pid) { try { process.kill(-child.pid, "SIGKILL") } catch { /* group already gone */ } }
   child?.kill("SIGKILL")
   child = undefined
+})
+afterAll(() => {
+  // best-effort: control client is lazy-spawned (only on first sendKey), so daemon-only
+  // tests likely never created this tmux server — this is just a safety net.
+  try { execFileSync("tmux", ["-L", DAEMON_TMUX_SOCK, "kill-server"]) } catch { /* gone */ }
 })
 
 describe("daemon", () => {
@@ -50,5 +60,73 @@ describe("daemon", () => {
     expect(() =>
       execFileSync(TSX, [MAIN, "start"], { env: { ...process.env, COOLIE_HOME: home }, stdio: "pipe" }),
     ).toThrow() // exit 1
+  })
+})
+
+const unixGet = (sockPath: string, p: string, token?: string): Promise<{ status: number; body: string }> =>
+  new Promise((resolve, reject) => {
+    const req = http.request(
+      { socketPath: sockPath, path: p, method: "GET", headers: token ? { Authorization: `Bearer ${token}` } : {} },
+      (res) => { let b = ""; res.on("data", (c) => { b += c }); res.on("end", () => resolve({ status: res.statusCode ?? 0, body: b })) },
+    )
+    req.on("error", reject)
+    req.end()
+  })
+
+describe("unix socket listener", () => {
+  it("serves the same app on <home>/coolie.sock with the same token", async () => {
+    const info = await startServer()
+    const sockPath = path.join(home, "coolie.sock")
+    expect(info.sock).toBe(sockPath)
+    expect(fs.existsSync(sockPath)).toBe(true)
+    expect((await unixGet(sockPath, "/health")).status).toBe(200)
+    expect((await unixGet(sockPath, "/projects")).status).toBe(401)          // unix socket 不豁免 token
+    expect((await unixGet(sockPath, "/projects", info.token)).status).toBe(200)
+  })
+})
+
+describe("engine ownership（不可违背原则）", () => {
+  it("tmux session survives server SIGKILL", async () => {
+    const sock = `coolie-test-${process.pid}-srv`
+    const home2 = fs.mkdtempSync(path.join(os.tmpdir(), "coolie-surv-home-"))
+    const wsRoot = fs.mkdtempSync(path.join(os.tmpdir(), "coolie-surv-ws-"))
+    const repo = fs.mkdtempSync(path.join(os.tmpdir(), "coolie-surv-repo-"))
+    execFileSync("git", ["init", "-b", "main"], { cwd: repo })
+    execFileSync("git", ["-c", "user.email=t@t", "-c", "user.name=t", "commit", "--allow-empty", "-m", "init"], { cwd: repo })
+    const env = {
+      ...process.env, COOLIE_HOME: home2, COOLIE_WORKSPACES_ROOT: wsRoot,
+      COOLIE_TMUX_SOCKET: sock, COOLIE_CLAUDE_CMD: "cat", COOLIE_DISABLE_HOOKS: "1",
+      COOLIE_CLAUDE_HOME: path.join(home2, "claude-home"),
+    }
+    const srv = spawn(TSX, [MAIN, "start"], { env, stdio: "pipe", detached: true })
+    try {
+      let info: ReturnType<typeof readServerInfo> = null
+      const deadline = Date.now() + 15_000
+      while (Date.now() < deadline) {
+        info = readServerInfo(path.join(home2, "server.json"))
+        if (info && (await fetch(`http://127.0.0.1:${info.port}/health`).catch(() => null))?.ok) break
+        await new Promise((r) => setTimeout(r, 100))
+      }
+      if (!info) throw new Error("server did not become healthy")
+      const auth = { "content-type": "application/json", Authorization: `Bearer ${info.token}` }
+      const proj = await (await fetch(`http://127.0.0.1:${info.port}/projects`, {
+        method: "POST", headers: auth, body: JSON.stringify({ repoRoot: repo }),
+      })).json()
+      const created = await fetch(`http://127.0.0.1:${info.port}/workspaces`, {
+        method: "POST", headers: auth, body: JSON.stringify({ projectId: proj.id }),
+      })
+      expect(created.status).toBe(201)
+      const ws: any = await created.json()
+      const session = `coolie-${ws.id}`
+      expect(spawnSync("tmux", ["-L", sock, "has-session", "-t", `=${session}`]).status).toBe(0)
+
+      // ★ 杀 server（整个进程组，Plan 1 tsx 孙进程教训）——engine 归 tmux，session 必须活着
+      try { process.kill(-srv.pid!, "SIGKILL") } catch { srv.kill("SIGKILL") }
+      await new Promise((r) => setTimeout(r, 500))
+      expect(spawnSync("tmux", ["-L", sock, "has-session", "-t", `=${session}`]).status).toBe(0)
+    } finally {
+      try { process.kill(-srv.pid!, "SIGKILL") } catch { /* already dead */ }
+      try { execFileSync("tmux", ["-L", sock, "kill-server"]) } catch { /* gone */ }
+    }
   })
 })

@@ -1,12 +1,13 @@
 import * as fs from "node:fs"
 import * as path from "node:path"
 
-export interface ServerInfo { port: number; token: string; pid: number }
+export interface ServerInfo { port: number; token: string; pid: number; sock?: string }
 
 export const readServerInfo = (infoPath: string): ServerInfo | null => {
   try {
     const raw = JSON.parse(fs.readFileSync(infoPath, "utf8"))
-    if (typeof raw.port === "number" && typeof raw.token === "string" && typeof raw.pid === "number") return raw
+    if (typeof raw.port === "number" && typeof raw.token === "string" && typeof raw.pid === "number")
+      return { port: raw.port, token: raw.token, pid: raw.pid, ...(typeof raw.sock === "string" ? { sock: raw.sock } : {}) }
     return null
   } catch { return null }
 }

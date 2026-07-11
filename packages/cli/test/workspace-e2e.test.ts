@@ -4,12 +4,17 @@ import * as fs from "node:fs"; import * as os from "node:os"; import * as path f
 
 const TSX = path.resolve(__dirname, "../../../node_modules/.bin/tsx")
 const CLI = path.resolve(__dirname, "../src/main.ts")
+const TMUX_SOCK = `coolie-test-${process.pid}-cli`
 let home: string, wsRoot: string, repo: string
 let wsId: string, wsPath: string
 
 const coolie = (...args: string[]) =>
   execFileSync(TSX, [CLI, ...args], {
-    env: { ...process.env, COOLIE_HOME: home, COOLIE_WORKSPACES_ROOT: wsRoot },
+    env: {
+      ...process.env, COOLIE_HOME: home, COOLIE_WORKSPACES_ROOT: wsRoot,
+      COOLIE_TMUX_SOCKET: TMUX_SOCK, COOLIE_CLAUDE_CMD: "cat", COOLIE_DISABLE_HOOKS: "1",
+      COOLIE_CLAUDE_HOME: path.join(home, "claude-home"),
+    },
     encoding: "utf8",
   })
 const sh = (cwd: string, ...args: string[]) => execFileSync("git", args, { cwd, encoding: "utf8" })
@@ -23,7 +28,10 @@ beforeAll(() => {
   fs.writeFileSync(path.join(repo, "README.md"), "hi\n")
   sh(repo, "add", "-A"); sh(repo, "commit", "-m", "init")
 })
-afterAll(() => { try { coolie("server", "stop") } catch {} })
+afterAll(() => {
+  try { coolie("server", "stop") } catch {}
+  try { execFileSync("tmux", ["-L", TMUX_SOCK, "kill-server"]) } catch { /* gone */ }
+})
 
 describe("coolie workspace commands e2e", () => {
   it("create by repo path auto-registers the project and prints the workspace line", () => {
