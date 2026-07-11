@@ -1,7 +1,20 @@
 import { Context, Effect, Layer, Option } from "effect"
+import type Database from "better-sqlite3"
 import type { CoolieEvent } from "@coolie/protocol"
 import { Db } from "../db/sqlite.js"
 import { EventsBus, EVENT_CHANNEL } from "../events/bus.js"
+
+/** 只写 events 行、不广播——供各 repo 在自己的 db.transaction 里复用（写库与事件原子）。 */
+export const appendEventRow = (
+  db: Database.Database,
+  e: { workspaceId: string | null; type: string; payload: unknown },
+): CoolieEvent => {
+  const ts = Date.now()
+  const res = db
+    .prepare("INSERT INTO events (workspace_id, type, payload, ts) VALUES (?,?,?,?)")
+    .run(e.workspaceId, e.type, JSON.stringify(e.payload ?? null), ts)
+  return { seq: Number(res.lastInsertRowid), workspaceId: e.workspaceId, type: e.type, payload: e.payload ?? null, ts }
+}
 
 export interface EventsRepoShape {
   readonly append: (e: { workspaceId: string | null; type: string; payload: unknown }) => Effect.Effect<number>
@@ -18,17 +31,9 @@ export const EventsRepoLive = Layer.effect(
     const bus = yield* Effect.serviceOption(EventsBus)
     return {
       append: (e) => Effect.sync(() => {
-        const ts = Date.now()
-        const res = db
-          .prepare("INSERT INTO events (workspace_id, type, payload, ts) VALUES (?,?,?,?)")
-          .run(e.workspaceId, e.type, JSON.stringify(e.payload ?? null), ts)
-        const seq = Number(res.lastInsertRowid)
-        if (Option.isSome(bus)) {
-          bus.value.emit(EVENT_CHANNEL, {
-            seq, workspaceId: e.workspaceId, type: e.type, payload: e.payload ?? null, ts,
-          } satisfies CoolieEvent)
-        }
-        return seq
+        const ev = appendEventRow(db, e)
+        if (Option.isSome(bus)) bus.value.emit(EVENT_CHANNEL, ev)
+        return ev.seq
       }),
       listAfter: ({ after, limit = 200, workspaceId }) => Effect.sync(() => {
         const rows = workspaceId
