@@ -10,7 +10,10 @@ const TSX = path.resolve(__dirname, "../../../node_modules/.bin/tsx")
 
 const startServer = async () => {
   home = fs.mkdtempSync(path.join(os.tmpdir(), "coolie-daemon-"))
-  child = spawn(TSX, [MAIN, "start"], { env: { ...process.env, COOLIE_HOME: home }, stdio: "pipe" })
+  // detached: true → child leads its own process group. tsx's CLI re-execs into a
+  // grandchild node process, so killing only child.pid orphans the actual server;
+  // cleanup must kill the whole group (see afterEach).
+  child = spawn(TSX, [MAIN, "start"], { env: { ...process.env, COOLIE_HOME: home }, stdio: "pipe", detached: true })
   const deadline = Date.now() + 15_000
   while (Date.now() < deadline) {
     const info = readServerInfo(path.join(home, "server.json"))
@@ -22,7 +25,13 @@ const startServer = async () => {
   }
   throw new Error("server did not become healthy")
 }
-afterEach(() => { child?.kill("SIGKILL"); child = undefined })
+afterEach(() => {
+  // Kill the entire process group (negative pid) to reach tsx's re-exec'd grandchild,
+  // then the direct child as fallback.
+  if (child?.pid) { try { process.kill(-child.pid, "SIGKILL") } catch { /* group already gone */ } }
+  child?.kill("SIGKILL")
+  child = undefined
+})
 
 describe("daemon", () => {
   it("start writes server.json and serves health; stop removes it", async () => {
