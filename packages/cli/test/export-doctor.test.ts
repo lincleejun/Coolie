@@ -51,7 +51,27 @@ describe("coolie export (daemon-free)", () => {
     expect(JSON.parse(out)).toEqual([])
   })
   it("bad format exits 2", () => {
-    expect(() => coolie("export", "projects", "--format", "yaml")).toThrow()
+    try {
+      coolie("export", "projects", "--format", "yaml")
+      expect.unreachable("should have exited non-zero")
+    } catch (e: any) {
+      expect(e.status).toBe(2)
+    }
+  })
+  it("unknown export target exits 2", () => {
+    try {
+      coolie("export", "nonsense")
+      expect.unreachable("should have exited non-zero")
+    } catch (e: any) {
+      expect(e.status).toBe(2)
+    }
+  })
+  it("corrupt db (directory) exports empty set, exit 0", () => {
+    const dirHome = fs.mkdtempSync(path.join(os.tmpdir(), "coolie-corrupt-"))
+    fs.mkdirSync(path.join(dirHome, "coolie.db")) // db 是目录，不是文件
+    const out = execFileSync(TSX, [CLI, "export", "projects", "--json"],
+      { env: { ...process.env, COOLIE_HOME: dirHome }, encoding: "utf8" })
+    expect(JSON.parse(out)).toEqual([])
   })
 })
 

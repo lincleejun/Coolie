@@ -87,15 +87,16 @@ program
     if (!["json", "csv", "table"].includes(fmt)) usageExit(`未知格式：${fmt}`)
     const dbPath = path.join(home(), "coolie.db")
     let rows: Record<string, unknown>[] = []
-    if (fs.existsSync(dbPath)) {
-      const db = new Database(dbPath, { readonly: true })
-      try {
+    let db: InstanceType<typeof Database> | undefined
+    try {
+      if (fs.existsSync(dbPath)) {
+        db = new Database(dbPath, { readonly: true })
         rows = what === "events"
           ? db.prepare(EXPORT_SQL.events).all(Number(opts.after)) as any[]
           : db.prepare(EXPORT_SQL[what as ExportWhat]).all() as any[]
-      } catch { rows = [] } // 表还没建（新库）→ 空集
-      finally { db.close() }
-    }
+      }
+    } catch { rows = [] } // db 打开失败（损坏）或表还没建（新库）→ 空集
+    finally { db?.close() }
     const columns = EXPORT_COLUMNS[what as ExportWhat]
     if (fmt === "json") process.stdout.write(JSON.stringify(rows, null, 2) + "\n")
     else if (fmt === "csv") process.stdout.write(toCsv(columns, rows))
