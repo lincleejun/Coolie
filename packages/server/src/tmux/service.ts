@@ -2,7 +2,7 @@ import { Context, Data, Effect, Layer } from "effect"
 import { execFile } from "node:child_process"
 import { CoolieConfig } from "../config.js"
 import { sanitizedTmuxEnv, shellQuote } from "./env.js"
-import type { ControlClient } from "./control.js"
+import { makeControlClient, type ControlClient } from "./control.js"
 
 export class TmuxError extends Data.TaggedError("TmuxError")<{
   readonly op: string
@@ -125,10 +125,14 @@ export const makeTmuxService = (socket: string, ctl?: ControlClient): TmuxServic
       : runTmux(socket, "send-keys", ["send-keys", "-t", `=${target}`, key]).pipe(Effect.asVoid),
 })
 
-export const TmuxServiceLive = Layer.effect(
+export const TmuxServiceLive = Layer.scoped(
   TmuxService,
   Effect.gen(function* () {
     const cfg = yield* CoolieConfig
-    return makeTmuxService(cfg.tmuxSocket)
+    const ctl = yield* Effect.acquireRelease(
+      Effect.sync(() => makeControlClient(cfg.tmuxSocket)),
+      (c) => Effect.sync(() => c.dispose()),
+    )
+    return makeTmuxService(cfg.tmuxSocket, ctl)
   }),
 )
