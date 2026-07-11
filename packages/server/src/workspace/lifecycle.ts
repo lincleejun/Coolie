@@ -146,12 +146,74 @@ export const WorkspaceLifecycleLive = Layer.effect(
         )
       })
 
-    return {
-      create,
-      retry,
-      archive: () => Effect.die(new Error("archive 在 Task 8 实装")),
-      unarchive: () => Effect.die(new Error("unarchive 在 Task 8 实装")),
-      delete: () => Effect.die(new Error("delete 在 Task 8 实装")),
-    }
+    /** worktree 是否仍在（以 git worktree list 为真源，而非 fs——目录可能被外力挪走） */
+    const worktreePresent = (repoRoot: string, wsPath: string) =>
+      git.worktreeList(repoRoot).pipe(
+        Effect.map((wts) => wts.some((w) => path.resolve(w.path) === path.resolve(wsPath))),
+      )
+
+    /** archive/delete 共用：脏树守卫 + 唯一删除入口（git worktree remove）+ prune。不存在则只 prune。 */
+    const removeWorktreeGuarded = (
+      repoRoot: string, ws: Workspace, force: boolean, action: string,
+    ): Effect.Effect<void, ConflictError | GitError> =>
+      Effect.gen(function* () {
+        if (!(yield* worktreePresent(repoRoot, ws.path))) {
+          yield* git.worktreePrune(repoRoot)
+          return
+        }
+        if (!force && (yield* git.isDirty(ws.path)))
+          return yield* new ConflictError({ message: `worktree 有未提交改动，拒绝${action}；确认丢弃请带 force 重试` })
+        yield* git.worktreeRemove(repoRoot, ws.path, { force })
+        yield* git.worktreePrune(repoRoot)
+      })
+
+    const archive: WorkspaceLifecycleShape["archive"] = (id, opts) =>
+      Effect.gen(function* () {
+        const ws = yield* repo.get(id)
+        if (ws.status !== "active")
+          return yield* new ConflictError({ message: `只能归档 active 的 workspace（当前 ${ws.status}）` })
+        const project = yield* projects.get(ws.projectId)
+        yield* removeWorktreeGuarded(project.repoRoot, ws, opts?.force === true, "归档")
+        const out = yield* repo.setStatus(id, "archived")
+        yield* emit(id, "workspace.archived", { id, force: opts?.force === true })
+        return out
+      })
+
+    const unarchive: WorkspaceLifecycleShape["unarchive"] = (id) =>
+      Effect.gen(function* () {
+        const ws = yield* repo.get(id)
+        if (ws.status !== "archived")
+          return yield* new ConflictError({ message: `只能恢复 archived 的 workspace（当前 ${ws.status}）` })
+        const project = yield* projects.get(ws.projectId)
+        if (!(yield* git.refExists(project.repoRoot, `refs/heads/${ws.branch}`)))
+          return yield* new ConflictError({ message: `branch ${ws.branch} 已不存在，无法恢复` })
+        // 与 provision 同款：fs 步骤走 typed error，失败留在可恢复的 archived 态而非 defect
+        yield* Effect.try({
+          try: () => fs.mkdirSync(path.dirname(ws.path), { recursive: true }),
+          catch: (e) => new GitError({ op: "mkdir", message: `创建 worktree 父目录失败：${String(e)}`, exitCode: null, stderr: "" }),
+        })
+        yield* git.worktreePrune(project.repoRoot)
+        yield* git.worktreeAddExisting(project.repoRoot, ws.path, ws.branch).pipe(
+          // 失败清半成品（同回滚纪律），状态留 archived 可再试
+          Effect.tapError(() => Effect.all([
+            git.worktreeRemove(project.repoRoot, ws.path, { force: true }).pipe(Effect.ignore),
+            git.worktreePrune(project.repoRoot).pipe(Effect.ignore),
+          ])),
+        )
+        const out = yield* repo.setStatus(id, "active")
+        yield* emit(id, "workspace.unarchived", { id })
+        return out
+      })
+
+    const del: WorkspaceLifecycleShape["delete"] = (id, opts) =>
+      Effect.gen(function* () {
+        const ws = yield* repo.get(id)
+        const project = yield* projects.get(ws.projectId)
+        yield* removeWorktreeGuarded(project.repoRoot, ws, opts?.force === true, "删除")
+        yield* repo.remove(id)
+        yield* emit(id, "workspace.deleted", { id, branch: ws.branch }) // branch 保留，事件记下名字便于追溯
+      })
+
+    return { create, retry, archive, unarchive, delete: del }
   }),
 )
