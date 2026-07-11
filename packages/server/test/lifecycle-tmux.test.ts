@@ -122,6 +122,28 @@ describe("lifecycle × tmux × engine bootstrap", () => {
     expect(sessions.filter((s) => s === sessionNameFor(row.id))).toEqual([])
   })
 
+  it("bootstrap 中途失败（session/tab 已建，投递 prompt 时死 pane）→ tapError 拆干净 + lifecycle 回滚", async () => {
+    // launchCommand 跑一个立即退出的 command：pane 死 → session（唯一 window）随之消失，
+    // deliverPrompt 里 waitStable 的 capturePane 会因 session 不存在直接报 TmuxError，
+    // 从而在 tabs.insert 之后触发失败，练到 bootstrap.ts 的 tapError 清理路径（不是空 registry 那条早退路径）。
+    const deadPaneClaude: Engine = { ...fakeClaude, launchCommand: () => ["sh", "-c", "exit 0"] }
+    const layer = buildLayer([deadPaneClaude])
+    const exit = await Effect.runPromiseExit(Effect.provide(Effect.gen(function* () {
+      const projects = yield* ProjectsRepo
+      const lc = yield* WorkspaceLifecycle
+      const list = yield* projects.list()
+      return yield* lc.create({ projectId: list[0]!.id, name: "dead-pane", initialPrompt: "will never land" })
+    }), layer) as Effect.Effect<any, any, never>)
+
+    expect(Exit.isFailure(exit)).toBe(true)
+    const row = db.prepare("SELECT * FROM workspaces WHERE name = 'dead-pane'").get() as any
+    expect(row.status).toBe("error")
+    expect(db.prepare("SELECT COUNT(*) c FROM tabs WHERE workspace_id = ?").get(row.id)).toEqual({ c: 0 })
+    const sessions = await Effect.runPromise(tmux.listSessions())
+    expect(sessions.filter((s) => s === sessionNameFor(row.id))).toEqual([])
+    expect(fs.existsSync(row.path)).toBe(false)
+  })
+
   it("delete 拆 session + tabs + 记录", async () => {
     const layer = buildLayer([fakeClaude])
     const ws = await Effect.runPromise(Effect.provide(Effect.gen(function* () {
