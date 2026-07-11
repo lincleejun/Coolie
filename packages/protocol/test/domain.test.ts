@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest"
-import { decodeProject, decodeCoolieEvent, ApiErrorBody, ROUTES, decodeWorkspace } from "@coolie/protocol"
+import { decodeProject, decodeCoolieEvent, ApiErrorBody, ROUTES, decodeWorkspace, decodeTab, tmuxSessionName } from "@coolie/protocol"
 import { Schema } from "effect"
 
 describe("protocol domain", () => {
@@ -56,5 +56,30 @@ describe("protocol domain", () => {
       "POST /workspaces/:id/retry", "DELETE /workspaces/:id",
       "GET /events/stream",
     ]) expect(paths).toContain(p)
+  })
+  it("round-trips a Tab", () => {
+    const raw = {
+      id: "t1", workspaceId: "w1", kind: "engine", engineId: "claude",
+      engineSessionId: "3f0e8f7a-0000-4000-8000-000000000001", tmuxWindow: 0,
+      title: null, status: "working", lastHookAt: null,
+    }
+    const t = decodeTab(raw)
+    expect(t.kind).toBe("engine")
+    expect(t.status).toBe("working")
+    expect(t.tmuxWindow).toBe(0)
+  })
+  it("rejects a bad tab status", () => {
+    expect(() => decodeTab({
+      id: "t1", workspaceId: "w1", kind: "engine", engineId: null,
+      engineSessionId: null, tmuxWindow: null, title: null, status: "busy", lastHookAt: null,
+    })).toThrow()
+  })
+  it("tmuxSessionName is the single naming source", () => {
+    expect(tmuxSessionName("01ABC")).toBe("coolie-01ABC")
+  })
+  it("ROUTES contains tabs/hooks/ws-terminal routes", () => {
+    const paths = ROUTES.map(r => `${r.method} ${r.path}`)
+    for (const p of ["GET /workspaces/:id/tabs", "POST /hooks/claude", "GET /ws/terminal"])
+      expect(paths).toContain(p)
   })
 })
