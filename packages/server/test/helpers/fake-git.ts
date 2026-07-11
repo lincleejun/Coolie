@@ -66,6 +66,8 @@ export const makeFakeGit = (init?: {
     },
     worktreeAddExisting: (repoRoot, p, branch) => {
       rec("worktreeAddExisting", repoRoot, p, branch)
+      // 真实 git 对已注册路径拒绝 add（"already exists"）——不这样做会掩盖 unarchive 的半成品重试 bug
+      if (state.worktrees.has(p)) return Effect.fail(gitErr("worktree add", `'${p}' already exists`))
       return guard("worktreeAddExisting", () => { state.worktrees.set(p, branch) })
     },
     worktreeRemove: (repoRoot, p, opts) => {

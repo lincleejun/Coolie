@@ -187,19 +187,25 @@ export const WorkspaceLifecycleLive = Layer.effect(
         const project = yield* projects.get(ws.projectId)
         if (!(yield* git.refExists(project.repoRoot, `refs/heads/${ws.branch}`)))
           return yield* new ConflictError({ message: `branch ${ws.branch} 已不存在，无法恢复` })
-        // 与 provision 同款：fs 步骤走 typed error，失败留在可恢复的 archived 态而非 defect
-        yield* Effect.try({
-          try: () => fs.mkdirSync(path.dirname(ws.path), { recursive: true }),
-          catch: (e) => new GitError({ op: "mkdir", message: `创建 worktree 父目录失败：${String(e)}`, exitCode: null, stderr: "" }),
-        })
-        yield* git.worktreePrune(project.repoRoot)
-        yield* git.worktreeAddExisting(project.repoRoot, ws.path, ws.branch).pipe(
-          // 失败清半成品（同回滚纪律），状态留 archived 可再试
-          Effect.tapError(() => Effect.all([
-            git.worktreeRemove(project.repoRoot, ws.path, { force: true }).pipe(Effect.ignore),
-            git.worktreePrune(project.repoRoot).pipe(Effect.ignore),
-          ])),
-        )
+        // resume path for partial unarchive：worktree 若已在（上次 worktreeAddExisting 成功但紧接着的
+        // setStatus("active") 崩溃/DB 错误导致 row 卡在 archived），跳过 mkdir/prune/add，直接前进到 active——
+        // 否则重试会再调一次 worktreeAddExisting，真实 git 因路径已注册而报 already exists，永久卡死。
+        // 与 removeWorktreeGuarded 对称的存在性检查（同以 worktreeList 为真源）。
+        if (!(yield* worktreePresent(project.repoRoot, ws.path))) {
+          // 与 provision 同款：fs 步骤走 typed error，失败留在可恢复的 archived 态而非 defect
+          yield* Effect.try({
+            try: () => fs.mkdirSync(path.dirname(ws.path), { recursive: true }),
+            catch: (e) => new GitError({ op: "mkdir", message: `创建 worktree 父目录失败：${String(e)}`, exitCode: null, stderr: "" }),
+          })
+          yield* git.worktreePrune(project.repoRoot)
+          yield* git.worktreeAddExisting(project.repoRoot, ws.path, ws.branch).pipe(
+            // 失败清半成品（同回滚纪律），状态留 archived 可再试
+            Effect.tapError(() => Effect.all([
+              git.worktreeRemove(project.repoRoot, ws.path, { force: true }).pipe(Effect.ignore),
+              git.worktreePrune(project.repoRoot).pipe(Effect.ignore),
+            ])),
+          )
+        }
         const out = yield* repo.setStatus(id, "active")
         yield* emit(id, "workspace.unarchived", { id })
         return out

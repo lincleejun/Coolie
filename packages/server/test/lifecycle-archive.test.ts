@@ -137,6 +137,25 @@ describe("unarchive", () => {
     const still = await ok(env, Effect.gen(function* () { return yield* (yield* WorkspacesRepo).get(ws.id) }))
     expect(still.status).toBe("archived")
   })
+  it("resumable after partial failure: worktree already present is not re-added", async () => {
+    const env = makeEnv()
+    const ws = await setupActive(env)
+    await ok(env, Effect.gen(function* () { return yield* (yield* WorkspaceLifecycle).archive(ws.id) }))
+    // 模拟卡住的半成品：上次 unarchive 里 worktreeAddExisting 已经成功落盘，
+    // 但紧接着的 setStatus("active") 崩溃/DB 错误——row 仍是 archived，worktree 却已经在。
+    // 直接把 worktree 注册回 fake 的状态里，模拟这个既成事实（与其它用例直接摆弄 state 的写法一致）。
+    env.fake.state.worktrees.set(ws.path, ws.branch)
+    const callsBefore = env.fake.state.calls.length
+    const out = await ok(env, Effect.gen(function* () {
+      return yield* (yield* WorkspaceLifecycle).unarchive(ws.id)
+    }))
+    expect(out.status).toBe("active")
+    expect(out.archivedAt).toBeNull()
+    // resume path：不应再调用 worktreeAddExisting（真实 git 会报 already exists，把已经恢复好的 worktree 又删掉）
+    expect(env.fake.state.calls.slice(callsBefore).some((c) => c[0] === "worktreeAddExisting")).toBe(false)
+    expect(env.fake.state.worktrees.get(ws.path)).toBe("coolie/work")
+    expect(await eventTypes(env)).toContain("workspace.unarchived")
+  })
   it("non-archived workspace cannot be unarchived", async () => {
     const env = makeEnv()
     const ws = await setupActive(env)
