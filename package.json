@@ -13,5 +13,6 @@
     "vitest": "^3.0.0",
     "tsx": "^4.19.0",
     "@types/node": "^22.0.0"
-  }
+  },
+  "trustedDependencies": ["node-pty", "better-sqlite3"]
 }
