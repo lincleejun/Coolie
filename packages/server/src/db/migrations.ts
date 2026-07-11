@@ -26,6 +26,17 @@ const MIGRATIONS: Migration[] = [
       `)
     },
   },
+  {
+    id: "m0002-workspace-indexes",
+    up: (db) => {
+      db.exec(`
+        CREATE UNIQUE INDEX idx_workspaces_project_name   ON workspaces(project_id, name);
+        CREATE UNIQUE INDEX idx_workspaces_project_branch ON workspaces(project_id, branch);
+        CREATE UNIQUE INDEX idx_workspaces_path           ON workspaces(path);
+        CREATE INDEX idx_events_workspace_seq             ON events(workspace_id, seq);
+      `)
+    },
+  },
 ]
 
 export const runMigrations = (db: Database.Database): void => {

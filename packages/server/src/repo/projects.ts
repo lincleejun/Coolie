@@ -1,13 +1,11 @@
-import { Context, Data, Effect, Layer } from "effect"
+import { Context, Effect, Layer } from "effect"
 import * as fs from "node:fs"
 import * as path from "node:path"
 import { ulid } from "ulid"
 import { Project } from "@coolie/protocol"
 import { Db } from "../db/sqlite.js"
-
-export class ValidationError extends Data.TaggedError("ValidationError")<{ message: string }> {}
-export class ConflictError extends Data.TaggedError("ConflictError")<{ message: string }> {}
-export class NotFoundError extends Data.TaggedError("NotFoundError")<{ message: string }> {}
+import { ValidationError, ConflictError, NotFoundError } from "./errors.js"
+export { ValidationError, ConflictError, NotFoundError } from "./errors.js"
 
 const rowToProject = (r: any): Project =>
   new Project({ id: r.id, name: r.name, repoRoot: r.repo_root, defaultBaseBranch: r.default_base_branch, createdAt: r.created_at })
@@ -22,6 +20,7 @@ const detectDefaultBranch = (repoRoot: string): string => {
 
 export interface ProjectsRepoShape {
   readonly add: (repoRoot: string) => Effect.Effect<Project, ValidationError | ConflictError>
+  readonly get: (id: string) => Effect.Effect<Project, NotFoundError>
   readonly list: () => Effect.Effect<Project[]>
   readonly remove: (id: string) => Effect.Effect<void, NotFoundError>
 }
@@ -45,6 +44,11 @@ export const ProjectsRepoLive = Layer.effect(
         db.prepare("INSERT INTO projects (id, name, repo_root, default_base_branch, created_at) VALUES (?,?,?,?,?)")
           .run(p.id, p.name, p.repoRoot, p.defaultBaseBranch, p.createdAt)
         return p
+      }),
+      get: (id) => Effect.gen(function* () {
+        const r = db.prepare("SELECT * FROM projects WHERE id = ?").get(id)
+        if (!r) return yield* new NotFoundError({ message: `项目不存在：${id}` })
+        return rowToProject(r)
       }),
       list: () => Effect.sync(() =>
         db.prepare("SELECT * FROM projects ORDER BY created_at").all().map(rowToProject)),

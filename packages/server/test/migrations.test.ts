@@ -16,6 +16,6 @@ describe("migrations", () => {
     const db = new Database(":memory:")
     runMigrations(db)
     expect(() => runMigrations(db)).not.toThrow()
-    expect(db.prepare("SELECT COUNT(*) c FROM schema_migrations").get()).toEqual({ c: 1 })
+    expect(db.prepare("SELECT COUNT(*) c FROM schema_migrations").get()).toEqual({ c: 2 })
   })
 })
