@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeAll, afterAll } from "vitest"
 import * as fs from "node:fs"; import * as os from "node:os"; import * as path from "node:path"
 import { execFileSync } from "node:child_process"
+import Database from "better-sqlite3"
 import { Effect, Layer, Exit, Cause, Option } from "effect"
 import { CoolieConfigLive } from "../src/config.js"
 import { DbLive } from "../src/db/sqlite.js"
@@ -17,7 +18,7 @@ const sh = (cwd: string, cmd: string, ...args: string[]): string =>
   execFileSync(cmd, args, { cwd, encoding: "utf8" })
 const mkdir = (prefix: string) => fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), prefix)))
 
-let home: string, wsRoot: string, upstream: string, repoRoot: string
+let home: string, wsRoot: string, upstream: string, parent: string, repoRoot: string
 let projectId: string
 let ws1: any, ws2: any
 
@@ -63,7 +64,7 @@ beforeAll(() => {
   sh(upstream, "git", "add", "-A")
   sh(upstream, "git", "commit", "-m", "init")
   // 用户主 checkout = clone（自动有 origin/main）
-  const parent = mkdir("coolie-int-parent-")
+  parent = mkdir("coolie-int-parent-")
   repoRoot = path.join(parent, "repo")
   execFileSync("git", ["clone", upstream, repoRoot], { encoding: "utf8" })
   sh(repoRoot, "git", "config", "user.email", "t@t")
@@ -73,6 +74,12 @@ beforeAll(() => {
 afterAll(() => {
   delete process.env.COOLIE_HOME
   delete process.env.COOLIE_WORKSPACES_ROOT
+  // Best-effort cleanup of mkdtemp directories
+  for (const dir of [home, wsRoot, upstream, parent]) {
+    try {
+      fs.rmSync(dir, { recursive: true, force: true })
+    } catch { /* ignore */ }
+  }
 })
 
 describe("integration: workspace lifecycle against a real git repo", () => {
@@ -115,6 +122,18 @@ describe("integration: workspace lifecycle against a real git repo", () => {
     // branch 保留且仍指向 baseRef（纪律 + retry 复用前提）
     expect(sh(repoRoot, "git", "rev-parse", "refs/heads/coolie/will-fail").trim())
       .toBe(sh(repoRoot, "git", "rev-parse", "origin/main").trim())
+    // Verify lastError persistence in the DB
+    const db = new Database(path.join(home, "coolie.db"), { readonly: true })
+    try {
+      const row = db.prepare("SELECT data FROM workspaces WHERE id = ?").get(ws2.id) as { data: string } | undefined
+      expect(row).toBeDefined()
+      const data = JSON.parse(row!.data)
+      expect(data.lastError).toBeDefined()
+      expect(data.lastError.tag).toBe("SetupScriptError")
+      expect(typeof data.lastError.at).toBe("number")
+    } finally {
+      db.close()
+    }
     fs.rmSync(path.join(overlay, "setup.sh"))
     ws2 = await ok(lc((l) => l.retry(ws2.id)))
     expect(ws2.status).toBe("active")
