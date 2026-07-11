@@ -6,7 +6,14 @@ import * as path from "node:path"
  * info/exclude 属 common git dir，所有 worktree 共享——注一次全体生效，且零仓库污染（Conductor 手法）。
  */
 export const injectInfoExclude = (repoRoot: string, entry = ".coolie/"): void => {
-  const p = path.join(repoRoot, ".git", "info", "exclude")
+  // Resolve real git dir (worktrees have .git as a FILE pointing to worktrees/<name>)
+  let gitDir = path.join(repoRoot, ".git")
+  const st = fs.statSync(gitDir, { throwIfNoEntry: false })
+  if (st?.isFile()) {
+    const m = fs.readFileSync(gitDir, "utf8").match(/^gitdir:\s*(.+)\s*$/m)
+    if (m) gitDir = path.resolve(repoRoot, m[1]!)
+  }
+  const p = path.join(gitDir, "info", "exclude")
   fs.mkdirSync(path.dirname(p), { recursive: true })
   const cur = fs.existsSync(p) ? fs.readFileSync(p, "utf8") : ""
   if (cur.split("\n").some((l) => l.trim() === entry)) return
@@ -34,9 +41,11 @@ export const copyIncludedFiles = (
 ): string[] => {
   const copied: string[] = []
   for (const rel of relFiles) {
-    const src = path.join(repoRoot, rel)
+    const src = path.resolve(repoRoot, rel)
+    const dst = path.resolve(worktreePath, rel)
+    // Containment guard: skip if src escapes repoRoot or dst escapes worktreePath
+    if (!src.startsWith(repoRoot + path.sep) || !dst.startsWith(worktreePath + path.sep)) continue
     if (!fs.existsSync(src) || !fs.statSync(src).isFile()) continue
-    const dst = path.join(worktreePath, rel)
     fs.mkdirSync(path.dirname(dst), { recursive: true })
     fs.copyFileSync(src, dst)
     copied.push(rel)

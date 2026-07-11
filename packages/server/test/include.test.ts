@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest"
 import * as fs from "node:fs"; import * as os from "node:os"; import * as path from "node:path"
+import { execSync } from "node:child_process"
 import {
   injectInfoExclude, readWorktreeIncludePatterns, copyIncludedFiles, DEFAULT_INCLUDE_PATTERNS,
 } from "../src/workspace/include.js"
@@ -22,6 +23,30 @@ describe("injectInfoExclude", () => {
     injectInfoExclude(repo)
     const text = fs.readFileSync(path.join(repo, ".git", "info", "exclude"), "utf8")
     expect(text).toContain("node_modules/")
+    expect(text).toContain(".coolie/")
+  })
+  it("resolves real worktree gitdir (git worktree add scenario)", () => {
+    const repo = mkdir("coolie-inc-wt-repo-")
+    const wt = mkdir("coolie-inc-wt-")
+    // Initialize as a real git repo
+    execSync("git init", { cwd: repo, stdio: "ignore" })
+    execSync("git config user.email test@test.com && git config user.name Test", { cwd: repo, stdio: "ignore" })
+    // Create initial commit
+    fs.writeFileSync(path.join(repo, "README.md"), "test\n")
+    execSync("git add README.md && git commit -m initial", { cwd: repo, stdio: "ignore" })
+    // Create a real worktree
+    execSync(`git worktree add ${wt} -b wt-branch`, { cwd: repo, stdio: "ignore" })
+    // Call injectInfoExclude on the worktree path (has .git FILE, not dir)
+    injectInfoExclude(wt)
+    // Verify exclude entry was written to the worktree's gitdir (resolves .git file)
+    // Read the .git file to find the actual gitdir
+    const gitFileContent = fs.readFileSync(path.join(wt, ".git"), "utf8")
+    const m = gitFileContent.match(/^gitdir:\s*(.+)\s*$/m)
+    expect(m).toBeTruthy()
+    const actualGitDir = path.resolve(wt, m![1]!)
+    const excludePath = path.join(actualGitDir, "info", "exclude")
+    expect(fs.existsSync(excludePath)).toBe(true)
+    const text = fs.readFileSync(excludePath, "utf8")
     expect(text).toContain(".coolie/")
   })
 })
@@ -47,5 +72,21 @@ describe("copyIncludedFiles", () => {
     expect(copied).toEqual([".env", "config/.env.local"])
     expect(fs.readFileSync(path.join(wt, ".env"), "utf8")).toBe("A=1\n")
     expect(fs.readFileSync(path.join(wt, "config", ".env.local"), "utf8")).toBe("B=2\n")
+  })
+  it("rejects escape paths (../ traversal)", () => {
+    const repo = mkdir("coolie-inc-escape-repo-")
+    const wt = mkdir("coolie-inc-escape-wt-")
+    const outside = mkdir("coolie-inc-escape-outside-")
+    // Create a file outside the repo that could be accessed via ../
+    fs.writeFileSync(path.join(outside, "escape.txt"), "escaped content\n")
+    // Arrange relative path that points to ../escape.txt
+    const relEscape = path.relative(repo, path.join(outside, "escape.txt"))
+    // Call copyIncludedFiles with the escape path
+    const copied = copyIncludedFiles(repo, wt, [relEscape])
+    // Verify nothing was copied and return list is empty
+    expect(copied).toEqual([])
+    // Verify the worktree is still empty (no files copied)
+    const wtFiles = fs.readdirSync(wt)
+    expect(wtFiles).toEqual([])
   })
 })
