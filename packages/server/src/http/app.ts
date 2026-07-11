@@ -1,5 +1,6 @@
 import type { IncomingMessage, ServerResponse } from "node:http"
 import type { EventEmitter } from "node:events"
+import * as fs from "node:fs"
 import * as path from "node:path"
 import { Effect, Exit, Cause, Option } from "effect"
 import type { ApiErrorBody } from "@coolie/protocol"
@@ -7,6 +8,8 @@ import { ProjectsRepo } from "../repo/projects.js"
 import { EventsRepo } from "../repo/events.js"
 import { WorkspacesRepo } from "../repo/workspaces.js"
 import { WorkspaceLifecycle } from "../workspace/lifecycle.js"
+import { TabsRepo } from "../repo/tabs.js"
+import { EngineRegistry } from "../engine/registry.js"
 import { tokenEquals } from "./token.js"
 import { handleEventsStream } from "./sse.js"
 export { newToken } from "./token.js"
@@ -17,7 +20,7 @@ export { newToken } from "./token.js"
 // on it is not a reliable way to recover the original TaggedError. Running via
 // `Effect.runPromiseExit` and unwrapping with `Exit.match` + `Cause.failureOption`
 // (mirrors the pattern already used in test/projects-repo.test.ts) is robust.
-export type AppServices = ProjectsRepo | EventsRepo | WorkspacesRepo | WorkspaceLifecycle
+export type AppServices = ProjectsRepo | EventsRepo | WorkspacesRepo | WorkspaceLifecycle | TabsRepo | EngineRegistry
 export type Runtime = <A, E>(eff: Effect.Effect<A, E, AppServices>) => Promise<Exit.Exit<A, E>>
 export interface AppDeps {
   readonly runtime: Runtime
@@ -29,6 +32,8 @@ export interface AppDeps {
   readonly bus?: EventEmitter
   /** SSE 心跳间隔（测试注入用），默认 15s */
   readonly sseHeartbeatMs?: number
+  /** claude 转录根（标题派生用）；缺省跳过标题派生 */
+  readonly claudeHome?: string
 }
 
 const send = (res: ServerResponse, status: number, body?: unknown) => {
@@ -74,6 +79,8 @@ const errorFromCause = (
     if (e._tag === "GitError") return { status: 500, body: { code: "GitError", message } }
     if (e._tag === "SetupScriptError") return { status: 500, body: { code: "SetupScriptError", message } }
     if (e._tag === "HookError") return { status: 500, body: { code: "Internal", message } }
+    if (e._tag === "TmuxError") return { status: 500, body: { code: "TmuxError", message } }
+    if (e._tag === "EngineError") return { status: 500, body: { code: "EngineError", message } }
     return { status: 500, body: { code: "Internal", message } }
   }
   // defect / interruption: no typed failure to recover, fall back to a pretty cause dump
@@ -128,7 +135,7 @@ const emitThenRespond = async (
   })
 }
 
-export const createApp = ({ runtime, token, onShutdown, onError, bus, sseHeartbeatMs }: AppDeps) =>
+export const createApp = ({ runtime, token, onShutdown, onError, bus, sseHeartbeatMs, claudeHome }: AppDeps) =>
   (req: IncomingMessage, res: ServerResponse): void => {
     void (async () => {
       const url = new URL(req.url ?? "/", "http://local")
@@ -154,6 +161,55 @@ export const createApp = ({ runtime, token, onShutdown, onError, bus, sseHeartbe
           return await handleEventsStream(req, res,
             { runtime, bus, ...(sseHeartbeatMs !== undefined ? { heartbeatMs: sseHeartbeatMs } : {}) },
             { after, ...(ws ? { workspaceId: ws } : {}) })
+        }
+        if (route === "POST /hooks/claude") {
+          const wsId = url.searchParams.get("workspace")
+          if (!wsId) return err(res, 400, "Validation", "workspace query param required")
+          const body = await readJson(req)
+          return await runRoute(
+            res, runtime,
+            Effect.gen(function* () {
+              const tabs = yield* TabsRepo
+              const registry = yield* EngineRegistry
+              const engine = registry.get("claude")
+              const tab = engine ? yield* tabs.findEngineTab(wsId) : null
+              if (!engine || !tab) return { ok: true } // hook 永远成功：无 tab（已归档/删除）静默吞掉
+              yield* tabs.touchHookAt(tab.id, Date.now())
+              const status = engine.statusFromHookEvent(body)
+              if (status !== null) yield* tabs.setStatus(tab.id, status, "hook")
+              const evtName = (body as any)?.hook_event_name
+              const evType =
+                evtName === "UserPromptSubmit" ? "engine.turn.started"
+                : evtName === "Stop" ? "engine.turn.finished"
+                : evtName === "Notification" ? "engine.notification"
+                : evtName === "SessionEnd" ? "engine.session.ended" : null
+              if (evType !== null)
+                yield* (yield* EventsRepo).append({ workspaceId: wsId, type: evType, payload: { tabId: tab.id, sessionId: tab.engineSessionId } })
+              // historyReader 兜底：首个 turn 完成且尚无标题 → 从转录派生
+              if (evtName === "Stop" && tab.title === null && tab.engineSessionId !== null && claudeHome !== undefined) {
+                const ws = yield* (yield* WorkspacesRepo).get(wsId).pipe(Effect.option)
+                if (Option.isSome(ws)) {
+                  const tp = engine.transcriptPath({ home: claudeHome, cwd: ws.value.path, sessionId: tab.engineSessionId })
+                  const title = yield* Effect.sync(() => {
+                    try { return engine.deriveTitle(fs.readFileSync(tp, "utf8")) } catch { return null }
+                  })
+                  if (title !== null) yield* tabs.setTitle(tab.id, title)
+                }
+              }
+              return { ok: true }
+            }),
+            (r) => send(res, 200, r),
+            onError,
+          )
+        }
+        const tabsList = url.pathname.match(/^\/workspaces\/([^/]+)\/tabs$/)
+        if (req.method === "GET" && tabsList) {
+          return await runRoute(
+            res, runtime,
+            Effect.gen(function* () { return yield* (yield* TabsRepo).listByWorkspace(tabsList[1]!) }),
+            (list) => send(res, 200, list),
+            onError,
+          )
         }
         if (route === "GET /events") {
           const after = Number(url.searchParams.get("after") ?? "0")
