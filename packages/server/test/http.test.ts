@@ -57,6 +57,15 @@ describe("http app", () => {
     expect(r.status).toBe(400)
     expect((await r.json()).code).toBe("Validation")
   })
+  it("relative repoRoot -> 400 Validation (must not be resolved against the server's cwd)", async () => {
+    // "." resolves (via path.resolve in the daemon process) to this repo's own
+    // root, which genuinely has a .git — so pre-fix this silently succeeds and
+    // registers the wrong project. Any non-absolute repoRoot must be rejected
+    // before it ever reaches ProjectsRepo.add.
+    const r = await req("/projects", { method: "POST", body: JSON.stringify({ repoRoot: "." }) })
+    expect(r.status).toBe(400)
+    expect((await r.json()).code).toBe("Validation")
+  })
   it("shutdown calls hook", async () => {
     expect((await req("/shutdown", { method: "POST" })).status).toBe(202)
     expect(shutdownCalled).toBe(true)

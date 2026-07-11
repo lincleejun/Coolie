@@ -1,4 +1,5 @@
 import type { IncomingMessage, ServerResponse } from "node:http"
+import * as path from "node:path"
 import { Effect, Exit, Cause, Option } from "effect"
 import type { ApiErrorBody } from "@coolie/protocol"
 import { ProjectsRepo } from "../repo/projects.js"
@@ -157,6 +158,10 @@ export const createApp = ({ runtime, token, onShutdown, onError }: AppDeps) =>
         if (route === "POST /projects") {
           const body = await readJson(req)
           if (typeof body.repoRoot !== "string") return err(res, 400, "Validation", "repoRoot required")
+          // Never resolve a relative path against this process's own cwd (an
+          // accident of wherever the daemon happened to be auto-spawned from)
+          // — the client is responsible for sending an already-resolved path.
+          if (!path.isAbsolute(body.repoRoot)) return err(res, 400, "Validation", "repoRoot must be absolute")
           return await runRoute(
             res, runtime,
             Effect.gen(function* () { return yield* (yield* ProjectsRepo).add(body.repoRoot) }),

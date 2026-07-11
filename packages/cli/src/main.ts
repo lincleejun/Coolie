@@ -2,7 +2,7 @@
 import { Command } from "commander"
 import { ROUTES } from "@coolie/protocol"
 import { readServerInfo, probeAlive } from "@coolie/server"
-import * as os from "node:os"; import * as path from "node:path"
+import * as path from "node:path"
 import * as fs from "node:fs"
 import { spawnSync } from "node:child_process"
 import Database from "better-sqlite3"
@@ -14,7 +14,10 @@ const fail = (e: unknown): never => { console.error(String(e instanceof Error ? 
 
 const project = program.command("project")
 project.command("add <path>").action(async (p) => {
-  try { const proj = await api("POST", "/projects", { repoRoot: p }); console.log(`added ${proj.name} (${proj.id})`) }
+  // Resolve client-side, against the CLI invocation's own cwd — never send a
+  // relative path to the daemon, whose cwd is wherever it was first
+  // auto-spawned from (not necessarily where `coolie project add .` was run).
+  try { const proj = await api("POST", "/projects", { repoRoot: path.resolve(p) }); console.log(`added ${proj.name} (${proj.id})`) }
   catch (e) { fail(e) }
 })
 project.command("list").action(async () => {
@@ -27,7 +30,7 @@ project.command("remove <id>").action(async (id) => {
 
 const server = program.command("server")
 server.command("status").action(async () => {
-  const info = readServerInfo(path.join(process.env.COOLIE_HOME ?? path.join(os.homedir(), ".coolie"), "server.json"))
+  const info = readServerInfo(path.join(home(), "server.json"))
   if (info && (await probeAlive(info))) { console.log(`running pid=${info.pid} port=${info.port}`) }
   else { console.log("stopped"); process.exit(1) }
 })

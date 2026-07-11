@@ -23,6 +23,20 @@ describe("coolie CLI e2e", () => {
     expect(coolie("project", "list")).toContain(repo)
     expect(coolie("server", "status")).toContain("running")
   })
+  it("project add with a relative path resolves against the CLI's cwd, not the daemon's", () => {
+    // The daemon backing `home` is already running (spawned by the previous
+    // test) with its own cwd — wherever it was first auto-spawned from (the
+    // test runner's cwd, i.e. this repo's root), which is NOT `parent` below.
+    // A relative `project add` path must resolve against the CLI invocation's
+    // cwd, never the daemon's — otherwise `add .` silently registers the
+    // wrong repository (finding: repoRoot resolved server-side).
+    const parent = fs.mkdtempSync(path.join(os.tmpdir(), "coolie-cli-relparent-"))
+    const relRepo = fs.mkdtempSync(path.join(parent, "coolie-rel-repo-"))
+    execFileSync("git", ["init", "-b", "main"], { cwd: relRepo })
+    const base = path.basename(relRepo)
+    execFileSync(TSX, [CLI, "project", "add", base], { cwd: parent, env: { ...process.env, COOLIE_HOME: home }, encoding: "utf8" })
+    expect(coolie("project", "list")).toContain(relRepo)
+  })
   it("api schema prints the route table", () => {
     const out = coolie("api", "schema")
     expect(out).toContain("GET /health")
