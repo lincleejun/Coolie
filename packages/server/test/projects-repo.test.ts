@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach } from "vitest"
-import { Effect, Layer, Exit } from "effect"
+import { Effect, Layer, Exit, Cause, Option } from "effect"
 import Database from "better-sqlite3"
 import * as fs from "node:fs"
 import * as os from "node:os"
@@ -20,6 +20,12 @@ const layer = () => ProjectsRepoLive.pipe(Layer.provide(Layer.succeed(Db, memDb(
 const run = <A, E>(eff: Effect.Effect<A, E, ProjectsRepo>) =>
   Effect.runPromiseExit(eff.pipe(Effect.provide(layer())))
 
+const failureTag = (exit: Exit.Exit<unknown, unknown>): string | undefined => {
+  if (Exit.isSuccess(exit)) return undefined
+  const failure = Cause.failureOption(exit.cause)
+  return Option.isSome(failure) ? (failure.value as { _tag?: string })._tag : undefined
+}
+
 describe("ProjectsRepo", () => {
   it("adds and lists a project", async () => {
     const exit = await run(Effect.gen(function* () {
@@ -39,5 +45,33 @@ describe("ProjectsRepo", () => {
       return yield* repo.add(dir)
     }))
     expect(Exit.isFailure(exit)).toBe(true)
+    expect(failureTag(exit)).toBe("ValidationError")
+  })
+  it("rejects adding the same repoRoot twice with ConflictError", async () => {
+    const exit = await run(Effect.gen(function* () {
+      const repo = yield* ProjectsRepo
+      yield* repo.add(repoRoot)
+      return yield* repo.add(repoRoot)
+    }))
+    expect(Exit.isFailure(exit)).toBe(true)
+    expect(failureTag(exit)).toBe("ConflictError")
+  })
+  it("removes a project", async () => {
+    const exit = await run(Effect.gen(function* () {
+      const repo = yield* ProjectsRepo
+      const p = yield* repo.add(repoRoot)
+      yield* repo.remove(p.id)
+      return yield* repo.list()
+    }))
+    expect(Exit.isSuccess(exit)).toBe(true)
+    if (Exit.isSuccess(exit)) expect(exit.value).toHaveLength(0)
+  })
+  it("fails to remove a nonexistent project with NotFoundError", async () => {
+    const exit = await run(Effect.gen(function* () {
+      const repo = yield* ProjectsRepo
+      return yield* repo.remove("nonexistent")
+    }))
+    expect(Exit.isFailure(exit)).toBe(true)
+    expect(failureTag(exit)).toBe("NotFoundError")
   })
 })
