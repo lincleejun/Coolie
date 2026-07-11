@@ -156,6 +156,33 @@ describe("WorkspaceLifecycle.create", () => {
     // branch 已存在且指向 baseRef → 复用而非 -b 新建
     expect(env.fake.state.calls.some((c) => c[0] === "worktreeAddExisting" && c[3] === "coolie/retry-me")).toBe(true)
   })
+  it("retry survives the base branch advancing: untouched branch is reused at its own tip, not the new base", async () => {
+    const env = makeEnv()
+    const p = await ok(env, addProject(env.repoRoot))
+    fs.mkdirSync(path.join(env.repoRoot, ".coolie"), { recursive: true })
+    fs.writeFileSync(path.join(env.repoRoot, ".coolie", "setup.local.sh"), "#!/bin/bash\nexit 1\n")
+    env.setSetup(() => Effect.fail(new SetupScriptError({ script: "x", exitCode: 1, message: "boom", outputTail: "" })))
+    await env.run(Effect.gen(function* () {
+      return yield* (yield* WorkspaceLifecycle).create({ projectId: p.id, branchSlug: "base-advances" })
+    }))
+    const errored = (await ok(env, Effect.gen(function* () { return yield* (yield* WorkspacesRepo).list() })))
+      .find((w) => w.branch === "coolie/base-advances")!
+    expect(errored.status).toBe("error")
+    expect(errored.baseRef).toBe(FAKE_SHA) // 失败尝试记的旧 baseRef == branch 当前所在提交（未被动过）
+    // origin/main 在失败尝试之后前进（模拟远端合入了新提交），但 coolie/base-advances 分支未被动过
+    const ADVANCED_SHA = "b".repeat(40)
+    env.fake.state.refs.set("origin/main", ADVANCED_SHA)
+    env.setSetup(() => Effect.succeed([]))
+    const ws = await ok(env, Effect.gen(function* () {
+      return yield* (yield* WorkspaceLifecycle).retry(errored.id)
+    }))
+    expect(ws.status).toBe("active")
+    // diff base 记为 branch 实际所在的位置（旧 baseRef），而非已前进的 origin/main
+    expect(ws.baseRef).toBe(FAKE_SHA)
+    expect(env.fake.state.calls.some((c) => c[0] === "worktreeAddExisting" && c[3] === "coolie/base-advances")).toBe(true)
+    // branch 本身从未被删除/重置：仍指向失败尝试时的提交
+    expect(env.fake.state.refs.get("refs/heads/coolie/base-advances")).toBe(FAKE_SHA)
+  })
   it("retry on a non-error workspace -> ConflictError", async () => {
     const env = makeEnv()
     const p = await ok(env, addProject(env.repoRoot))
@@ -193,12 +220,22 @@ describe("WorkspaceLifecycle.create", () => {
   it("post-create hooks run before active; a failing hook rolls back", async () => {
     const env = makeEnv()
     const seen: string[] = []
-    env.hooks.push((ws) => Effect.sync(() => { seen.push(ws.id) }))
+    let capturedBaseRef: string | undefined
+    let capturedStatus: string | undefined
+    env.hooks.push((ws) => Effect.sync(() => {
+      seen.push(ws.id)
+      capturedBaseRef = ws.baseRef
+      capturedStatus = ws.status
+    }))
     const p = await ok(env, addProject(env.repoRoot))
     const ws = await ok(env, Effect.gen(function* () {
       return yield* (yield* WorkspaceLifecycle).create({ projectId: p.id })
     }))
     expect(seen).toEqual([ws.id])
+    // hook 必须收到 provision 里已写入真实 baseRef 之后的新鲜快照，而非 insertCreating 时 baseRef="" 的旧快照
+    expect(capturedBaseRef).toBe(FAKE_SHA)
+    expect(capturedBaseRef).not.toBe("")
+    expect(capturedStatus).toBe("creating")
     env.hooks.push(() => Effect.fail(new HookError({ message: "tmux exploded" })))
     const exit = await env.run(Effect.gen(function* () {
       return yield* (yield* WorkspaceLifecycle).create({ projectId: p.id })

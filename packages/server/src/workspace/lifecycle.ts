@@ -58,19 +58,32 @@ export const WorkspaceLifecycleLive = Layer.effect(
           ? `origin/${ws.baseBranch}`
           : ws.baseBranch
         const baseRef = yield* git.revParse(repoRoot, startPoint)
-        yield* repo.setBaseRef(ws.id, baseRef)
         // fs 步骤也走 typed error（GitError 的 op 标注来源）——否则 defect 会绕过 catchAll 回滚
         yield* Effect.try({
           try: () => fs.mkdirSync(path.dirname(ws.path), { recursive: true }),
           catch: (e) => new GitError({ op: "mkdir", message: `创建 worktree 父目录失败：${String(e)}`, exitCode: null, stderr: "" }),
         })
-        if (yield* git.refExists(repoRoot, `refs/heads/${ws.branch}`)) {
-          // branch 已存在（error 重试 / 删除后同 slug 重建）：只允许仍指向 baseRef 时复用——branch 永不删除的配套语义
+        const branchAlreadyExists = yield* git.refExists(repoRoot, `refs/heads/${ws.branch}`)
+        // diff 基点：默认是这次新鲜算出的 baseRef；仅当下面判定“branch 自失败尝试后未被动过”时才改记 branch 实际所在位置
+        let effectiveBaseRef = baseRef
+        if (branchAlreadyExists) {
+          // branch 已存在（error 重试 / 删除后同 slug 重建）：只允许下列两种情况之一才复用——branch 永不删除的配套语义
           const cur = yield* git.revParse(repoRoot, `refs/heads/${ws.branch}`)
-          if (cur !== baseRef)
-            return yield* new ConflictError({ message: `branch ${ws.branch} 已存在且有独立历史；换一个 --slug 或手动处理该 branch` })
+          if (cur !== baseRef) {
+            // base 前进了（origin/<base> 有新提交合入）。若 branch 自上次失败尝试起完全没被动过
+            // （仍指向那次写入 row 的旧 baseRef），说明它是安全可复用的半成品，不是真的独立历史——
+            // 在其当前位置继续，diff base 记为它实际所在的提交，而非已经前进的新 base。
+            // 首次创建 ws.baseRef 恒为 ""，故这条放宽路径在首次创建时永远不会触发。
+            if (ws.baseRef !== "" && cur === ws.baseRef) {
+              effectiveBaseRef = cur
+            } else {
+              return yield* new ConflictError({ message: `branch ${ws.branch} 已存在且有独立历史；换一个 --slug 或手动处理该 branch` })
+            }
+          }
+          yield* repo.setBaseRef(ws.id, effectiveBaseRef)
           yield* git.worktreeAddExisting(repoRoot, ws.path, ws.branch)
         } else {
+          yield* repo.setBaseRef(ws.id, effectiveBaseRef)
           yield* git.worktreeAdd(repoRoot, ws.path, ws.branch, startPoint)
         }
         yield* git.setBranchBase(repoRoot, ws.branch, startPoint)
@@ -94,7 +107,11 @@ export const WorkspaceLifecycleLive = Layer.effect(
           })
           for (const r of results) yield* emit(ws.id, "workspace.setup.finished", r)
         }
-        for (const hook of hooks) yield* hook(ws)
+        // hooks 必须看到 provision 内已写入 baseRef 之后的最新行——ws 参数是 create/retry 调用前的快照
+        // （create 上 baseRef=""，retry 上是上次失败尝试记的旧值），直接传它会让 hook 读到假 baseRef。
+        // create/retry 走的是同一条 provision 流水线，这一次重读对两条路径统一生效。
+        const fresh = yield* repo.get(ws.id)
+        for (const hook of hooks) yield* hook(fresh)
         const active = yield* repo.setStatus(ws.id, "active")
         yield* emit(ws.id, "workspace.created", { id: ws.id, branch: ws.branch, path: ws.path })
         return active
