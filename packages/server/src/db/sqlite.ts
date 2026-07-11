@@ -5,7 +5,8 @@ import * as path from "node:path"
 import { CoolieConfig } from "../config.js"
 import { runMigrations } from "./migrations.js"
 
-// Use interface to avoid exposing private members of the Database class
+// TS4020 workaround: Database.Database resolves to ambient BetterSqlite3 namespace (not exported),
+// which tsc cannot name in declaration emit. Interface alias makes it nameable.
 interface SqliteDatabase extends Database.Database {}
 
 export class Db extends Context.Tag("Db")<Db, SqliteDatabase>() {}
