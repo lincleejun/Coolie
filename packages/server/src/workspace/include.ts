@@ -10,9 +10,17 @@ export const injectInfoExclude = (repoRoot: string, entry = ".coolie/"): void =>
   let gitDir = path.join(repoRoot, ".git")
   const st = fs.statSync(gitDir, { throwIfNoEntry: false })
   if (st?.isFile()) {
-    const m = fs.readFileSync(gitDir, "utf8").match(/^gitdir:\s*(.+)\s*$/m)
+    const m = fs.readFileSync(gitDir, "utf8").match(/^gitdir:\s*(.+?)\s*$/m)
     if (m) gitDir = path.resolve(repoRoot, m[1]!)
   }
+
+  // Hop to commondir if present (worktree gitdirs have a commondir pointer)
+  const commonDirFile = path.join(gitDir, "commondir")
+  if (fs.existsSync(commonDirFile)) {
+    const commondirContent = fs.readFileSync(commonDirFile, "utf8").trim()
+    gitDir = path.resolve(gitDir, commondirContent)
+  }
+
   const p = path.join(gitDir, "info", "exclude")
   fs.mkdirSync(path.dirname(p), { recursive: true })
   const cur = fs.existsSync(p) ? fs.readFileSync(p, "utf8") : ""
@@ -40,11 +48,14 @@ export const copyIncludedFiles = (
   relFiles: readonly string[],
 ): string[] => {
   const copied: string[] = []
+  // Normalize bases to handle trailing separators
+  const normalizedRepoRoot = path.resolve(repoRoot)
+  const normalizedWorktreePath = path.resolve(worktreePath)
   for (const rel of relFiles) {
-    const src = path.resolve(repoRoot, rel)
-    const dst = path.resolve(worktreePath, rel)
+    const src = path.resolve(normalizedRepoRoot, rel)
+    const dst = path.resolve(normalizedWorktreePath, rel)
     // Containment guard: skip if src escapes repoRoot or dst escapes worktreePath
-    if (!src.startsWith(repoRoot + path.sep) || !dst.startsWith(worktreePath + path.sep)) continue
+    if (!src.startsWith(normalizedRepoRoot + path.sep) || !dst.startsWith(normalizedWorktreePath + path.sep)) continue
     if (!fs.existsSync(src) || !fs.statSync(src).isFile()) continue
     fs.mkdirSync(path.dirname(dst), { recursive: true })
     fs.copyFileSync(src, dst)

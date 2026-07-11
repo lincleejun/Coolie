@@ -38,16 +38,48 @@ describe("injectInfoExclude", () => {
     execSync(`git worktree add ${wt} -b wt-branch`, { cwd: repo, stdio: "ignore" })
     // Call injectInfoExclude on the worktree path (has .git FILE, not dir)
     injectInfoExclude(wt)
-    // Verify exclude entry was written to the worktree's gitdir (resolves .git file)
-    // Read the .git file to find the actual gitdir
+    // Verify git actually ignores .coolie/ from the worktree (RED test: this currently fails)
+    const checkIgnore = execSync("git check-ignore .coolie/", { cwd: wt, stdio: "pipe" }).toString()
+    expect(checkIgnore).toBeTruthy() // Should output the matched pattern
+    // Also verify from main repo that it's ignored
+    const checkIgnoreRepo = execSync("git check-ignore .coolie/", { cwd: repo, stdio: "pipe" }).toString()
+    expect(checkIgnoreRepo).toBeTruthy()
+  })
+
+  it("hops to commondir when present (worktree gitdir has commondir)", () => {
+    // This test verifies that when a worktree's gitdir points to .git/worktrees/<name>,
+    // and that directory has a commondir file, we read it and write exclude there
+    const repo = mkdir("coolie-inc-wt-repo2-")
+    const wt = mkdir("coolie-inc-wt2-")
+    // Initialize as a real git repo
+    execSync("git init", { cwd: repo, stdio: "ignore" })
+    execSync("git config user.email test@test.com && git config user.name Test", { cwd: repo, stdio: "ignore" })
+    // Create initial commit
+    fs.writeFileSync(path.join(repo, "README.md"), "test\n")
+    execSync("git add README.md && git commit -m initial", { cwd: repo, stdio: "ignore" })
+    // Create a real worktree
+    execSync(`git worktree add ${wt} -b wt-branch2`, { cwd: repo, stdio: "ignore" })
+    // Call injectInfoExclude on the worktree
+    injectInfoExclude(wt)
+    // Verify exclude was written to the common dir, not per-worktree dir
     const gitFileContent = fs.readFileSync(path.join(wt, ".git"), "utf8")
-    const m = gitFileContent.match(/^gitdir:\s*(.+)\s*$/m)
+    const m = gitFileContent.match(/^gitdir:\s*(.+?)\s*$/m)
     expect(m).toBeTruthy()
-    const actualGitDir = path.resolve(wt, m![1]!)
-    const excludePath = path.join(actualGitDir, "info", "exclude")
+    const perWorktreeGitDir = path.resolve(wt, m![1]!)
+    // Check that commondir file exists in per-worktree gitdir
+    const commonDirFile = path.join(perWorktreeGitDir, "commondir")
+    expect(fs.existsSync(commonDirFile)).toBe(true)
+    // Read commondir and resolve to actual common dir
+    const commonDirContent = fs.readFileSync(commonDirFile, "utf8").trim()
+    const actualCommonDir = path.resolve(perWorktreeGitDir, commonDirContent)
+    // Verify exclude was written to the common dir, not per-worktree dir
+    const excludePath = path.join(actualCommonDir, "info", "exclude")
     expect(fs.existsSync(excludePath)).toBe(true)
     const text = fs.readFileSync(excludePath, "utf8")
     expect(text).toContain(".coolie/")
+    // Verify per-worktree dir doesn't have the exclude file
+    const perWorktreeExcludePath = path.join(perWorktreeGitDir, "info", "exclude")
+    expect(fs.existsSync(perWorktreeExcludePath)).toBe(false)
   })
 })
 
