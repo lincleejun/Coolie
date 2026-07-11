@@ -60,8 +60,9 @@ const cmdStart = async (): Promise<void> => {
     await Effect.runPromise(Scope.close(scope, Exit.void))
     // fire-and-forget writes only land on disk once the pending promise chain
     // resolves — without this, process.exit(0) can kill the process before
-    // the "shutdown" line (or an earlier one) is actually appended.
-    await logger.flush()
+    // the "shutdown" line (or an earlier one) is actually appended. Bounded so
+    // a hung disk can't hang shutdown forever.
+    await Promise.race([logger.flush(), new Promise((r) => setTimeout(r, 2000))])
     process.exit(0)
   }
   const server = http.createServer(createApp({

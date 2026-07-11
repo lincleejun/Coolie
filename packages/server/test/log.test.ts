@@ -1,7 +1,7 @@
-import { describe, it, expect } from "vitest"
+import { describe, it, expect, vi } from "vitest"
 import * as fs from "node:fs"; import * as os from "node:os"; import * as path from "node:path"
 import { shouldRotateLog, rotateLogIfNeeded } from "../src/log/rotate.js"
-import { formatLine, createLogger } from "../src/log/logger.js"
+import { formatLine, createLogger, installCrashNet } from "../src/log/logger.js"
 
 describe("log rotation", () => {
   it("pure decision honors the cap", () => {
@@ -40,5 +40,47 @@ describe("logger", () => {
     expect(text).toContain("hello")
     expect(text).toContain("oops")
     expect(text.trim().split("\n").length).toBeGreaterThanOrEqual(2)
+  })
+})
+
+describe("installCrashNet", () => {
+  it("registers one listener per fatal event, logs on direct invocation without exiting, then cleans up", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "coolie-log3-"))
+    const p = path.join(dir, "server.log")
+    const logger = createLogger(p, "test")
+
+    const rejectionsBefore = process.listeners("unhandledRejection").length
+    const exceptionsBefore = process.listeners("uncaughtException").length
+
+    installCrashNet(logger)
+
+    expect(process.listeners("unhandledRejection").length).toBe(rejectionsBefore + 1)
+    expect(process.listeners("uncaughtException").length).toBe(exceptionsBefore + 1)
+
+    const rejectionHandler = process.listeners("unhandledRejection").at(-1) as (reason: unknown) => void
+    const exceptionHandler = process.listeners("uncaughtException").at(-1) as (err: Error) => void
+
+    const exitSpy = vi.spyOn(process, "exit").mockImplementation(((): never => {
+      throw new Error("process.exit should not be called by the crash net")
+    }) as never)
+
+    try {
+      // Invoke the registered handler directly — never via process.emit(...) — so
+      // vitest's own unhandledRejection/uncaughtException listeners are never triggered.
+      exceptionHandler(new Error("boom"))
+      await logger.flush()
+      const text = fs.readFileSync(p, "utf8")
+      expect(text).toContain("uncaughtException")
+      expect(text).toContain("boom")
+      expect(exitSpy).not.toHaveBeenCalled()
+    } finally {
+      exitSpy.mockRestore()
+      // Leave global listener state exactly as we found it.
+      process.removeListener("unhandledRejection", rejectionHandler)
+      process.removeListener("uncaughtException", exceptionHandler)
+    }
+
+    expect(process.listeners("unhandledRejection").length).toBe(rejectionsBefore)
+    expect(process.listeners("uncaughtException").length).toBe(exceptionsBefore)
   })
 })
