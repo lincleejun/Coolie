@@ -1,9 +1,15 @@
 {
   "name": "@coolie/server",
   "type": "module",
-  "exports": { ".": "./src/index.ts" },
+  "exports": {
+    ".": "./src/index.ts"
+  },
   "dependencies": {
-    "effect": "latest",
-    "@coolie/protocol": "workspace:*"
+    "@coolie/protocol": "workspace:*",
+    "better-sqlite3": "^12.11.1",
+    "effect": "latest"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.13"
   }
 }
