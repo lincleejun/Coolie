@@ -18,3 +18,13 @@ export const ApiErrorCode = Schema.Literal(
 )
 export const ApiErrorBody = Schema.Struct({ code: ApiErrorCode, message: Schema.String })
 export type ApiErrorBody = typeof ApiErrorBody.Type
+
+export const CoolieEvent = Schema.Struct({
+  seq: Schema.Number,
+  workspaceId: Schema.NullOr(Schema.String),
+  type: Schema.String,
+  payload: Schema.Unknown,
+  ts: Schema.Number,
+})
+export type CoolieEvent = typeof CoolieEvent.Type
+export const decodeCoolieEvent = Schema.decodeUnknownSync(CoolieEvent)

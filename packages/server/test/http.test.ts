@@ -7,13 +7,14 @@ import { Effect, Layer } from "effect"
 import { Db } from "../src/db/sqlite.js"
 import { runMigrations } from "../src/db/migrations.js"
 import { ProjectsRepo, ProjectsRepoLive } from "../src/repo/projects.js"
+import { EventsRepoLive } from "../src/repo/events.js"
 import { createApp, newToken } from "../src/http/app.js"
 
 let server: http.Server, base: string, token: string, shutdownCalled = false
 
 beforeEach(async () => {
   const db = new Database(":memory:"); runMigrations(db)
-  const layer = ProjectsRepoLive.pipe(Layer.provide(Layer.succeed(Db, db)))
+  const layer = Layer.mergeAll(ProjectsRepoLive, EventsRepoLive).pipe(Layer.provide(Layer.succeed(Db, db)))
   token = newToken()
   const app = createApp({
     runtime: (eff) => Effect.runPromiseExit(Effect.provide(eff, layer)),
@@ -85,7 +86,7 @@ describe("http app", () => {
   })
   it("onShutdown that throws: response is still 202 and the server survives", async () => {
     const db = new Database(":memory:"); runMigrations(db)
-    const layer = ProjectsRepoLive.pipe(Layer.provide(Layer.succeed(Db, db)))
+    const layer = Layer.mergeAll(ProjectsRepoLive, EventsRepoLive).pipe(Layer.provide(Layer.succeed(Db, db)))
     const tok = newToken()
     const app = createApp({
       runtime: (eff) => Effect.runPromiseExit(Effect.provide(eff, layer)),

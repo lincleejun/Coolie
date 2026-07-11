@@ -5,6 +5,7 @@ import { Effect, Layer, Exit, Scope } from "effect"
 import { CoolieConfig, CoolieConfigLive } from "./config.js"
 import { DbLive } from "./db/sqlite.js"
 import { ProjectsRepo, ProjectsRepoLive } from "./repo/projects.js"
+import { EventsRepo, EventsRepoLive } from "./repo/events.js"
 import { createApp, newToken } from "./http/app.js"
 import { readServerInfo, writeServerInfo, probeAlive } from "./daemon/info.js"
 
@@ -34,12 +35,13 @@ const cmdStart = async (): Promise<void> => {
 
   // 组装 Effect runtime（scope 手动管理，进程退出时 close）
   const scope = Effect.runSync(Scope.make())
-  const appLayer = ProjectsRepoLive.pipe(Layer.provide(DbLive), Layer.provide(CoolieConfigLive))
+  const appLayer = Layer.mergeAll(ProjectsRepoLive, EventsRepoLive).pipe(
+    Layer.provide(DbLive), Layer.provide(CoolieConfigLive))
   const runtimeCtx = await Effect.runPromise(Layer.buildWithScope(appLayer, scope))
   // AppDeps.runtime must return the Effect's Exit (never reject) — see http/app.ts's
   // Runtime type. Effect.runPromise's rejection is a FiberFailure wrapper that isn't
   // reliably unwrapped; runPromiseExit + Exit.match (as app.ts already does) is robust.
-  const runtime = <A, E>(eff: Effect.Effect<A, E, ProjectsRepo>) =>
+  const runtime = <A, E>(eff: Effect.Effect<A, E, ProjectsRepo | EventsRepo>) =>
     Effect.runPromiseExit(Effect.provide(eff, runtimeCtx) as Effect.Effect<A, E, never>)
 
   const token = newToken()

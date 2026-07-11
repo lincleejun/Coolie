@@ -2,16 +2,17 @@ import type { IncomingMessage, ServerResponse } from "node:http"
 import { Effect, Exit, Cause, Option } from "effect"
 import type { ApiErrorBody } from "@coolie/protocol"
 import { ProjectsRepo } from "../repo/projects.js"
+import { EventsRepo } from "../repo/events.js"
 import { tokenEquals } from "./token.js"
 export { newToken } from "./token.js"
 
-// `runtime` runs a ProjectsRepo-dependent Effect to completion and hands back
-// its `Exit` (never rejects). We deliberately avoid `Effect.runPromise` here:
+// `runtime` runs a ProjectsRepo|EventsRepo-dependent Effect to completion and hands
+// back its `Exit` (never rejects). We deliberately avoid `Effect.runPromise` here:
 // its rejection is a FiberFailure wrapper, and probing `e?._tag`/`e?.error?._tag`
 // on it is not a reliable way to recover the original TaggedError. Running via
 // `Effect.runPromiseExit` and unwrapping with `Exit.match` + `Cause.failureOption`
 // (mirrors the pattern already used in test/projects-repo.test.ts) is robust.
-type Runtime = <A, E>(eff: Effect.Effect<A, E, ProjectsRepo>) => Promise<Exit.Exit<A, E>>
+type Runtime = <A, E>(eff: Effect.Effect<A, E, ProjectsRepo | EventsRepo>) => Promise<Exit.Exit<A, E>>
 export interface AppDeps { readonly runtime: Runtime; readonly token: string; readonly onShutdown: () => void }
 
 const send = (res: ServerResponse, status: number, body?: unknown) => {
@@ -60,12 +61,41 @@ const errorFromCause = (cause: Cause.Cause<unknown>): { status: number; body: Ap
 const runRoute = async <A, E>(
   res: ServerResponse,
   runtime: Runtime,
-  eff: Effect.Effect<A, E, ProjectsRepo>,
-  onSuccess: (value: A) => void,
+  eff: Effect.Effect<A, E, ProjectsRepo | EventsRepo>,
+  onSuccess: (value: A) => void | Promise<void>,
 ): Promise<void> => {
   const exit = await runtime(eff)
-  Exit.match(exit, {
+  await Exit.match(exit, {
     onSuccess,
+    onFailure: (cause) => {
+      const { status, body } = errorFromCause(cause)
+      send(res, status, body)
+    },
+  })
+}
+
+// Fire-and-await an event append, then decide how to respond. We deliberately
+// emit *before* sending the route's own success response (never after) so a
+// response is never sent twice: if the append effect defects (it has no typed
+// error channel — `append`'s Effect.Effect<number> can only fail via an
+// unexpected defect), that defect goes through the same errorFromCause 500
+// mapping as every other route failure, and the original success response
+// (e.g. the created Project) is never written. Only once emit succeeds do we
+// call `onEmitted` to send the route's real success response.
+const emit = (runtime: Runtime, workspaceId: string | null, type: string, payload: unknown) =>
+  runtime(Effect.gen(function* () { return yield* (yield* EventsRepo).append({ workspaceId, type, payload }) }))
+
+const emitThenRespond = async (
+  res: ServerResponse,
+  runtime: Runtime,
+  workspaceId: string | null,
+  type: string,
+  payload: unknown,
+  onEmitted: () => void,
+): Promise<void> => {
+  const exit = await emit(runtime, workspaceId, type, payload)
+  Exit.match(exit, {
+    onSuccess: onEmitted,
     onFailure: (cause) => {
       const { status, body } = errorFromCause(cause)
       send(res, status, body)
@@ -92,6 +122,18 @@ export const createApp = ({ runtime, token, onShutdown }: AppDeps) =>
           try { onShutdown() } catch { /* swallow: response already sent */ }
           return
         }
+        if (route === "GET /events") {
+          const after = Number(url.searchParams.get("after") ?? "0")
+          const limit = Number(url.searchParams.get("limit") ?? "200")
+          const ws = url.searchParams.get("workspace")
+          return await runRoute(
+            res, runtime,
+            Effect.gen(function* () {
+              return yield* (yield* EventsRepo).listAfter({ after, limit, ...(ws ? { workspaceId: ws } : {}) })
+            }),
+            (events) => send(res, 200, events),
+          )
+        }
         if (route === "GET /projects")
           return await runRoute(
             res, runtime,
@@ -104,7 +146,7 @@ export const createApp = ({ runtime, token, onShutdown }: AppDeps) =>
           return await runRoute(
             res, runtime,
             Effect.gen(function* () { return yield* (yield* ProjectsRepo).add(body.repoRoot) }),
-            (p) => send(res, 201, p),
+            (p) => emitThenRespond(res, runtime, null, "project.added", { id: p.id, repoRoot: p.repoRoot }, () => send(res, 201, p)),
           )
         }
         const del = url.pathname.match(/^\/projects\/([^/]+)$/)
@@ -112,7 +154,7 @@ export const createApp = ({ runtime, token, onShutdown }: AppDeps) =>
           return await runRoute(
             res, runtime,
             Effect.gen(function* () { yield* (yield* ProjectsRepo).remove(del[1]!) }),
-            () => send(res, 204),
+            () => emitThenRespond(res, runtime, null, "project.removed", { id: del[1] }, () => send(res, 204)),
           )
         }
         return err(res, 404, "NotFound", `no route: ${route}`)
