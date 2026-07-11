@@ -51,6 +51,8 @@ const cmdStart = async (): Promise<void> => {
   // 组装 Effect runtime（scope 手动管理，进程退出时 close）
   const scope = Effect.runSync(Scope.make())
   const bus = new EventEmitter()
+  bus.setMaxListeners(0) // 每个 SSE 连接挂一个 listener，GUI 多 tab 会超默认 10
+
   const appLayer = WorkspaceLifecycleLive.pipe(
     Layer.provideMerge(Layer.mergeAll(
       GitServiceLive,
