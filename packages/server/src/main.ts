@@ -2,12 +2,14 @@
 import * as http from "node:http"
 import * as fs from "node:fs"
 import * as path from "node:path"
+import { EventEmitter } from "node:events"
 import { Effect, Layer, Exit, Scope } from "effect"
 import { CoolieConfig, CoolieConfigLive } from "./config.js"
 import { DbLive } from "./db/sqlite.js"
 import { ProjectsRepoLive } from "./repo/projects.js"
 import { EventsRepoLive } from "./repo/events.js"
 import { WorkspacesRepoLive } from "./repo/workspaces.js"
+import { EventsBus } from "./events/bus.js"
 import { WorkspaceLifecycleLive, PostCreateHooksEmpty } from "./workspace/lifecycle.js"
 import { GitServiceLive } from "./git/service.js"
 import { makeSetupRunnerLive } from "./workspace/setup.js"
@@ -48,6 +50,7 @@ const cmdStart = async (): Promise<void> => {
 
   // 组装 Effect runtime（scope 手动管理，进程退出时 close）
   const scope = Effect.runSync(Scope.make())
+  const bus = new EventEmitter()
   const appLayer = WorkspaceLifecycleLive.pipe(
     Layer.provideMerge(Layer.mergeAll(
       GitServiceLive,
@@ -55,6 +58,7 @@ const cmdStart = async (): Promise<void> => {
       PostCreateHooksEmpty,
     )),
     Layer.provideMerge(Layer.mergeAll(ProjectsRepoLive, EventsRepoLive, WorkspacesRepoLive)),
+    Layer.provideMerge(Layer.succeed(EventsBus, bus)),
     Layer.provideMerge(DbLive),
     Layer.provideMerge(CoolieConfigLive),
   )
@@ -79,7 +83,7 @@ const cmdStart = async (): Promise<void> => {
     process.exit(0)
   }
   const server = http.createServer(createApp({
-    runtime, token, onShutdown: () => void shutdown(),
+    runtime, token, bus, onShutdown: () => void shutdown(),
     onError: (e) => logger.error("http 500", e),
   }))
   server.listen(0, "127.0.0.1", () => {

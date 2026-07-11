@@ -1,4 +1,5 @@
 import type { IncomingMessage, ServerResponse } from "node:http"
+import type { EventEmitter } from "node:events"
 import * as path from "node:path"
 import { Effect, Exit, Cause, Option } from "effect"
 import type { ApiErrorBody } from "@coolie/protocol"
@@ -7,6 +8,7 @@ import { EventsRepo } from "../repo/events.js"
 import { WorkspacesRepo } from "../repo/workspaces.js"
 import { WorkspaceLifecycle } from "../workspace/lifecycle.js"
 import { tokenEquals } from "./token.js"
+import { handleEventsStream } from "./sse.js"
 export { newToken } from "./token.js"
 
 // `runtime` runs an AppServices-dependent Effect to completion and hands
@@ -23,6 +25,10 @@ export interface AppDeps {
   readonly onShutdown: () => void
   /** optional diagnostic hook: called once per HTTP 500 fallback path (defect / unexpected exception). */
   readonly onError?: (e: unknown) => void
+  /** SSE live 推送用的进程内事件总线；未提供时 /events/stream 返回 500 */
+  readonly bus?: EventEmitter
+  /** SSE 心跳间隔（测试注入用），默认 15s */
+  readonly sseHeartbeatMs?: number
 }
 
 const send = (res: ServerResponse, status: number, body?: unknown) => {
@@ -122,7 +128,7 @@ const emitThenRespond = async (
   })
 }
 
-export const createApp = ({ runtime, token, onShutdown, onError }: AppDeps) =>
+export const createApp = ({ runtime, token, onShutdown, onError, bus, sseHeartbeatMs }: AppDeps) =>
   (req: IncomingMessage, res: ServerResponse): void => {
     void (async () => {
       const url = new URL(req.url ?? "/", "http://local")
@@ -140,6 +146,14 @@ export const createApp = ({ runtime, token, onShutdown, onError }: AppDeps) =>
           // own shutdown-error handling — we just swallow it here.
           try { onShutdown() } catch { /* swallow: response already sent */ }
           return
+        }
+        if (route === "GET /events/stream") {
+          if (!bus) return err(res, 500, "Internal", "event bus unavailable")
+          const after = Number(url.searchParams.get("after") ?? "0")
+          const ws = url.searchParams.get("workspace")
+          return await handleEventsStream(req, res,
+            { runtime, bus, ...(sseHeartbeatMs !== undefined ? { heartbeatMs: sseHeartbeatMs } : {}) },
+            { after, ...(ws ? { workspaceId: ws } : {}) })
         }
         if (route === "GET /events") {
           const after = Number(url.searchParams.get("after") ?? "0")
