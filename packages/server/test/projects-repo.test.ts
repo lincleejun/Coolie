@@ -91,4 +91,17 @@ describe("ProjectsRepo", () => {
     expect(Exit.isFailure(exit)).toBe(true)
     expect(failureTag(exit)).toBe("NotFoundError")
   })
+  it("add/remove write project.* events in the same transaction", async () => {
+    const db = new Database(":memory:"); runMigrations(db)
+    const layer = ProjectsRepoLive.pipe(Layer.provide(Layer.succeed(Db, db)))
+    const p = await Effect.runPromise(Effect.provide(Effect.gen(function* () {
+      const repo = yield* ProjectsRepo
+      const proj = yield* repo.add(repoRoot)
+      yield* repo.remove(proj.id)
+      return proj
+    }), layer) as Effect.Effect<any, never, never>)
+    const evs = (db.prepare("SELECT type, payload FROM events ORDER BY seq").all() as any[])
+    expect(evs.map((e) => e.type)).toEqual(["project.added", "project.removed"])
+    expect(JSON.parse(evs[0].payload).id).toBe(p.id)
+  })
 })

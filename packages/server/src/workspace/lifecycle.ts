@@ -149,7 +149,7 @@ export const WorkspaceLifecycleLive = Layer.effect(
     const create: WorkspaceLifecycleShape["create"] = (opts) =>
       Effect.gen(function* () {
         const project = yield* projects.get(opts.projectId)
-        const existing = yield* repo.list({ projectId: project.id })
+        const existing = yield* repo.list({}) // 跨项目全量：同名项目共享路径名字空间，name 必须全局唯一（ledger carry-over）
         const taken = new Set(existing.map((w) => w.name))
         const name = opts.name !== undefined ? sanitizeSlug(opts.name) : pickName(taken)
         if (name === "") return yield* new ValidationError({ message: "name 消毒后为空" })

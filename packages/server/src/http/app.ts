@@ -54,15 +54,33 @@ export class BadJsonError extends Error {
   }
 }
 
+export const MAX_BODY_BYTES = 1_048_576
+export class BodyTooLargeError extends Error {
+  constructor() { super(`request body exceeds ${MAX_BODY_BYTES} bytes`); this.name = "BodyTooLargeError" }
+}
+
 const readJson = (req: IncomingMessage): Promise<any> =>
   new Promise((resolve, reject) => {
+    req.setEncoding("utf8")
     let buf = ""
-    req.on("data", (c) => { buf += c })
+    let bytes = 0
+    req.on("data", (c: string) => {
+      bytes += Buffer.byteLength(c)
+      if (bytes > MAX_BODY_BYTES) {
+        reject(new BodyTooLargeError())
+        // T1：不能 req.destroy()——撕掉 socket 后 413 无处可写（客户端只见 ECONNRESET）。
+        // 卸掉 data 监听并 resume 排空余量；之后 end 的 resolve 在已 reject 的 promise 上是 no-op。
+        req.removeAllListeners("data")
+        req.resume()
+        return
+      }
+      buf += c
+    })
     req.on("end", () => {
       try { resolve(buf ? JSON.parse(buf) : {}) }
       catch (e) { reject(new BadJsonError(e instanceof Error ? e.message : String(e))) }
     })
-    req.on("error", reject)
+    req.on("error", reject) // 传输层错误：已 reject 后的二次 reject 为 no-op
   })
 
 const errorFromCause = (
@@ -105,34 +123,13 @@ const runRoute = async <A, E>(
   })
 }
 
-// Fire-and-await an event append, then decide how to respond. We deliberately
-// emit *before* sending the route's own success response (never after) so a
-// response is never sent twice: if the append effect defects (it has no typed
-// error channel — `append`'s Effect.Effect<number> can only fail via an
-// unexpected defect), that defect goes through the same errorFromCause 500
-// mapping as every other route failure, and the original success response
-// (e.g. the created Project) is never written. Only once emit succeeds do we
-// call `onEmitted` to send the route's real success response.
-const emit = (runtime: Runtime, workspaceId: string | null, type: string, payload: unknown) =>
-  runtime(Effect.gen(function* () { return yield* (yield* EventsRepo).append({ workspaceId, type, payload }) }))
-
-const emitThenRespond = async (
-  res: ServerResponse,
-  runtime: Runtime,
-  workspaceId: string | null,
-  type: string,
-  payload: unknown,
-  onEmitted: () => void,
-  onError?: (e: unknown) => void,
-): Promise<void> => {
-  const exit = await emit(runtime, workspaceId, type, payload)
-  Exit.match(exit, {
-    onSuccess: onEmitted,
-    onFailure: (cause) => {
-      const { status, body } = errorFromCause(cause, onError)
-      send(res, status, body)
-    },
-  })
+/** 非负整数 query param：缺省→默认值；非法→null（调用方 400）。ledger carry-over：NaN 曾直落 SQLite。 */
+const intParam = (url: URL, name: string, dflt: number): number | null => {
+  const raw = url.searchParams.get(name)
+  if (raw === null) return dflt
+  if (!/^\d+$/.test(raw)) return null
+  const n = Number(raw)
+  return Number.isSafeInteger(n) ? n : null
 }
 
 export const createApp = ({ runtime, token, onShutdown, onError, bus, sseHeartbeatMs, claudeHome }: AppDeps) =>
@@ -156,7 +153,8 @@ export const createApp = ({ runtime, token, onShutdown, onError, bus, sseHeartbe
         }
         if (route === "GET /events/stream") {
           if (!bus) return err(res, 500, "Internal", "event bus unavailable")
-          const after = Number(url.searchParams.get("after") ?? "0")
+          const after = intParam(url, "after", 0)
+          if (after === null) return err(res, 400, "Validation", "after must be a non-negative integer")
           const ws = url.searchParams.get("workspace")
           return await handleEventsStream(req, res,
             { runtime, bus, ...(sseHeartbeatMs !== undefined ? { heartbeatMs: sseHeartbeatMs } : {}) },
@@ -212,8 +210,11 @@ export const createApp = ({ runtime, token, onShutdown, onError, bus, sseHeartbe
           )
         }
         if (route === "GET /events") {
-          const after = Number(url.searchParams.get("after") ?? "0")
-          const limit = Number(url.searchParams.get("limit") ?? "200")
+          const after = intParam(url, "after", 0)
+          const limitRaw = intParam(url, "limit", 200)
+          if (after === null || limitRaw === null)
+            return err(res, 400, "Validation", "after/limit must be non-negative integers")
+          const limit = Math.min(limitRaw, 1000)
           const ws = url.searchParams.get("workspace")
           return await runRoute(
             res, runtime,
@@ -241,7 +242,7 @@ export const createApp = ({ runtime, token, onShutdown, onError, bus, sseHeartbe
           return await runRoute(
             res, runtime,
             Effect.gen(function* () { return yield* (yield* ProjectsRepo).add(body.repoRoot) }),
-            (p) => emitThenRespond(res, runtime, null, "project.added", { id: p.id, repoRoot: p.repoRoot }, () => send(res, 201, p), onError),
+            (p) => send(res, 201, p),
             onError,
           )
         }
@@ -250,7 +251,7 @@ export const createApp = ({ runtime, token, onShutdown, onError, bus, sseHeartbe
           return await runRoute(
             res, runtime,
             Effect.gen(function* () { yield* (yield* ProjectsRepo).remove(del[1]!) }),
-            () => emitThenRespond(res, runtime, null, "project.removed", { id: del[1] }, () => send(res, 204), onError),
+            () => send(res, 204),
             onError,
           )
         }
@@ -322,6 +323,7 @@ export const createApp = ({ runtime, token, onShutdown, onError, bus, sseHeartbe
         // Headers may already be sent (e.g. a defect surfacing after a prior
         // write in this route) — never attempt a second writeHead.
         if (res.headersSent) return
+        if (e instanceof BodyTooLargeError) return err(res, 413, "Validation", e.message)
         if (e instanceof BadJsonError) return err(res, 400, "Validation", e.message)
         onError?.(e)
         return err(res, 500, "Internal", e?.message ?? String(e))

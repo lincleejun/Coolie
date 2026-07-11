@@ -1,10 +1,13 @@
-import { Context, Effect, Layer } from "effect"
+import { Context, Effect, Layer, Option } from "effect"
 import * as fs from "node:fs"
 import * as path from "node:path"
 import { ulid } from "ulid"
 import { Project } from "@coolie/protocol"
+import type { CoolieEvent } from "@coolie/protocol"
 import { Db } from "../db/sqlite.js"
 import { ValidationError, ConflictError, NotFoundError } from "./errors.js"
+import { EventsBus, EVENT_CHANNEL } from "../events/bus.js"
+import { appendEventRow } from "./events.js"
 export { ValidationError, ConflictError, NotFoundError } from "./errors.js"
 
 const rowToProject = (r: any): Project =>
@@ -30,6 +33,8 @@ export const ProjectsRepoLive = Layer.effect(
   ProjectsRepo,
   Effect.gen(function* () {
     const db = yield* Db
+    const bus = yield* Effect.serviceOption(EventsBus)
+    const broadcast = (ev: CoolieEvent): void => { if (Option.isSome(bus)) bus.value.emit(EVENT_CHANNEL, ev) }
     return {
       add: (repoRoot) => Effect.gen(function* () {
         const abs = path.resolve(repoRoot)
@@ -41,8 +46,13 @@ export const ProjectsRepoLive = Layer.effect(
           id: ulid(), name: path.basename(abs), repoRoot: abs,
           defaultBaseBranch: detectDefaultBranch(abs), createdAt: Date.now(),
         })
-        db.prepare("INSERT INTO projects (id, name, repo_root, default_base_branch, created_at) VALUES (?,?,?,?,?)")
-          .run(p.id, p.name, p.repoRoot, p.defaultBaseBranch, p.createdAt)
+        let ev!: CoolieEvent
+        db.transaction(() => {
+          db.prepare("INSERT INTO projects (id, name, repo_root, default_base_branch, created_at) VALUES (?,?,?,?,?)")
+            .run(p.id, p.name, p.repoRoot, p.defaultBaseBranch, p.createdAt)
+          ev = appendEventRow(db, { workspaceId: null, type: "project.added", payload: { id: p.id, repoRoot: p.repoRoot } })
+        })()
+        broadcast(ev)
         return p
       }),
       get: (id) => Effect.gen(function* () {
@@ -53,8 +63,15 @@ export const ProjectsRepoLive = Layer.effect(
       list: () => Effect.sync(() =>
         db.prepare("SELECT * FROM projects ORDER BY created_at").all().map(rowToProject)),
       remove: (id) => Effect.gen(function* () {
-        const res = db.prepare("DELETE FROM projects WHERE id = ?").run(id)
-        if (res.changes === 0) return yield* new NotFoundError({ message: `项目不存在：${id}` })
+        let ev: CoolieEvent | null = null
+        const changes = db.transaction(() => {
+          const res = db.prepare("DELETE FROM projects WHERE id = ?").run(id)
+          if (res.changes > 0)
+            ev = appendEventRow(db, { workspaceId: null, type: "project.removed", payload: { id } })
+          return res.changes
+        })()
+        if (changes === 0) return yield* new NotFoundError({ message: `项目不存在：${id}` })
+        if (ev !== null) broadcast(ev)
       }),
     }
   }),

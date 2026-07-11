@@ -118,6 +118,18 @@ describe("http app", () => {
       s.close()
     }
   })
+  it("rejects non-numeric events query params with 400 (not 500)", async () => {
+    expect((await req("/events?after=abc")).status).toBe(400)
+    expect((await req("/events?limit=-1")).status).toBe(400)
+    expect((await req("/events?after=1e3")).status).toBe(400)
+    expect((await req("/events?after=5&limit=10")).status).toBe(200)
+  })
+  it("caps request body at 1MB with 413", async () => {
+    const big = JSON.stringify({ repoRoot: "/x".repeat(700_000) }) // >1MB
+    const r = await req("/projects", { method: "POST", body: big })
+    expect(r.status).toBe(413)
+    expect((await r.json()).code).toBe("Validation")
+  })
   it("unexpected internal defect -> 500 Internal (not misclassified as Validation)", async () => {
     const boomRuntime = (() => { throw new Error("internal defect: runtime broke its no-reject contract") }) as unknown as
       Parameters<typeof createApp>[0]["runtime"]
