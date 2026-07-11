@@ -3,7 +3,7 @@ import { Command } from "commander"
 import { ROUTES } from "@coolie/protocol"
 import { readServerInfo, probeAlive } from "@coolie/server"
 import * as os from "node:os"; import * as path from "node:path"
-import { api } from "./client.js"
+import { api, home } from "./client.js"
 
 const program = new Command("coolie").showHelpAfterError()
 const fail = (e: unknown): never => { console.error(String(e instanceof Error ? e.message : e)); process.exit(1) }
@@ -28,7 +28,19 @@ server.command("status").action(async () => {
   else { console.log("stopped"); process.exit(1) }
 })
 server.command("stop").action(async () => {
-  try { await api("POST", "/shutdown") } catch {} // server 可能没跑或应答后立刻退出
+  // Deliberately NOT api("POST", "/shutdown") — that goes through ensureServer(),
+  // which auto-spawns a server just to shut it down when none is running. Talk
+  // to the daemon directly instead (same readServerInfo + probeAlive + fetch
+  // /shutdown logic as @coolie/server's own cmdStop); behavior contract
+  // ("stopped", exit 0) is unchanged, but a not-running server is left alone.
+  const info = readServerInfo(path.join(home(), "server.json"))
+  if (!info || !(await probeAlive(info))) { console.log("stopped"); return }
+  try {
+    await fetch(`http://127.0.0.1:${info.port}/shutdown`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${info.token}` },
+    })
+  } catch {} // server 可能应答后立刻退出/中途消失——目标（停止）已经达成
   console.log("stopped")
 })
 

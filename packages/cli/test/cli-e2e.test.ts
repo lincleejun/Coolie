@@ -31,4 +31,16 @@ describe("coolie CLI e2e", () => {
   it("unknown command exits non-zero", () => {
     expect(() => coolie("frobnicate")).toThrow()
   })
+  it("server stop without a running server does not spawn one", () => {
+    const freshHome = fs.mkdtempSync(path.join(os.tmpdir(), "coolie-stop-"))
+    const out = execFileSync(TSX, [CLI, "server", "stop"], { env: { ...process.env, COOLIE_HOME: freshHome }, encoding: "utf8" })
+    expect(out).toContain("stopped")
+    expect(fs.existsSync(path.join(freshHome, "server.json"))).toBe(false) // no server was spawned
+    // server.json alone is an unreliable oracle: the daemon's own /shutdown handler
+    // removes it synchronously before the CLI's fetch() resolves, so an auto-spawn
+    // followed by an immediate self-shutdown also leaves no server.json behind.
+    // coolie.db, however, is created on daemon startup and never removed by
+    // shutdown — its absence is a true signal that no daemon process ever ran.
+    expect(fs.existsSync(path.join(freshHome, "coolie.db"))).toBe(false)
+  })
 })

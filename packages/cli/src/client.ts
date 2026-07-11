@@ -4,7 +4,7 @@ import { createRequire } from "node:module"
 import { readServerInfo, probeAlive, type ServerInfo } from "@coolie/server"
 
 const require_ = createRequire(import.meta.url)
-const home = () => process.env.COOLIE_HOME ?? path.join(os.homedir(), ".coolie")
+export const home = () => process.env.COOLIE_HOME ?? path.join(os.homedir(), ".coolie")
 const infoPath = () => path.join(home(), "server.json")
 
 const spawnServer = (): void => {
@@ -16,6 +16,11 @@ const spawnServer = (): void => {
   const serverMain = path.join(path.dirname(require_.resolve("@coolie/server")), "main.ts")
   const tsx = path.resolve(path.dirname(require_.resolve("tsx/package.json")), "../.bin/tsx")
   const child = spawn(tsx, [serverMain, "start"], { detached: true, stdio: "ignore", env: process.env })
+  // Without an 'error' listener, a missing/unexecutable tsx binary emits an
+  // unhandled 'error' event that crashes the CLI with an uncaught exception
+  // instead of the graceful 10s-timeout message below. Swallow it here — the
+  // ensureServer poll loop below already handles the failure-to-start case.
+  child.on("error", () => {})
   child.unref()
 }
 
