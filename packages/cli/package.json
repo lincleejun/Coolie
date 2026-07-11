@@ -1,9 +1,16 @@
 {
   "name": "@coolie/cli",
   "type": "module",
-  "exports": { ".": "./src/index.ts" },
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "bin": {
+    "coolie": "./src/main.ts"
+  },
   "dependencies": {
-    "effect": "latest",
-    "@coolie/protocol": "workspace:*"
+    "@coolie/protocol": "workspace:*",
+    "@coolie/server": "workspace:*",
+    "commander": "^15.0.0",
+    "effect": "latest"
   }
 }
