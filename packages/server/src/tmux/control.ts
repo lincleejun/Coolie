@@ -32,6 +32,13 @@ export const makeControlClient = (
   let disposed = false
   /** F1：连接守卫——每次 (re)spawn 后的第一个 %end/%error 块属于 new-session -A 本身，必须吞掉 */
   let awaitingGuard = false
+  /**
+   * 世代计数（generation-scoped state，修复 timeout↔respawn 竞态）：每次 (re)spawn 递增，
+   * 新 child 的 exit/error/onLine 闭包各自捕获自己的 gen。超时/exit 触发的收尾动作先比对
+   * `gen !== generation`——若已经不是当前这一代，说明更新的 child 早已接管，直接放弃
+   * （不 failAll、不碰 `child`），防止陈旧 child 的迟到事件结算/清空活着的新 child 状态。
+   */
+  let generation = 0
 
   const settle = (err: Error | null): void => {
     const p = pending.shift()
@@ -52,34 +59,51 @@ export const makeControlClient = (
 
   const ensureChild = (): ChildProcessWithoutNullStreams => {
     if (child && child.exitCode === null && !child.killed) return child
-    child = spawn(
+    const gen = ++generation // 这次 (re)spawn 是新的一代；旧一代的收尾动作从此全部失效
+    const spawned = spawn(
       "tmux",
       ["-L", socket, "-C", "-f", "/dev/null", "new-session", "-A", "-s", hub, "-x", "40", "-y", "10", "sleep 2147483647"],
       { env: sanitizedTmuxEnv(), stdio: ["pipe", "pipe", "pipe"] },
     )
+    child = spawned
     awaitingGuard = true // F1：这个连接的第一个回复块是守卫块（重连同样成立）
     buf = ""
-    child.stdout.on("data", (c: Buffer) => {
+    spawned.stdout.on("data", (c: Buffer) => {
+      if (gen !== generation) return // 陈旧世代的杂散输出：新 child 已接管，忽略
       buf += c.toString("utf8")
       let i: number
       while ((i = buf.indexOf("\n")) >= 0) { onLine(buf.slice(0, i)); buf = buf.slice(i + 1) }
     })
-    child.on("error", () => failAll("tmux control client spawn error"))
-    child.on("exit", () => { failAll("tmux control client exited"); child = null })
-    return child
+    spawned.on("error", () => {
+      if (gen !== generation) return
+      failAll("tmux control client spawn error")
+    })
+    spawned.on("exit", () => {
+      // ⚠ 竞态修复核心：这个 exit 事件可能迟到——期间已经有更新的一代 respawn 了。
+      // 若如此，`child`/`pending` 早已属于新一代，绝不能在此无条件 failAll/置空（会误杀活着的新 child）。
+      if (gen !== generation) return
+      failAll("tmux control client exited")
+      child = null
+    })
+    return spawned
   }
 
   return {
     exec: (command) => {
       if (disposed) return Promise.reject(new Error("control client disposed"))
       const c = ensureChild()
+      const gen = generation // 本次 exec 绑定的世代——超时收尾前先确认自己还代表当前 child
       return new Promise<void>((resolve, reject) => {
         const entry: Pending = {
           resolve, reject,
           timer: setTimeout(() => {
-            // 超时：这个 client 不可信了。杀掉 → exit handler failAll 清队列（本 entry 的二次 reject 是 no-op）
-            reject(new Error(`tmux control command timeout (${timeoutMs}ms): ${command}`))
-            c.kill("SIGKILL")
+            if (gen !== generation) return // 已经被更新世代的 respawn 处理过，本 timer 是陈旧的
+            // 超时：这一代 child 不可信了（可能卡死，可能马上要送来错位的迟到回复）。整代连坐——
+            // 拒绝所有排队命令（不只这一条）、清空队列、杀 child、置空，彻底消灭“陈旧 pending[0]”
+            // 被下一代真实回复顶包结算的窗口（F1 的镜像问题：这次是 respawn 而非重连本身）。
+            failAll(`tmux control command timeout (${timeoutMs}ms): ${command}`)
+            child?.kill("SIGKILL")
+            child = null
           }, timeoutMs),
         }
         pending.push(entry)
