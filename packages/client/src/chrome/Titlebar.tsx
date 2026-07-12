@@ -6,7 +6,8 @@ export const Titlebar = () => {
   const status = useData((s) => s.status)
   const selectedWs = useUi((s) => s.selectedWs)
   const ws = useData((s) => s.workspaces.find((w) => w.id === selectedWs))
-  const win = getCurrentWindow()
+  // getCurrentWindow() 在非 Tauri 浏览器（DEV 可视化自检）里会抛——降级为 no-op window，生产不变。
+  const win = (() => { try { return getCurrentWindow() } catch { return { close() {}, minimize() {}, toggleMaximize() {} } as ReturnType<typeof getCurrentWindow> } })()
   return (
     <div className="titlebar" data-tauri-drag-region>
       <div className="traffic" data-tauri-drag-region>

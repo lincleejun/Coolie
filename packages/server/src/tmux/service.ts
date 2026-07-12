@@ -85,7 +85,13 @@ export const makeTmuxService = (socket: string, ctl?: ControlClient): TmuxServic
     const envFlags = Object.entries(env ?? {}).flatMap(([k, v]) => ["-e", `${k}=${v}`])
     return runTmux(socket, "new-session",
       ["new-session", "-d", "-s", name, "-n", windowName, "-c", cwd, "-x", "220", "-y", "50", ...envFlags, shellQuote(command)],
-    ).pipe(Effect.asVoid)
+    ).pipe(
+      // conductor 风格：终端里不该出现 tmux 自带的绿色状态行——建 session 后即关掉（session 级选项，覆盖全部 window）。
+      // 注意 set-option 的 -t 不接受 `=` 精确前缀（会当成名字一部分报 no such session）；session 名是唯一 ULID，直用即可。
+      // 失败不致命（老 tmux/竞态）：忽略，最坏只是状态栏还在。
+      Effect.andThen(runTmux(socket, "set-option", ["set-option", "-t", name, "status", "off"]).pipe(Effect.ignore)),
+      Effect.asVoid,
+    )
   },
   newWindow: ({ session, name, cwd, command }) =>
     runTmux(socket, "new-window",

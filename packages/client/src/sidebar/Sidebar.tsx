@@ -87,7 +87,7 @@ export const Sidebar = () => {
             {archived.map((w) => <WsRow key={w.id} ws={w} />)}
           </section>
         )}
-        {projects.length === 0 && <AddProject />}
+        {projects.length === 0 && <div className="dim empty-hint side-onboard-hint">还没有项目 —— 中间面板可打开目录或 clone 仓库。</div>}
       </div>
       <div className="side-footer">
         <button className="dim" onClick={() => useUi.getState().setCheatsheet(true)}>⚙ 设置 / ⌘/ 快捷键</button>
@@ -95,20 +95,3 @@ export const Sidebar = () => {
     </div>
   )
 }
-
-const AddProject = () => (
-  <div className="add-project">
-    <p className="dim">还没有项目。输入 repo 绝对路径：</p>
-    <input
-      className="side-search" placeholder="/path/to/repo（回车添加）"
-      onKeyDown={(e) => {
-        if (e.key !== "Enter") return
-        const v = (e.target as HTMLInputElement).value.trim()
-        if (v === "") return
-        void useData.getState().getApi()?.req("POST", "/projects", { repoRoot: v })
-          .then(() => useData.getState().refreshProjects())
-          .catch((err) => alert(`添加失败：${err.message}`))
-      }}
-    />
-  </div>
-)

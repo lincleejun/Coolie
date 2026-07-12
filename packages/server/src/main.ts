@@ -2,6 +2,7 @@
 import * as http from "node:http"
 import * as fs from "node:fs"
 import * as path from "node:path"
+import { execFile } from "node:child_process"
 import { Context, Effect, Layer, Exit, Scope } from "effect"
 import { tmuxSessionName } from "@coolie/protocol"
 import { CoolieConfig, CoolieConfigLive } from "./config.js"
@@ -147,11 +148,22 @@ const cmdStart = async (): Promise<void> => {
     },
   })
 
+  // B2 onboarding：clone repository。execFile 数组参（无 shell 注入面）+ `--` 断 flag 解析。
+  const reposRoot = process.env.COOLIE_REPOS_ROOT ?? path.join(cfg.home, "repos")
+  const cloneRepo = (cloneUrl: string, dest: string): Promise<void> =>
+    new Promise((resolve, reject) => {
+      try { fs.mkdirSync(path.dirname(dest), { recursive: true }) } catch { /* clone 自身会再报错 */ }
+      execFile("git", ["clone", "--", cloneUrl, dest], { timeout: 300_000 }, (error, _out, stderr) => {
+        error ? reject(new Error(String(stderr || error.message).trim())) : resolve()
+      })
+    })
+
   const app = createApp({
     runtime, token, bus, claudeHome: cfg.claudeHome, codexHome: cfg.codexHome, clients,
     gitRead: realGitRead,
-    config: { tmuxSocket: cfg.tmuxSocket },
+    config: { tmuxSocket: cfg.tmuxSocket, reposRoot },
     composerOps: makeComposerOps(tmuxSvc),
+    cloneRepo,
     onShutdown: () => void shutdown(),
     onError: (e) => logger.error("http 500", e),
   })

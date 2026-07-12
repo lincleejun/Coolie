@@ -46,8 +46,11 @@ export interface AppDeps {
   readonly codexHome?: string
   /** 只读 git 观察面（GUI）；未提供时相关路由 501 */
   readonly gitRead?: GitReadOps
-  /** GET /config 下发的 client 引导信息 */
-  readonly config?: { readonly tmuxSocket: string }
+  /** GET /config 下发的 client 引导信息；reposRoot 供 POST /projects/clone 推导默认目标目录 */
+  readonly config?: { readonly tmuxSocket: string; readonly reposRoot?: string }
+  /** git clone 门面（B2 onboarding：clone repository → 落盘 → 注册为 project）；未提供时 /projects/clone 501。
+   *  用注入而非 GitService：clone 是一次性 shell（execFile 数组参无注入面），主 main.ts 提供真实现，测试注入 fake。 */
+  readonly cloneRepo?: (url: string, dest: string) => Promise<void>
   /** role 化 refcount（Plan 4）；未提供时 /clients 500、SSE role 参数忽略（测试友好） */
   readonly clients?: ClientRegistry
   /** composer 投递 / shell tab 动作（tmux 门面）；未提供时相关路由 501 */
@@ -150,7 +153,16 @@ const intParam = (url: URL, name: string, dflt: number): number | null => {
   return Number.isSafeInteger(n) ? n : null
 }
 
-export const createApp = ({ runtime, token, onShutdown, onError, bus, sseHeartbeatMs, claudeHome, codexHome, gitRead, config, clients, composerOps }: AppDeps) =>
+/** 从 clone URL 推导 repo 目录名（basename，去尾 .git / 斜杠，消毒非法字符）。空/`.`/`..` → null（调用方 400）。 */
+export const deriveRepoName = (url: string): string | null => {
+  const trimmed = url.trim().replace(/\/+$/, "").replace(/\.git$/i, "")
+  const base = trimmed.split(/[/:]/).filter((s) => s !== "").pop() ?? ""
+  const name = base.replace(/[^A-Za-z0-9._-]/g, "")
+  return name === "" || name === "." || name === ".." ? null : name
+}
+
+export const createApp = ({ runtime, token, onShutdown, onError, bus, sseHeartbeatMs, claudeHome, codexHome, gitRead, config, clients, composerOps, cloneRepo }: AppDeps) =>
+
   (req: IncomingMessage, res: ServerResponse): void => {
     void (async () => {
       const url = new URL(req.url ?? "/", "http://local")
@@ -329,6 +341,34 @@ export const createApp = ({ runtime, token, onShutdown, onError, bus, sseHeartbe
           return await runRoute(
             res, runtime,
             Effect.gen(function* () { return yield* (yield* ProjectsRepo).add(body.repoRoot) }),
+            (p) => send(res, 201, p),
+            onError,
+          )
+        }
+        if (route === "POST /projects/clone") {
+          if (!cloneRepo) return err(res, 501, "Internal", "clone 不可用")
+          const body = await readJson(req)
+          if (typeof body.url !== "string" || body.url.trim() === "") return err(res, 400, "Validation", "url required")
+          const cloneUrl = body.url.trim()
+          // arg-injection 防御：execFile 数组参已挡 shell 注入，但 `-` 开头会被 git 当 flag——显式回绝
+          if (cloneUrl.startsWith("-")) return err(res, 400, "Validation", "url 非法（不能以 - 开头）")
+          if (body.dest !== undefined && (typeof body.dest !== "string" || !path.isAbsolute(body.dest)))
+            return err(res, 400, "Validation", "dest 必须是绝对路径")
+          const name = deriveRepoName(cloneUrl)
+          if (body.dest === undefined && name === null)
+            return err(res, 400, "Validation", "无法从 url 推导仓库名，请显式提供 dest")
+          const reposRoot = config?.reposRoot
+          if (body.dest === undefined && !reposRoot) return err(res, 500, "Internal", "reposRoot 未配置")
+          const dest = (body.dest as string | undefined) ?? path.join(reposRoot!, name!)
+          if (fs.existsSync(dest)) return err(res, 409, "Conflict", `目标目录已存在：${dest}`)
+          try {
+            await cloneRepo(cloneUrl, dest)
+          } catch (e: any) {
+            return err(res, 500, "GitError", `git clone 失败：${e?.message ?? String(e)}`)
+          }
+          return await runRoute(
+            res, runtime,
+            Effect.gen(function* () { return yield* (yield* ProjectsRepo).add(dest) }),
             (p) => send(res, 201, p),
             onError,
           )

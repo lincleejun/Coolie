@@ -14,7 +14,9 @@ export const deliverModelSwitch = (wsId: string, model: string, engineWorking: b
   useData.getState().sendInput(wsId, { text: `/model ${model}`, mode: "send", skipStable: engineWorking })
 
 const QueueIndicator = ({ wsId }: { wsId: string }) => {
-  const pending = useData((s) => s.pendingSends.filter((p) => p.wsId === wsId))
+  // 选择器必须返回稳定引用：`.filter` 每次渲染都造新数组 → useSyncExternalStore 判定快照恒变 →
+  // 无限重渲染（Maximum update depth exceeded）→ 整个 App 崩成白屏。取原数组、在渲染体里过滤。
+  const pending = useData((s) => s.pendingSends).filter((p) => p.wsId === wsId)
   if (pending.length === 0) return null
   return (
     <div className="queue-ind">
