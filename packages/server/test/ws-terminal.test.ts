@@ -112,6 +112,52 @@ describe("WS terminal channel", () => {
     expect(clients).toEqual([]) // 零泄漏：attach client 全部退场
   })
 
+  it("D1: two clients on different windows see DIFFERENT content simultaneously (grouped views)", async () => {
+    // 真 tmux：session coolie-w1 加第 2 个 window，各 window 种入可区分的标记
+    execFileSync("tmux", ["-L", SOCK, "new-window", "-t", "=coolie-w1:", "-n", "win1", "-c", cwd, "/bin/sh"])
+    execFileSync("tmux", ["-L", SOCK, "send-keys", "-t", "=coolie-w1:0", "echo WINDOW_ZERO_MARK", "Enter"])
+    execFileSync("tmux", ["-L", SOCK, "send-keys", "-t", "=coolie-w1:1", "echo WINDOW_ONE_MARK", "Enter"])
+    await new Promise((r) => setTimeout(r, 300))
+
+    const a = new WebSocket(`${base}?workspace=w1&window=0&cols=100&rows=30&token=${token}`)
+    let aBuf = ""
+    a.on("message", (d: Buffer, isBinary: boolean) => { if (isBinary) aBuf += d.toString("utf8") })
+    await new Promise<void>((r) => a.once("open", () => r()))
+    await vi.waitFor(() => { expect(aBuf).toContain("WINDOW_ZERO_MARK") }, { timeout: 6000, interval: 50 })
+
+    // 第二个客户端接 window 1——旧代码此刻会把共享 session 的 current-window 翻到 1，A 被迫重绘成 window 1
+    const b = new WebSocket(`${base}?workspace=w1&window=1&cols=100&rows=30&token=${token}`)
+    let bBuf = ""
+    b.on("message", (d: Buffer, isBinary: boolean) => { if (isBinary) bBuf += d.toString("utf8") })
+    await new Promise<void>((r) => b.once("open", () => r()))
+    await vi.waitFor(() => { expect(bBuf).toContain("WINDOW_ONE_MARK") }, { timeout: 6000, interval: 50 })
+
+    // 给潜在的串扰重绘留足时间；grouped view 下两者应始终各看各的 window
+    await new Promise((r) => setTimeout(r, 600))
+    expect(bBuf).toContain("WINDOW_ONE_MARK")
+    expect(bBuf).not.toContain("WINDOW_ZERO_MARK")
+    expect(aBuf).toContain("WINDOW_ZERO_MARK")
+    expect(aBuf).not.toContain("WINDOW_ONE_MARK") // ← 旧代码在此失败（A 被翻到 window 1）
+    a.close(); b.close()
+    await new Promise((r) => setTimeout(r, 300))
+  })
+
+  it("D1: view sessions cleaned up on disconnect (no leak) + real session & windows survive", async () => {
+    const noViews = async () => (await Effect.runPromise(svc.listSessions())).filter((s) => s.includes("-view-"))
+    // 连接期间恰有一个 view session 存活
+    const ws = new WebSocket(`${base}?workspace=w1&window=0&cols=80&rows=24&token=${token}`)
+    ws.on("message", () => {}) // 真 xterm 客户端始终在读 pty 输出——drain 之
+    await new Promise<void>((r) => ws.once("open", () => r()))
+    await vi.waitFor(async () => { expect((await noViews()).length).toBe(1) }, { timeout: 5000, interval: 50 })
+    ws.close()
+    // 断开后 view 被回收：零 -view- session 泄漏
+    await vi.waitFor(async () => { expect(await noViews()).toEqual([]) }, { timeout: 5000, interval: 50 })
+    const sessions = await Effect.runPromise(svc.listSessions())
+    expect(sessions).toContain("coolie-w1") // 真 session 完好
+    const wins = await Effect.runPromise(svc.listWindows("coolie-w1"))
+    expect(wins.length).toBeGreaterThanOrEqual(1) // 真 windows 未被 view kill 波及
+  })
+
   it("bad token → 401 refusal; unknown workspace → close 4404", async () => {
     const bad = new WebSocket(`${base}?workspace=w1&token=wrong`)
     const err = await new Promise<any>((r) => { bad.once("unexpected-response", (_q, res) => r(res.statusCode)); bad.once("error", () => r(401)) })
