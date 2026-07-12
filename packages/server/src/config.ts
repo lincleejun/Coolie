@@ -26,11 +26,11 @@ export interface CoolieConfigShape {
    * 20s 门控会早约 2s 超时误降级 → 吞字；留足余量）。`COOLIE_PROMPT_READY_TIMEOUT_MS` 可覆盖，
    * 测试用极小值快速练到超时降级路径。 */
   readonly promptReadyTimeoutMs?: number
-  /** codex 无-hooks 通路的 rollout 就绪门控上限（ms）：等本 workspace 的 rollout 文件出现（→ 回填
-   * engineSessionId + engine.session.started）再投首条 prompt。缺省 15000（rollout 会话起始即落地，
-   * 通常几百 ms 内命中；给足慢机余量，超时降级走强化 waitStable）。`COOLIE_ROLLOUT_READY_TIMEOUT_MS` 覆盖，
-   * 测试用极小值快速练到超时降级路径。 */
-  readonly rolloutReadyTimeoutMs?: number
+  /** codex 无-hooks 通路的后台回填 watcher 上限（ms）。投递**不**等 rollout——TUI 的 rollout 首 turn
+   * 才懒落盘（RE-SMOKE 实测），投递前门控即死锁；create 后布防 watcher 盯 rollout 出现 → 回填
+   * engineSessionId + engine.session.started。首条 composer 输入可能在 create 数分钟后才来 → 上限
+   * 给宽，缺省 30min，超限自停（防永久盯扫）。`COOLIE_ROLLOUT_BACKFILL_MAX_MS` 覆盖，测试用小值。 */
+  readonly rolloutBackfillMaxMs?: number
 }
 export class CoolieConfig extends Context.Tag("CoolieConfig")<CoolieConfig, CoolieConfigShape>() {}
 
@@ -48,6 +48,6 @@ export const CoolieConfigLive = Layer.sync(CoolieConfig, () => {
     // 缺省 undefined → codex adapter 回落 defaultCodexConfigPath(codexHome)；测试用 COOLIE_CODEX_CONFIG 指向临时文件。
     codexConfigPath: process.env.COOLIE_CODEX_CONFIG,
     promptReadyTimeoutMs: Number(process.env.COOLIE_PROMPT_READY_TIMEOUT_MS ?? 90_000),
-    rolloutReadyTimeoutMs: Number(process.env.COOLIE_ROLLOUT_READY_TIMEOUT_MS ?? 15_000),
+    rolloutBackfillMaxMs: Number(process.env.COOLIE_ROLLOUT_BACKFILL_MAX_MS ?? 30 * 60_000),
   }
 })

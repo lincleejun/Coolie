@@ -12,7 +12,7 @@ import { injectInfoExclude } from "../workspace/include.js"
 import { ensureHookScript, injectClaudeHooks, hooksDisabled } from "./claude/hooks.js"
 import { injectCodexHooks } from "./codex/hooks.js"
 import { engineHome } from "./registry.js"
-import { scanNewestRollout, awaitRollout, realRolloutFs } from "./codex/rollout.js"
+import { scanNewestRollout, startRolloutBackfillWatcher, realRolloutFs } from "./codex/rollout.js"
 import { EventsBus, EVENT_CHANNEL } from "../events/bus.js"
 import { tmuxSessionName, type CoolieEvent } from "@coolie/protocol"
 
@@ -23,11 +23,11 @@ export const sessionNameFor = tmuxSessionName
  * 与 config.ts 缺省对齐——90s 跑赢真实 claude 首启（claude-mem 播种 ~22.3s）。 */
 const DEFAULT_PROMPT_READY_TIMEOUT_MS = 90_000
 
-/** codex 无-hooks 通路的 rollout 就绪门控兜底（cfg.rolloutReadyTimeoutMs 未注入时用）；
- * rollout 文件会话起始即落地，给足慢机余量，超时降级走强化 waitStable。 */
-const DEFAULT_ROLLOUT_READY_TIMEOUT_MS = 15_000
-/** rollout 轮询步长（≤500ms，brief）：文件几百 ms 内出现，不引入可感延迟。 */
-const ROLLOUT_POLL_INTERVAL_MS = 250
+/** codex 无-hooks 通路的后台回填 watcher（RE-SMOKE 反转：TUI rollout 首 turn 才懒落盘，
+ * 投递前门控 = 死锁，见 codex/rollout.ts 头注）：1s 一次轻量 fs 扫描；上限兜底防永久盯扫——
+ * 首条 composer 输入可能在 create 数分钟后才来，上限给宽（30min），cfg.rolloutBackfillMaxMs 可覆写。 */
+const ROLLOUT_BACKFILL_INTERVAL_MS = 1_000
+const DEFAULT_ROLLOUT_BACKFILL_MAX_MS = 30 * 60_000
 
 /** hook 派生事件类型前缀：只有这些（/hooks/claude 转发出来的）才算「claude 活着」的证据——
  * "engine.started" 是 bootstrap 自己无条件写的，不能拿来当就绪信号，否则等于没等。 */
@@ -103,10 +103,10 @@ export const EngineBootstrapHookLive = Layer.effect(
 
         const wantsPrompt = ctx.initialPrompt !== undefined && ctx.initialPrompt.trim() !== ""
         const gateOnHooks = wantsPrompt && engine.capabilities.hooks && !hooksDisabled() && Option.isSome(bus)
-        // codex 无-hooks 通路（0.139 实测 hooks 四断点，见 task-12-report）：hooks 能力关但服务端造 id →
-        // 就绪信号改用「本 workspace 的 rollout 文件出现」而非 EventsBus hook 事件。能力驱动：未来 codex≥0.144
-        // 验证 hooks 后 capabilities.hooks 转 true，gateOnHooks 优先，本路径自动让位、无需改调用点。
-        const gateOnRollout = wantsPrompt && !gateOnHooks && engine.serverGeneratedId === true
+        // codex 无-hooks 通路（RE-SMOKE 反转）：投递**不**等 rollout（TUI 懒落盘 = 门控死锁），照常走强化
+        // waitStable；id 回填交给投递外的后台 watcher（下方布防）。能力驱动：未来 codex≥0.144 验证 hooks 后
+        // capabilities.hooks 转 true → gateOnHooks 接管就绪 + /hooks/codex 回填 id，watcher 因 id 非 null 自停。
+        const armRolloutWatcher = engine.serverGeneratedId === true && !(engine.capabilities.hooks && !hooksDisabled())
 
         // 必须在起 tmux session 之前订阅：claude 冷启动可能在几百 ms 内就打 SessionStart，
         // 若等到 deliverPrompt 前一刻才订阅，订阅本身的延迟就可能错过这条事件。
@@ -120,7 +120,7 @@ export const EngineBootstrapHookLive = Layer.effect(
           bus.value.on(EVENT_CHANNEL, onEvent)
         }
 
-        // rollout 就绪门控的下界：只认「起 session 之后」创建的 rollout（排除旧会话/别 tab 的残留，防误回填旧 id）。
+        // rollout watcher 的下界：只认「起 session 之后」创建的 rollout（排除旧会话/别 tab 的残留，防误回填旧 id）。
         const rolloutSinceMs = Date.now()
         const { engineCommand } = yield* startEngineSession(tmux, {
           ws, repoRoot: project.repoRoot, engine, sessionId, resume: false, home: cfg.home,
@@ -134,6 +134,34 @@ export const EngineBootstrapHookLive = Layer.effect(
           workspaceId: ws.id, type: "engine.started",
           payload: { tabId: tab.id, engineId: engine.id, sessionId, command: engineCommand, wrapped: true },
         })
+
+        // codex 无-hooks 后台回填 watcher（无论有无 initialPrompt 都布防——首条 composer 输入可能在
+        // create 数分钟后才来）：每 1s 扫 codexHome/sessions 找本 workspace（cwd realpath 匹配、
+        // 起 session 之后创建）的 rollout，命中即回填 engineSessionId（→ tab.session.changed，解锁
+        // resume/标题/mtime 状态轮询）+ 追加 engine.session.started（迟到到达，词汇与 hooks 通路统一，
+        // C4/monitor/标题照常消费）后自停。teardown（tab 删）或已被回填 → shouldContinue=false 自停；
+        // timer unref + 30min 上限，绝无泄漏。onFound 失败（NotFound 竞态等）由 watcher 吞掉重试。
+        if (armRolloutWatcher) {
+          const home = engineHome(engine.id, { claudeHome: cfg.claudeHome, codexHome: cfg.codexHome })
+          const maxMs = cfg.rolloutBackfillMaxMs ?? DEFAULT_ROLLOUT_BACKFILL_MAX_MS
+          yield* Effect.sync(() => {
+            startRolloutBackfillWatcher(
+              {
+                scan: () => scanNewestRollout(realRolloutFs, { home, cwd: ws.path, sinceMs: rolloutSinceMs }),
+                shouldContinue: () => Effect.runPromise(tabs.get(tab.id).pipe(Effect.option))
+                  .then((t) => Option.isSome(t) && t.value.engineSessionId === null),
+                onFound: (hit) => Effect.runPromise(Effect.gen(function* () {
+                  yield* tabs.setEngineSessionId(tab.id, hit.sessionId)
+                  yield* events.append({
+                    workspaceId: ws.id, type: "engine.session.started",
+                    payload: { tabId: tab.id, sessionId: hit.sessionId },
+                  })
+                })),
+              },
+              { intervalMs: ROLLOUT_BACKFILL_INTERVAL_MS, maxMs },
+            )
+          })
+        }
 
         if (wantsPrompt) {
           let engineReady = false
@@ -151,39 +179,13 @@ export const EngineBootstrapHookLive = Layer.effect(
                 payload: { reason: "session-start-timeout", timeoutMs },
               })
             }
-          } else if (gateOnRollout) {
-            // codex 无-hooks 就绪门控：轮询本 workspace 的 rollout 文件出现（≤250ms 步长），命中即
-            // ① 回填 engineSessionId（→ tab.session.changed；resume/标题派生/mtime 状态轮询自此解锁）
-            // ② 追加 engine.session.started（同 hooks 词汇——下游 C4/状态迁移/标题派生保持统一，不知情有无 hooks）
-            // 再投 prompt：一举干掉 90s 结构性降级 + 永-null-id 两个断点。超时未见 → 记 rollout-timeout 降级、走兜底。
-            const home = engineHome(engine.id, { claudeHome: cfg.claudeHome, codexHome: cfg.codexHome })
-            const timeoutMs = cfg.rolloutReadyTimeoutMs ?? DEFAULT_ROLLOUT_READY_TIMEOUT_MS
-            const found = yield* Effect.promise(() => awaitRollout(
-              {
-                scan: () => scanNewestRollout(realRolloutFs, { home, cwd: ws.path, sinceMs: rolloutSinceMs }),
-                now: Date.now, sleep: (ms) => new Promise((r) => setTimeout(r, ms)),
-              },
-              { timeoutMs, intervalMs: ROLLOUT_POLL_INTERVAL_MS },
-            ))
-            if (found !== null) {
-              engineReady = true
-              yield* tabs.setEngineSessionId(tab.id, found.sessionId).pipe(
-                Effect.mapError((e) => new HookError({ message: `engineSessionId 回填失败：${e.message}` })),
-              )
-              yield* events.append({
-                workspaceId: ws.id, type: "engine.session.started",
-                payload: { tabId: tab.id, sessionId: found.sessionId },
-              })
-            } else {
-              yield* events.append({
-                workspaceId: ws.id, type: "prompt.delivery.degraded",
-                payload: { reason: "rollout-timeout", timeoutMs },
-              })
-            }
           }
+          // 注意（RE-SMOKE 反转）：codex 无-hooks 流走到这里 engineReady 恒 false → 强化 waitStable 默认参数
+          // （minElapsedMs 1500 / stableFrames 3，实测 TUI ~2s 稳定、composer 不吞字）。这是**设计通路**不是
+          // 降级——不发 prompt.delivery.degraded（degraded 只保留给 hooks 门控超时与真正的 waitStable 失败）。
           yield* detachListener // 拿到（或超时放弃）就绪信号后立刻摘监听器，不再需要
-          // engineReady：已确认 engine 真活着（hook 打过 / rollout 已落地），waitStable 只需最低限度确认一次；
-          // 否则（就绪信号不可用/超时未到）落回强化默认（minElapsedMs 1500 / stableFrames 3）兜底。
+          // engineReady：已确认 engine 真活着（hook 打过），waitStable 只需最低限度确认一次；
+          // 否则落回强化默认兜底。
           yield* deliverPrompt(
             tmux, `${session}:0`, ctx.initialPrompt!,
             engineReady ? { minElapsedMs: 0, stableFrames: 2 } : undefined,

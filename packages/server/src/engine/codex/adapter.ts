@@ -40,11 +40,13 @@ export const codexEngine: Engine = {
   displayName: "Codex",
   // hooks:false —— codex 0.139.0 实测 hooks 四断点（task-12-report §3）：features.hooks 默认关、项目级
   // .codex/hooks.json 不被发现、--dangerously-bypass-hook-trust 不激活未信任 hooks、SessionStart 推迟到
-  // 首个 turn。故 codex 走无-hooks 通路：就绪 + id 回填改由 rollout 文件门控（bootstrap gateOnRollout），
-  // 状态由 mtime 轮询独家负责（monitor，lastHookAt 恒 null → mtime 恒当值）。
+  // 首个 turn。故 codex 走无-hooks 通路（RE-SMOKE 反转版）：投递不等任何就绪信号——照常强化 waitStable
+  // （TUI ~2s 稳定、composer 实测不吞字），id 回填由 bootstrap 布防的后台 rollout watcher 完成（TUI 的
+  // rollout 首 turn 才懒落盘，做投递前门控 = 死锁——真机 RE-SMOKE 实测，勿回退）；状态由 mtime 轮询
+  // 独家负责（monitor，lastHookAt 恒 null → mtime 恒当值）。
   // 【hooks 重启检查】codex≥0.144 一旦实测确认「项目级 .codex/hooks.json 被发现 + features.hooks 默认开 +
-  // SessionStart 首启即触发」，把此位改回 true 即可：bootstrap gateOnHooks 会自动优先、gateOnRollout 让位，
-  // /hooks/codex 端点 + injectCodexHooks + statusFromHookEvent 已就绪（本次保留、future-ready），无需改调用点。
+  // SessionStart 首启即触发」，把此位改回 true 即可：bootstrap gateOnHooks 自动接管就绪、watcher 不再布防
+  // （能力驱动），/hooks/codex 端点 + injectCodexHooks + statusFromHookEvent 已就绪，无需改调用点。
   capabilities: { nativeQueue: false, midSessionModelSwitch: true, resume: true, hooks: false, effort: true },
   terminalTitle: "engine-owned", // codex OSC0 标题可配（codex.md §8）
   serverGeneratedId: true,       // 服务端造 id：bootstrap 起始存 null，rollout 文件出现后回填真 id

@@ -401,13 +401,14 @@ describe("bootstrap：serverGeneratedId 引擎先启动后回填（服务端造 
   })
 })
 
-describe("bootstrap：codex 无-hooks 通路——rollout 文件就绪门控 + id 回填（0.139 四断点修复）", () => {
-  // fake codex：hooks 能力关（0.139 现实）+ serverGeneratedId。initialPrompt 有值 → 触发 gateOnRollout。
-  // launchCommand = exec cat（pane 存活可收字，供投递验证）；newSessionId 返回哨兵——rollout 门控回填真 id，
-  // 绝不该用 newSessionId 的值。
+describe("bootstrap：codex 无-hooks 通路（RE-SMOKE 反转）——先投递后回填：投递不等 rollout + 后台 watcher", () => {
+  // fake codex：hooks 能力关（0.139 现实）+ serverGeneratedId → bootstrap 布防 rollout watcher。
+  // launchCommand = exec cat（pane 存活可收字）；newSessionId 返回哨兵——watcher 回填真 id，绝不用哨兵。
   const ROLLOUT_UUID = "019f5586-002d-73c1-98b9-ef17a05f06c9"
+  const ROLLOUT_UUID_2 = "019f5586-1111-73c1-98b9-ef17a05f0000"
+  const ROLLOUT_UUID_3 = "019f5586-2222-73c1-98b9-ef17a05f0000"
   const rolloutCodex: Engine = {
-    id: "codex", displayName: "Fake Codex (rollout-gated)",
+    id: "codex", displayName: "Fake Codex (rollout-watched)",
     capabilities: { nativeQueue: false, midSessionModelSwitch: true, resume: true, hooks: false, effort: true },
     terminalTitle: "engine-owned",
     serverGeneratedId: true,
@@ -418,91 +419,77 @@ describe("bootstrap：codex 无-hooks 通路——rollout 文件就绪门控 + i
     deriveTitle: () => null,
     resumeArgs: (s) => ["resume", s],
   }
-
-  it("rollout 文件出现 → 回填 engineSessionId(=文件名 UUID) + engine.session.started(早于 delivered)，无 90s 降级", async () => {
+  // 模拟 TUI 懒落盘产物：codexHome/sessions 日期树里的 rollout（session_meta 首行带 id + worktree cwd）
+  const writeRollout = (uuid: string, cwd: string) => {
+    const p = path.join(home, "codex-home", "sessions", "2026", "07", "12", `rollout-2026-07-12T00-00-00-${uuid}.jsonl`)
+    fs.mkdirSync(path.dirname(p), { recursive: true })
+    fs.writeFileSync(p, JSON.stringify({ type: "session_meta", payload: { id: uuid, cwd } }) + "\n")
+  }
+  const eventsOf = (wsId: string) =>
+    db.prepare("SELECT seq, type, payload FROM events WHERE workspace_id = ? ORDER BY seq").all(wsId) as Array<{ seq: number; type: string; payload: string }>
+  const createCodex = async (name: string, initialPrompt?: string) => {
     const layer = buildLayer(rolloutCodex, 4000)
     const program = Effect.gen(function* () {
       const projects = yield* ProjectsRepo
       const lc = yield* WorkspaceLifecycle
-      const list = yield* projects.list()
-      const project = list[0]!
-      return yield* lc.create({ projectId: project.id, name: "codex-rollout-1", engineId: "codex", initialPrompt: "rollout-me" })
-    })
-    const createExit = Effect.runPromiseExit(Effect.provide(program, layer) as Effect.Effect<any, any, never>)
-
-    // 等 ws 行（拿 path，rollout session_meta.cwd 必须精确等于 worktree path）+ tab 行（证明已起 session、门控开始轮询）
-    const ws = await waitForValue(() => db.prepare("SELECT id, path FROM workspaces WHERE name = 'codex-rollout-1'").get() as { id: string; path: string } | undefined)
-    await waitForValue(() => (db.prepare("SELECT id FROM tabs WHERE workspace_id = ?").get(ws.id) as any)?.id)
-
-    // 起 session 之后落地 rollout 文件（codexHome/sessions 日期树；session_meta 首行带 id + 本 worktree 的 cwd）
-    const codexHome = path.join(home, "codex-home")
-    const rolloutPath = path.join(codexHome, "sessions", "2026", "07", "12", `rollout-2026-07-12T00-00-00-${ROLLOUT_UUID}.jsonl`)
-    fs.mkdirSync(path.dirname(rolloutPath), { recursive: true })
-    fs.writeFileSync(rolloutPath, JSON.stringify({ type: "session_meta", payload: { id: ROLLOUT_UUID, cwd: ws.path } }) + "\n")
-
-    const exit = await createExit
-    expect(Exit.isSuccess(exit)).toBe(true)
-
-    // ① engineSessionId 回填成 rollout 文件名内嵌的真 UUID（不是哨兵）
-    const tabRow = db.prepare("SELECT engine_session_id FROM tabs WHERE workspace_id = ? AND kind = 'engine'").get(ws.id) as any
-    expect(tabRow?.engine_session_id).toBe(ROLLOUT_UUID)
-
-    const rows = db.prepare("SELECT seq, type, payload FROM events WHERE workspace_id = ? ORDER BY seq").all(ws.id) as Array<{ seq: number; type: string; payload: string }>
-    const started = rows.find((r) => r.type === "engine.session.started")
-    const delivered = rows.find((r) => r.type === "prompt.delivered")
-    const degraded = rows.find((r) => r.type === "prompt.delivery.degraded")
-    const sessionChanged = rows.find((r) => r.type === "tab.session.changed")
-    // ② engine.session.started 追加（同 hooks 词汇，下游统一），带真 id
-    expect(started).toBeDefined()
-    expect(JSON.parse(started!.payload).sessionId).toBe(ROLLOUT_UUID)
-    // ③ 回填经 setEngineSessionId → tab.session.changed（resume/标题/mtime 状态自此解锁）
-    expect(sessionChanged).toBeDefined()
-    expect(JSON.parse(sessionChanged!.payload).sessionId).toBe(ROLLOUT_UUID)
-    // ④ 就绪信号早于投递（≠ 缺陷时序：delivered 早于 started），且无结构性 90s 降级
-    expect(delivered).toBeDefined()
-    expect(started!.seq).toBeLessThan(delivered!.seq)
-    expect(degraded).toBeUndefined()
-  })
-
-  it("rollout 文件始终不出现 → rollout-timeout 降级取证（排在 delivered 前），仍投递成功", async () => {
-    // 极短 rollout 就绪超时快速练到降级路径（不落任何 rollout 文件）。
-    const cfgLayer = Layer.succeed(CoolieConfig, {
-      home, dbPath: ":memory:", serverInfoPath: path.join(home, "server.json"),
-      workspacesRoot: wsRoot, tmuxSocket: SOCK, claudeHome: path.join(home, "claude-home"), codexHome: path.join(home, "codex-home"),
-      promptReadyTimeoutMs: 4000, rolloutReadyTimeoutMs: 200,
-    })
-    const layer = WorkspaceLifecycleLive.pipe(
-      Layer.provideMerge(EngineBootstrapHookLive),
-      Layer.provideMerge(Layer.mergeAll(
-        GitServiceLive, SetupRunnerLive,
-        Layer.succeed(TmuxService, tmux),
-        Layer.succeed(EngineRegistry, new Map([[rolloutCodex.id, rolloutCodex]])),
-      )),
-      Layer.provideMerge(Layer.mergeAll(ProjectsRepoLive, EventsRepoLive, WorkspacesRepoLive, TabsRepoLive)),
-      Layer.provideMerge(Layer.succeed(EventsBus, bus)),
-      Layer.provideMerge(Layer.succeed(Db, db)),
-      Layer.provideMerge(cfgLayer),
-    )
-    const program = Effect.gen(function* () {
-      const projects = yield* ProjectsRepo
-      const lc = yield* WorkspaceLifecycle
       const project = (yield* projects.list())[0]!
-      return yield* lc.create({ projectId: project.id, name: "codex-rollout-2", engineId: "codex", initialPrompt: "rollout-timeout-me" })
+      return yield* lc.create({ projectId: project.id, name, engineId: "codex", ...(initialPrompt !== undefined ? { initialPrompt } : {}) })
     })
     const exit = await Effect.runPromiseExit(Effect.provide(program, layer) as Effect.Effect<any, any, never>)
     expect(Exit.isSuccess(exit)).toBe(true)
-    if (Exit.isSuccess(exit)) {
-      const wsId = exit.value.id
-      const rows = db.prepare("SELECT seq, type, payload FROM events WHERE workspace_id = ? ORDER BY seq").all(wsId) as Array<{ seq: number; type: string; payload: string }>
-      const degraded = rows.find((r) => r.type === "prompt.delivery.degraded")
-      const delivered = rows.find((r) => r.type === "prompt.delivered")
-      expect(degraded).toBeDefined()
-      expect(JSON.parse(degraded!.payload)).toEqual({ reason: "rollout-timeout", timeoutMs: 200 })
-      expect(delivered).toBeDefined()
-      expect(degraded!.seq).toBeLessThan(delivered!.seq)
-      // id 未回填（rollout 从未出现）：保持 null
-      const tabRow = db.prepare("SELECT engine_session_id FROM tabs WHERE workspace_id = ? AND kind = 'engine'").get(wsId) as any
-      expect(tabRow?.engine_session_id).toBeNull()
-    }
+    if (!Exit.isSuccess(exit)) throw new Error("create failed")
+    return exit.value
+  }
+  const engineSid = (wsId: string) =>
+    (db.prepare("SELECT engine_session_id FROM tabs WHERE workspace_id = ? AND kind = 'engine'").get(wsId) as any)?.engine_session_id ?? null
+
+  it("投递不等 rollout：rollout 不存在也快速投递、零 degraded、id 暂 null；迟到 rollout → watcher 回填（started 晚于 delivered 合法）", async () => {
+    const t0 = Date.now()
+    const ws = await createCodex("codex-invert-1", "invert-me")
+    const createMs = Date.now() - t0
+
+    // ① create 期间 rollout 从未存在：投递照样完成、零 degraded（这是设计通路不是降级）、尚未回填
+    const afterCreate = eventsOf(ws.id)
+    expect(afterCreate.find((r) => r.type === "prompt.delivered")).toBeDefined()
+    expect(afterCreate.find((r) => r.type === "prompt.delivery.degraded")).toBeUndefined()
+    expect(afterCreate.find((r) => r.type === "engine.session.started")).toBeUndefined()
+    expect(createMs).toBeLessThan(10_000) // 旧门控会先卡满 15s 超时；反转后 waitStable ~2s 量级
+    expect(engineSid(ws.id)).toBeNull()   // ② 懒落盘尚未发生 → id 仍 null
+
+    // ③ 模拟 TUI 首 turn 懒落盘：投递之后 rollout 才出现 → 后台 watcher（1s tick）回填
+    writeRollout(ROLLOUT_UUID, ws.path)
+    await waitForValue(() => (engineSid(ws.id) === ROLLOUT_UUID ? true : undefined), 5000)
+
+    const rows = eventsOf(ws.id)
+    const started = rows.find((r) => r.type === "engine.session.started")
+    const delivered = rows.find((r) => r.type === "prompt.delivered")
+    const sessionChanged = rows.find((r) => r.type === "tab.session.changed")
+    // ④ 回填两件套：engine.session.started（同 hooks 词汇、带真 id、**迟到**——晚于 delivered 是新常态）+ tab.session.changed
+    expect(started).toBeDefined()
+    expect(JSON.parse(started!.payload).sessionId).toBe(ROLLOUT_UUID)
+    expect(sessionChanged).toBeDefined()
+    expect(JSON.parse(sessionChanged!.payload).sessionId).toBe(ROLLOUT_UUID)
+    expect(started!.seq).toBeGreaterThan(delivered!.seq)
+    // ⑤ 全程零 degraded
+    expect(rows.find((r) => r.type === "prompt.delivery.degraded")).toBeUndefined()
+  })
+
+  it("无 initialPrompt 也布防 watcher（首条 composer 输入可能在 create 数分钟后）：rollout 出现即回填", async () => {
+    const ws = await createCodex("codex-invert-2") // 无 initialPrompt
+    expect(engineSid(ws.id)).toBeNull()
+    writeRollout(ROLLOUT_UUID_2, ws.path)
+    await waitForValue(() => (engineSid(ws.id) === ROLLOUT_UUID_2 ? true : undefined), 5000)
+    const started = eventsOf(ws.id).find((r) => r.type === "engine.session.started")
+    expect(started).toBeDefined()
+    expect(JSON.parse(started!.payload).sessionId).toBe(ROLLOUT_UUID_2)
+  })
+
+  it("teardown（tab 删除）→ watcher 自停：之后出现的 rollout 不回填、不写事件、不炸", async () => {
+    const ws = await createCodex("codex-invert-3")
+    // 模拟 teardown 的 tabs 后果：删 tab 行 → watcher 下一 tick shouldContinue=false（scan 之前）自停
+    db.prepare("DELETE FROM tabs WHERE workspace_id = ?").run(ws.id)
+    writeRollout(ROLLOUT_UUID_3, ws.path)
+    await new Promise((r) => setTimeout(r, 2500)) // > 2 个 watcher tick（1s）：若 watcher 还活着必已回填/写事件
+    expect(eventsOf(ws.id).find((r) => r.type === "engine.session.started")).toBeUndefined()
   })
 })

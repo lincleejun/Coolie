@@ -2,7 +2,9 @@ import { describe, it, expect, beforeAll, afterAll } from "vitest"
 import * as fs from "node:fs"
 import * as os from "node:os"
 import * as path from "node:path"
-import { parseRolloutSessionId, scanNewestRollout, awaitRollout, realRolloutFs } from "../src/engine/codex/rollout.js"
+import { parseRolloutSessionId, scanNewestRollout, startRolloutBackfillWatcher, realRolloutFs } from "../src/engine/codex/rollout.js"
+
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
 
 const UUID_A = "019f5586-002d-73c1-98b9-ef17a05f06c9"
 const UUID_B = "019f5586-1111-73c1-98b9-ef17a05f0000"
@@ -81,26 +83,79 @@ describe("scanNewestRollout（workspace-scoped：cwd 匹配 + since 过滤 + new
   })
 })
 
-describe("awaitRollout（轮询就绪门控：注入 scan/now/sleep）", () => {
-  it("前几轮 null、随后命中 → 返回命中，且轮询过（sleep 被调用）", async () => {
-    let t = 0
-    const slept: number[] = []
-    let calls = 0
-    const hit = { sessionId: UUID_A, path: "/x" }
-    const out = await awaitRollout(
-      { scan: () => (++calls >= 3 ? hit : null), now: () => t, sleep: async (ms) => { slept.push(ms); t += ms } },
-      { timeoutMs: 10_000, intervalMs: 250 },
+// RE-SMOKE 反转：TUI 的 rollout 首 turn 才懒落盘 → 不再有投递前门控；改为投递外的后台回填 watcher。
+describe("startRolloutBackfillWatcher（后台回填看护：命中即回填一次并自停，teardown/上限自停，无泄漏 timer）", () => {
+  const HIT = { sessionId: UUID_A, path: "/x" }
+
+  it("前几轮 null、随后命中 → onFound 恰一次，之后自停（不再 scan）", async () => {
+    let scans = 0
+    const found: string[] = []
+    const stop = startRolloutBackfillWatcher(
+      {
+        scan: () => (++scans >= 3 ? HIT : null),
+        shouldContinue: async () => true,
+        onFound: async (h) => { found.push(h.sessionId) },
+      },
+      { intervalMs: 5, maxMs: 10_000 },
     )
-    expect(out).toEqual(hit)
-    expect(calls).toBe(3)
-    expect(slept).toEqual([250, 250])
+    await sleep(60)
+    expect(found).toEqual([UUID_A]) // 恰一次
+    const after = scans
+    await sleep(30)
+    expect(scans).toBe(after) // 命中后自停：不再扫
+    stop() // 幂等
   })
-  it("始终 null 直到超时 → 返回 null", async () => {
-    let t = 0
-    const out = await awaitRollout(
-      { scan: () => null, now: () => t, sleep: async (ms) => { t += ms } },
-      { timeoutMs: 1_000, intervalMs: 250 },
+
+  it("shouldContinue=false（tab 已删/已被 hooks 回填）→ 不 scan、不 onFound、自停", async () => {
+    let scans = 0
+    let founds = 0
+    startRolloutBackfillWatcher(
+      { scan: () => { scans++; return HIT }, shouldContinue: async () => false, onFound: async () => { founds++ } },
+      { intervalMs: 5, maxMs: 10_000 },
     )
-    expect(out).toBeNull()
+    await sleep(40)
+    expect(scans).toBe(0) // teardown 判定在 scan 之前：一次都不扫
+    expect(founds).toBe(0)
+  })
+
+  it("超过 maxMs 上限 → 自停（防永久盯扫）", async () => {
+    let scans = 0
+    startRolloutBackfillWatcher(
+      { scan: () => { scans++; return null }, shouldContinue: async () => true, onFound: async () => {} },
+      { intervalMs: 5, maxMs: 12 },
+    )
+    await sleep(60)
+    const settled = scans
+    expect(settled).toBeLessThanOrEqual(3) // 12ms 上限内最多 ~2 tick
+    await sleep(30)
+    expect(scans).toBe(settled) // 停死了
+  })
+
+  it("显式 stop() → 立刻不再 tick（bootstrap 失败路径/测试收尾可拆）", async () => {
+    let scans = 0
+    const stop = startRolloutBackfillWatcher(
+      { scan: () => { scans++; return null }, shouldContinue: async () => true, onFound: async () => {} },
+      { intervalMs: 5, maxMs: 10_000 },
+    )
+    await sleep(25)
+    expect(scans).toBeGreaterThan(0)
+    stop()
+    const after = scans
+    await sleep(30)
+    expect(scans).toBe(after)
+  })
+
+  it("onFound 抛错 → 吞掉且不停（下一 tick 重试，直到成功）", async () => {
+    let founds = 0
+    startRolloutBackfillWatcher(
+      {
+        scan: () => HIT,
+        shouldContinue: async () => true,
+        onFound: async () => { founds++; if (founds === 1) throw new Error("db busy") },
+      },
+      { intervalMs: 5, maxMs: 10_000 },
+    )
+    await sleep(60)
+    expect(founds).toBe(2) // 第 1 次抛错重试，第 2 次成功后自停
   })
 })

@@ -2,14 +2,20 @@ import * as fs from "node:fs"
 import * as path from "node:path"
 
 /**
- * codex 无-hooks 通路的就绪 + id 回填真源（0.139.0 实测 hooks 四断点后的替代信号）。
+ * codex 无-hooks 通路的 id 回填真源（0.139.0 实测 hooks 四断点后的替代信号）。
  *
  * 背景：codex 0.139.0 的 SessionStart hook 结构性不可靠（features.hooks 默认关、项目级
  * .codex/hooks.json 不被发现、--dangerously-bypass-hook-trust 不激活未信任 hooks、SessionStart
- * 推迟到首个 turn）——engine.session.started 永不到达、engineSessionId 永 null。但 codex 在会话
- * 起始即在 <codexHome>/sessions/<YYYY>/<MM>/<DD>/rollout-<ts>-<uuid>.jsonl 落地 rollout 文件，
- * session_meta 首行即带 id + cwd。故就绪门控与 id 回填改以「本 workspace 的新 rollout 文件出现」
- * 为信号：文件名内嵌的 UUIDv7 就是 session id，session_meta.cwd 用来把并发会话精确定位到本 worktree。
+ * 推迟到首个 turn）——engine.session.started 永不到达、engineSessionId 永 null。codex 会在
+ * <codexHome>/sessions/<YYYY>/<MM>/<DD>/rollout-<ts>-<uuid>.jsonl 落地 rollout 文件（session_meta
+ * 首行带 id + cwd）：文件名内嵌的 UUIDv7 就是 session id，session_meta.cwd 把并发会话精确定位到本 worktree。
+ *
+ * 【RE-SMOKE 反转，勿回退成投递前门控】交互式 TUI 的 rollout 是**首 turn 才懒落盘**的（真机实测：
+ * composer 就绪静置 25s 无文件；首条 prompt 后 ~2s 出现；headless `codex exec` 才即刻落盘——首轮
+ * 0.556s 的测量对象是 exec，不是 Coolie 跑的 TUI）。rollout 做投递前就绪门控 = 门控等 rollout、
+ * rollout 等首条 prompt 的死锁。所以：投递照常走强化 waitStable（codex composer 实测不吞字、投递
+ * 从未失败），rollout 只做**投递外的后台回填 watcher**（startRolloutBackfillWatcher）——命中后迟到
+ * 回填 engineSessionId + engine.session.started（下游 C4/monitor/标题词汇统一，不感知迟到）。
  */
 
 const UUID_RE = /([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/i
@@ -27,8 +33,8 @@ export interface RolloutFs {
   readonly readText: (p: string) => string | null
   readonly statMtimeMs: (p: string) => number | null
   /** 路径规范化（realpath）：codex 在 session_meta 记的 cwd 是 realpath（macOS /tmp→/private/tmp、
-   * 任何软链根都会解析），而 ws.path 可能是软链路径——不归一化则 cwd 精确比对假阴性 → 门控超时误降级 +
-   * 永不回填。realpath 失败（路径不存在，单测的假路径）回落原值。0.139.0 真机实测确认此归一化必需。 */
+   * 任何软链根都会解析），而 ws.path 可能是软链路径——不归一化则 cwd 精确比对假阴性 → watcher 永不
+   * 命中、永不回填。realpath 失败（路径不存在，单测的假路径）回落原值。0.139.0 真机实测确认此归一化必需。 */
   readonly realpath: (p: string) => string
 }
 
@@ -92,23 +98,46 @@ export const scanNewestRollout = (fsx: RolloutFs, o: RolloutScanOpts): { session
   return best ? { sessionId: best.sessionId, path: best.path } : null
 }
 
-export interface RolloutGateDeps {
+export interface RolloutWatcherDeps {
   readonly scan: () => { sessionId: string; path: string } | null
-  readonly now: () => number
-  readonly sleep: (ms: number) => Promise<void>
+  /** 每 tick 先问是否还需要盯（bootstrap 注入：tab 仍存在且 engineSessionId 仍 null）——
+   * workspace teardown（tab 删）或已被别的通路回填（未来 hooks 抢先）→ false，watcher 自停。
+   * 判定在 scan **之前**：teardown 后连一次多余的 fs 扫描都不做。 */
+  readonly shouldContinue: () => Promise<boolean>
+  /** 命中回调（bootstrap 注入：setEngineSessionId + engine.session.started）。抛错 = 本 tick 作废、
+   * 下一 tick 连 scan 带 onFound 整体重试（回填是幂等 UPDATE，重试安全）。 */
+  readonly onFound: (hit: { sessionId: string; path: string }) => Promise<void>
+  readonly now?: () => number
 }
 
-/** 轮询就绪门控：scan 命中即返回；到 timeout 仍无 → 返回 null（调用方降级走 waitStable）。
- * intervalMs ≤ 500（brief）：rollout 文件在会话起始即落地，几百 ms 即可捕获，不引入可感延迟。 */
-export const awaitRollout = async (
-  deps: RolloutGateDeps,
-  o: { readonly timeoutMs: number; readonly intervalMs: number },
-): Promise<{ sessionId: string; path: string } | null> => {
-  const deadline = deps.now() + o.timeoutMs
-  for (;;) {
-    const hit = deps.scan()
-    if (hit !== null) return hit
-    if (deps.now() >= deadline) return null
-    await deps.sleep(o.intervalMs)
+/** 后台回填 watcher：每 intervalMs 一 tick（shouldContinue → scan → onFound），命中且 onFound 成功后
+ * 自停；maxMs 上限兜底防永久盯扫；返回显式 stop（幂等）。timer 逐 tick setTimeout + unref——绝不阻
+ * 进程退出，tick 之间无并发（async tick 完成后才排下一个），任何异常吞掉重试。 */
+export const startRolloutBackfillWatcher = (
+  deps: RolloutWatcherDeps,
+  o: { readonly intervalMs: number; readonly maxMs: number },
+): (() => void) => {
+  const now = deps.now ?? Date.now
+  const deadline = now() + o.maxMs
+  let stopped = false
+  let timer: ReturnType<typeof setTimeout> | undefined
+  const stop = (): void => { stopped = true; if (timer !== undefined) { clearTimeout(timer); timer = undefined } }
+  const arm = (): void => {
+    if (stopped || now() >= deadline) return stop()
+    timer = setTimeout(tick, o.intervalMs)
+    timer.unref?.()
   }
+  const tick = (): void => {
+    void (async () => {
+      if (stopped) return
+      try {
+        if (!(await deps.shouldContinue())) return stop()
+        const hit = deps.scan()
+        if (hit !== null) { await deps.onFound(hit); return stop() }
+      } catch { /* 看护绝不外抛：本 tick 作废，下一 tick 重试 */ }
+      arm()
+    })()
+  }
+  arm()
+  return stop
 }
