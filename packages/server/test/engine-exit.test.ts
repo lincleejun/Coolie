@@ -59,6 +59,20 @@ describe("POST /hooks/engine-exit（keep-alive 回报）", () => {
     expect(events().some((e) => e.type === "engine.exited")).toBe(true)
   })
 
+  it("setStatus+engine.exited 单事务（C3）：engine.exited 写失败则 status 回滚不半写", async () => {
+    // 触发器让 engine.exited 事件写入 ABORT，模拟事务内第二写失败
+    db.exec(`CREATE TRIGGER break_engine_exited BEFORE INSERT ON events
+      WHEN NEW.type = 'engine.exited'
+      BEGIN SELECT RAISE(ABORT, 'boom'); END`)
+    const before = tabRow().status // "idle"
+    const r = await post("?workspace=w1", { exitCode: 1 })
+    expect(r.status).not.toBe(200) // 第二写失败 → 整体失败
+    expect(tabRow().status).toBe(before) // 单事务回滚：status 未被半写成 error
+    // 同事务内的 tab.status.changed 也随之回滚，不留半成品事件
+    expect(events().some((e) => e.type === "tab.status.changed")).toBe(false)
+    db.exec("DROP TRIGGER break_engine_exited")
+  })
+
   it("无 workspace → 400；无 engine tab 的 workspace → 200 静默；非整数 exitCode → 400；无 token → 401", async () => {
     expect((await post("", { exitCode: 1 })).status).toBe(400)
     expect((await post("?workspace=ghost", { exitCode: 1 })).status).toBe(200)

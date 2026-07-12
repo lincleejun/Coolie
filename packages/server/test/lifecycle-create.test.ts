@@ -183,6 +183,28 @@ describe("WorkspaceLifecycle.create", () => {
     // branch 本身从未被删除/重置：仍指向失败尝试时的提交
     expect(env.fake.state.refs.get("refs/heads/coolie/base-advances")).toBe(FAKE_SHA)
   })
+  it("retry 补投原 initialPrompt + engineId（C2）", async () => {
+    const env = makeEnv()
+    const seen: Array<{ initialPrompt?: string; engineId?: string }> = []
+    let calls = 0
+    env.hooks.push((_ws, ctx) => {
+      seen.push({ ...ctx })
+      calls += 1
+      // 首次 hook（pre-delivery）失败 → status=error；重试时须补回原 ctx
+      return calls === 1 ? Effect.fail(new HookError({ message: "pre-delivery boom" })) : Effect.void
+    })
+    const p = await ok(env, addProject(env.repoRoot))
+    const exit = await env.run(Effect.gen(function* () {
+      return yield* (yield* WorkspaceLifecycle).create({ projectId: p.id, engineId: "codex", initialPrompt: "第一句" })
+    }))
+    expect(failTag(exit)).toBe("HookError")
+    const errored = (await ok(env, Effect.gen(function* () { return yield* (yield* WorkspacesRepo).list() })))[0]!
+    expect(errored.status).toBe("error")
+    seen.length = 0
+    await ok(env, Effect.gen(function* () { return yield* (yield* WorkspaceLifecycle).retry(errored.id) }))
+    // 重试补回原 prompt+引擎，而非 {}（账本 C2）
+    expect(seen[0]).toEqual({ initialPrompt: "第一句", engineId: "codex" })
+  })
   it("retry on a non-error workspace -> ConflictError", async () => {
     const env = makeEnv()
     const p = await ok(env, addProject(env.repoRoot))

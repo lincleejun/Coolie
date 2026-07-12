@@ -29,6 +29,8 @@ export interface TabsRepoShape {
   readonly listByWorkspace: (workspaceId: string) => Effect.Effect<Tab[]>
   readonly findEngineTab: (workspaceId: string) => Effect.Effect<Tab | null>
   readonly setStatus: (id: string, status: TabStatus, source: TabStatusSource) => Effect.Effect<Tab, NotFoundError>
+  /** C3：engine 退出的状态与 engine.exited 事件同事务提交/回滚（避免 setStatus 已落库、事件写失败的半写） */
+  readonly recordEngineExit: (tabId: string, workspaceId: string, exitCode: number) => Effect.Effect<Tab, NotFoundError>
   readonly setTitle: (id: string, title: string) => Effect.Effect<void, NotFoundError>
   readonly setEngineSessionId: (id: string, sessionId: string) => Effect.Effect<void, NotFoundError>
   readonly touchHookAt: (id: string, ts: number) => Effect.Effect<void, NotFoundError>
@@ -88,6 +90,27 @@ export const TabsRepoLive = Layer.effect(
         })()
         broadcast(ev)
         return rowToTab(getRow(id))
+      }),
+      recordEngineExit: (tabId, workspaceId, exitCode) => Effect.gen(function* () {
+        const r = yield* mustGetRow(tabId)
+        const status: TabStatus = exitCode === 0 ? "idle" : "error"
+        const sessionId = r.engine_session_id ?? null
+        const evs: CoolieEvent[] = []
+        // 单事务：状态迁移（+ tab.status.changed）与 engine.exited 事件同提交/同回滚
+        db.transaction(() => {
+          if (r.status !== status) { // 同值 no-op：与 setStatus 一致，不写库不发 status 事件
+            db.prepare("UPDATE tabs SET status = ? WHERE id = ?").run(status, tabId)
+            evs.push(appendEventRow(db, {
+              workspaceId: r.workspace_id, type: "tab.status.changed",
+              payload: { tabId, status, source: "wrapper" },
+            }))
+          }
+          evs.push(appendEventRow(db, {
+            workspaceId, type: "engine.exited", payload: { tabId, sessionId, exitCode },
+          }))
+        })()
+        for (const ev of evs) broadcast(ev)
+        return rowToTab(getRow(tabId))
       }),
       setTitle: (id, title) => Effect.gen(function* () {
         const r = yield* mustGetRow(id)

@@ -32,6 +32,9 @@ export interface WorkspacesRepoShape {
   readonly setStatus: (id: string, next: WorkspaceStatus) => Effect.Effect<Workspace, NotFoundError | ConflictError>
   readonly setBaseRef: (id: string, baseRef: string) => Effect.Effect<void, NotFoundError>
   readonly setLastError: (id: string, err: { tag: string; message: string }) => Effect.Effect<void, NotFoundError>
+  /** create 存下首条 prompt+引擎（C2）：error 后 retry 从 data.createCtx 回填 PostCreateContext 补投 */
+  readonly setCreateCtx: (id: string, ctx: { initialPrompt?: string; engineId?: string }) => Effect.Effect<void, NotFoundError>
+  readonly getCreateCtx: (id: string) => Effect.Effect<{ initialPrompt?: string; engineId?: string }, NotFoundError>
   readonly usedPortBases: () => Effect.Effect<number[]>
   readonly remove: (id: string) => Effect.Effect<void, NotFoundError>
 }
@@ -89,6 +92,26 @@ export const WorkspacesRepoLive = Layer.effect(
         try { data = r.data ? JSON.parse(r.data) : {} } catch { /* 重建 */ }
         data.lastError = { tag: err.tag, message: err.message, at: Date.now() }
         db.prepare("UPDATE workspaces SET data = ? WHERE id = ?").run(JSON.stringify(data), id)
+      }),
+      setCreateCtx: (id, ctx) => Effect.gen(function* () {
+        const r = yield* mustGetRow(id)
+        let data: any = {}
+        try { data = r.data ? JSON.parse(r.data) : {} } catch { /* 重建 */ }
+        data.createCtx = {
+          ...(ctx.initialPrompt !== undefined ? { initialPrompt: ctx.initialPrompt } : {}),
+          ...(ctx.engineId !== undefined ? { engineId: ctx.engineId } : {}),
+        }
+        db.prepare("UPDATE workspaces SET data = ? WHERE id = ?").run(JSON.stringify(data), id)
+      }),
+      getCreateCtx: (id) => Effect.gen(function* () {
+        const r = yield* mustGetRow(id)
+        let data: any = {}
+        try { data = r.data ? JSON.parse(r.data) : {} } catch { /* 坏 JSON 视为无 ctx */ }
+        const c = (data.createCtx ?? {}) as { initialPrompt?: unknown; engineId?: unknown }
+        return {
+          ...(typeof c.initialPrompt === "string" ? { initialPrompt: c.initialPrompt } : {}),
+          ...(typeof c.engineId === "string" ? { engineId: c.engineId } : {}),
+        }
       }),
       usedPortBases: () => Effect.sync(() =>
         (db.prepare("SELECT data FROM workspaces").all() as any[])

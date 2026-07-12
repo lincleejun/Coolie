@@ -166,6 +166,11 @@ export const WorkspaceLifecycleLive = Layer.effect(
           projectId: project.id, name, path: wsPath, branch,
           baseBranch: project.defaultBaseBranch, portBase,
         })
+        // C2：把首条 prompt+引擎存进 data.createCtx，供 error 后 retry 补投（否则 retry 丢首条 prompt 和原引擎）
+        yield* repo.setCreateCtx(ws.id, {
+          ...(opts.initialPrompt !== undefined ? { initialPrompt: opts.initialPrompt } : {}),
+          ...(opts.engineId !== undefined ? { engineId: opts.engineId } : {}),
+        })
         yield* emit(ws.id, "workspace.creating", { id: ws.id, projectId: project.id, name, branch, path: wsPath, portBase })
         return yield* provision(ws, project.repoRoot, {
           ...(opts.initialPrompt !== undefined ? { initialPrompt: opts.initialPrompt } : {}),
@@ -183,7 +188,9 @@ export const WorkspaceLifecycleLive = Layer.effect(
         const project = yield* projects.get(ws0.projectId)
         const ws = yield* repo.setStatus(id, "creating")
         yield* emit(id, "workspace.creating", { id, retry: true, name: ws.name, branch: ws.branch, path: ws.path, portBase: ws.portBase })
-        return yield* provision(ws, project.repoRoot, {}).pipe(
+        // C2：回填 create 时存下的 ctx（首条 prompt + 原引擎），而非丢成 {}
+        const ctx = yield* repo.getCreateCtx(id)
+        return yield* provision(ws, project.repoRoot, ctx).pipe(
           Effect.catchAll((e) => rollbackToError(ws, project.repoRoot, e)),
         )
       })

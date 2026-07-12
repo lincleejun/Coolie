@@ -224,11 +224,8 @@ export const createApp = ({ runtime, token, onShutdown, onError, bus, sseHeartbe
               const tabs = yield* TabsRepo
               const tab = yield* tabs.findEngineTab(wsId)
               if (!tab) return { ok: true } // 已归档/删除的竞态回报：与 /hooks/claude 同款静默
-              yield* tabs.setStatus(tab.id, body.exitCode === 0 ? "idle" : "error", "wrapper")
-              yield* (yield* EventsRepo).append({
-                workspaceId: wsId, type: "engine.exited",
-                payload: { tabId: tab.id, sessionId: tab.engineSessionId, exitCode: body.exitCode },
-              })
+              // C3：状态迁移 + engine.exited 事件同事务（避免半写）
+              yield* tabs.recordEngineExit(tab.id, wsId, body.exitCode)
               return { ok: true }
             }),
             (r) => send(res, 200, r),
