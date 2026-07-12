@@ -19,7 +19,11 @@ export interface Engine {
   readonly terminalTitle: "engine-owned" | "none"
   /** 会话 id 生命周期差异进抽象（codex M2：服务端造 id 需先启动后回填——函数形态预留） */
   readonly newSessionId: () => string
-  readonly launchCommand: (opts: { readonly sessionId: string; readonly model?: string; readonly effort?: string }) => string[]
+  readonly launchCommand: (opts: {
+    readonly sessionId: string; readonly model?: string; readonly effort?: string
+    /** true = 复活既有会话（claude: --resume <sessionId>）；缺省/false = 新会话（--session-id） */
+    readonly resume?: boolean
+  }) => string[]
   /** hook 事件 → tab 状态；未知事件返回 null（turnDetector 主路径） */
   readonly statusFromHookEvent: (evt: unknown) => TabStatus | null
   /** historyReader：engine 自己的转录文件位置（home = engine 数据目录，claude 为 ~/.claude） */

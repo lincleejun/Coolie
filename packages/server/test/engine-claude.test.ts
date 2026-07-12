@@ -37,6 +37,28 @@ describe("launchCommand pipeline", () => {
   })
 })
 
+describe("launchCommand resume（Plan 4 heal/resume 消费）", () => {
+  const saved = process.env.COOLIE_CLAUDE_CMD
+  afterEach(() => { if (saved === undefined) delete process.env.COOLIE_CLAUDE_CMD; else process.env.COOLIE_CLAUDE_CMD = saved })
+
+  it("resume:true → [bin, --resume, sessionId]，不带 --session-id", () => {
+    delete process.env.COOLIE_CLAUDE_CMD
+    const cmd = claudeEngine.launchCommand({ sessionId: "s-1", resume: true })
+    expect(cmd.slice(1, 3)).toEqual(["--resume", "s-1"])
+    expect(cmd).not.toContain("--session-id")
+  })
+  it("resume + model 仍追加 --model", () => {
+    delete process.env.COOLIE_CLAUDE_CMD
+    const cmd = claudeEngine.launchCommand({ sessionId: "s-1", resume: true, model: "opus" })
+    expect(cmd).toContain("--model")
+    expect(cmd).toContain("opus")
+  })
+  it("COOLIE_CLAUDE_CMD 覆盖时 resume 也原样使用（测试 seam 铁律：绝不追加 flag）", () => {
+    process.env.COOLIE_CLAUDE_CMD = "cat"
+    expect(claudeEngine.launchCommand({ sessionId: "s-1", resume: true })).toEqual(["cat"])
+  })
+})
+
 describe("binary discovery（opcode 路线，注入探针）", () => {
   it("COOLIE_CLAUDE_BIN wins when executable", () => {
     expect(discoverClaudeBinary({

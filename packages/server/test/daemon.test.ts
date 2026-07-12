@@ -131,6 +131,63 @@ describe("engine ownership（不可违背原则）", () => {
   })
 })
 
+describe("keep-alive 闭环（wrapper → /hooks/engine-exit → engine.exited）", () => {
+  it("engine 非零退出：事件落库 + tab=error + session 不塌", async () => {
+    const sock = `coolie-test-${process.pid}-ka`
+    const home2 = fs.mkdtempSync(path.join(os.tmpdir(), "coolie-ka2-home-"))
+    const wsRoot = fs.mkdtempSync(path.join(os.tmpdir(), "coolie-ka2-ws-"))
+    const repo = fs.mkdtempSync(path.join(os.tmpdir(), "coolie-ka2-repo-"))
+    execFileSync("git", ["init", "-b", "main"], { cwd: repo })
+    execFileSync("git", ["-c", "user.email=t@t", "-c", "user.name=t", "commit", "--allow-empty", "-m", "init"], { cwd: repo })
+    // engine 替身：先睡 1s（保证 tabs 行已插入）再以 7 退出——COOLIE_CLAUDE_CMD 是空白分词，
+    // 不能写 "sh -c 'exit 7'"（引号不解析），用脚本文件。
+    const exit7 = path.join(home2, "exit7.sh")
+    fs.mkdirSync(home2, { recursive: true })
+    fs.writeFileSync(exit7, "#!/bin/sh\nsleep 1\nexit 7\n", { mode: 0o755 })
+    const env = {
+      ...process.env, COOLIE_HOME: home2, COOLIE_WORKSPACES_ROOT: wsRoot,
+      COOLIE_TMUX_SOCKET: sock, COOLIE_CLAUDE_CMD: exit7, COOLIE_DISABLE_HOOKS: "1",
+      COOLIE_CLAUDE_HOME: path.join(home2, "claude-home"),
+    }
+    const srv = spawn(TSX, [MAIN, "start"], { env, stdio: "pipe", detached: true })
+    try {
+      let info: ReturnType<typeof readServerInfo> = null
+      const deadline = Date.now() + 15_000
+      while (Date.now() < deadline) {
+        info = readServerInfo(path.join(home2, "server.json"))
+        if (info && (await fetch(`http://127.0.0.1:${info.port}/health`).catch(() => null))?.ok) break
+        await new Promise((r) => setTimeout(r, 100))
+      }
+      if (!info) throw new Error("server did not become healthy")
+      const auth = { "content-type": "application/json", Authorization: `Bearer ${info.token}` }
+      const proj = await (await fetch(`http://127.0.0.1:${info.port}/projects`, {
+        method: "POST", headers: auth, body: JSON.stringify({ repoRoot: repo }),
+      })).json()
+      const created = await fetch(`http://127.0.0.1:${info.port}/workspaces`, {
+        method: "POST", headers: auth, body: JSON.stringify({ projectId: proj.id }),
+      })
+      expect(created.status).toBe(201)
+      const ws: any = await created.json()
+      // 等 engine.exited(exitCode=7) 经 wrapper curl 回报落库
+      let exited: any = null
+      const d2 = Date.now() + 10_000
+      while (Date.now() < d2 && !exited) {
+        const evs: any[] = await (await fetch(`http://127.0.0.1:${info.port}/events?after=0`, { headers: auth })).json()
+        exited = evs.find((e) => e.type === "engine.exited" && e.payload?.exitCode === 7) ?? null
+        if (!exited) await new Promise((r) => setTimeout(r, 200))
+      }
+      expect(exited).not.toBeNull()
+      const tabs: any[] = await (await fetch(`http://127.0.0.1:${info.port}/workspaces/${ws.id}/tabs`, { headers: auth })).json()
+      expect(tabs[0].status).toBe("error")
+      // 不塌布局：session 仍在（wrapper 已 exec 成 shell）
+      expect(spawnSync("tmux", ["-L", sock, "has-session", "-t", `=coolie-${ws.id}`]).status).toBe(0)
+    } finally {
+      try { process.kill(-srv.pid!, "SIGKILL") } catch { /* dead */ }
+      try { execFileSync("tmux", ["-L", sock, "kill-server"]) } catch { /* gone */ }
+    }
+  })
+})
+
 describe("daemon 加固（Plan 4）", () => {
   it("shutdown：挂着 SSE 长连接也在时限内退出，server.json 与 coolie.sock 都清掉", async () => {
     const info = await startServer()
