@@ -17,7 +17,6 @@ import { tmuxSessionName } from "@coolie/protocol"
 import type { ComposerOps, InputMode } from "../tmux/ops.js"
 import type { GitReadOps } from "../git/inspect.js"
 import { scanSlashCommands } from "../engine/claude/commands.js"
-import { claudeModels } from "../engine/claude/adapter.js"
 import { SessionEnsurer } from "../workspace/heal.js"
 import { tokenEquals } from "./token.js"
 import { handleEventsStream } from "./sse.js"
@@ -424,13 +423,14 @@ export const createApp = ({ runtime, token, onShutdown, onError, bus, sseHeartbe
             res, runtime,
             Effect.gen(function* () {
               const registry = yield* EngineRegistry
-              const claude = registry.get("claude")
-              return {
-                tmuxSocket: config.tmuxSocket,
-                engines: claude
-                  ? [{ id: claude.id, displayName: claude.displayName, capabilities: claude.capabilities, models: claudeModels }]
-                  : [],
-              }
+              const engines = [...registry.values()].map((e) => ({
+                id: e.id,
+                displayName: e.displayName,
+                capabilities: e.capabilities,
+                models: e.models ?? [], // F4：models 可选，缺省下发空数组（fake 引擎无 models）
+                ...(e.efforts !== undefined ? { efforts: e.efforts } : {}),
+              }))
+              return { tmuxSocket: config.tmuxSocket, engines }
             }),
             (body) => send(res, 200, body),
             onError,
