@@ -24,4 +24,40 @@ body {
 }
 input, textarea { user-select: text; cursor: text; }
 button { font: inherit; color: inherit; background: none; border: none; cursor: pointer; }
-.app-boot { padding: 40px; }
+
+/* === app shell (Task 8) === */
+.app-frame { display: flex; flex-direction: column; height: 100%; background: var(--bg); }
+.titlebar {
+  height: var(--titlebar-h); flex: none; display: flex; align-items: center;
+  border-bottom: 1px solid var(--border); padding: 0 12px; gap: 12px;
+}
+.traffic { display: flex; gap: 8px; }
+.tl { width: 12px; height: 12px; border-radius: 50%; padding: 0; }
+.tl.close { background: #ff5f57; } .tl.min { background: #febc2e; } .tl.max { background: #28c840; }
+.titlebar-center { flex: 1; text-align: center; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.titlebar-center .branch { margin-left: 8px; color: var(--fg-dim); font-size: 12px; }
+.conn { font-size: 11px; } .conn-online { color: var(--ok); } .conn-offline { color: var(--warn); } .conn-connecting { color: var(--fg-dim); }
+.columns { flex: 1; display: flex; min-height: 0; }
+.col-left { width: 260px; flex: none; border-right: 1px solid var(--border); display: flex; flex-direction: column; min-height: 0; }
+.col-center { flex: 1; display: flex; flex-direction: column; min-width: 0; min-height: 0; }
+.col-right { width: 320px; flex: none; border-left: 1px solid var(--border); display: flex; flex-direction: column; min-height: 0; }
+.col-right.collapsed { width: 44px; }
+.boot-error { padding: 48px; } .boot-error pre { color: var(--danger); margin: 12px 0; white-space: pre-wrap; }
+.modal-backdrop { position: fixed; inset: 0; background: rgba(0,0,0,0.45); display: flex; align-items: center; justify-content: center; z-index: 100; }
+.modal { background: #26262b; border: 1px solid var(--border); border-radius: 10px; padding: 24px; max-width: 480px; max-height: 70vh; overflow-y: auto; }
+.modal h2 { font-size: 15px; margin-bottom: 10px; } .modal p { margin: 8px 0; line-height: 1.5; }
+.modal pre { background: #1a1a1e; padding: 8px 12px; border-radius: 6px; margin: 10px 0; user-select: text; }
+.btn { background: var(--accent); color: #14141a; border-radius: 6px; padding: 6px 14px; font-weight: 600; }
+.btn:disabled { opacity: 0.5; }
+.dim { color: var(--fg-dim); font-size: 12px; }
+.cheatsheet section { margin-top: 12px; } .cheatsheet h3 { font-size: 12px; color: var(--fg-dim); margin-bottom: 6px; }
+.hk-row { display: flex; gap: 12px; padding: 3px 0; }
+.hk-row kbd { min-width: 64px; background: #1a1a1e; border: 1px solid var(--border); border-radius: 4px; padding: 1px 6px; text-align: center; font-size: 11px; }
+/* F5：降级警告 toast */
+.toasts { position: fixed; right: 16px; bottom: 16px; z-index: 200; display: flex; flex-direction: column; gap: 8px; max-width: 380px; }
+.toast { display: flex; align-items: center; gap: 8px; padding: 8px 10px; border-radius: 8px; font-size: 12px; }
+.toast-warn { background: rgba(224,175,104,0.15); border: 1px solid var(--warn); color: var(--fg); }
+.toast-code { font-family: Menlo, monospace; font-size: 11px; color: var(--warn); flex: none; }
+.toast-msg { flex: 1; }
+.toast-x { color: var(--fg-dim); flex: none; padding: 0 4px; }
+.toast-x:hover { color: var(--fg); }

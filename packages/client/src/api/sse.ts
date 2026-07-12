@@ -32,6 +32,8 @@ export const backoffDelay = (attempt: number): number => Math.min(500 * 2 ** att
 export interface EventStreamOpts {
   getInfo: () => Promise<{ port: number; token: string }>
   after: number
+  /** Plan-4 role 化 refcount：GUI 传 "gui" → 连接持有 server lease（连接断＝自动释放）。省略＝不登记（测试友好）。 */
+  role?: "gui" | "terminal" | "cli"
   onEvent: (e: CoolieEventLike) => void
   onStatus: (s: "online" | "offline") => void
 }
@@ -47,7 +49,8 @@ export const startEventStream = (opts: EventStreamOpts): (() => void) => {
       try {
         const info = await opts.getInfo() // server 崩溃场景：这里会 spawn 新 daemon（spec §十）
         abort = new AbortController()
-        const r = await fetch(`http://127.0.0.1:${info.port}/events/stream?after=${lastSeq}`, {
+        const roleQs = opts.role ? `&role=${opts.role}` : ""
+        const r = await fetch(`http://127.0.0.1:${info.port}/events/stream?after=${lastSeq}${roleQs}`, {
           headers: { Authorization: `Bearer ${info.token}` },
           signal: abort.signal,
         })
