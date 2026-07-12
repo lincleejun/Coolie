@@ -4402,3 +4402,50 @@ READY-WITH-FIXES 复审的 7 条发现已全部内联落地：
 - `theme.background` 带 alpha 的透明终端背景在 WebGL 渲染器下行为需冒烟确认，不行就退纯色 `#1e1e22`。
 - Plan 3 收尾 bug-fixer 与本计划并行改 server：Task 2/3 动 app.ts 前先 `git pull` + 重读锚点。
 - tauri dev 首启要 `bun run dev:vite` 已被 beforeDevCommand 接管；若 5173 被占用 strictPort 直接 fail-fast（刻意）。
+
+---
+
+## 冒烟记录（Task 16，2026-07-11）
+
+### 全量回归（headless，全绿）
+
+| 关卡 | 命令 | 结果 |
+|---|---|---|
+| 全仓测试 | `bun run test`（vitest run，protocol+server+cli+client） | ✅ **393 passed / 60 files**（跑两次均 393，无 flaky，tmux/daemon 集成测试稳定通过，无需重跑） |
+| 类型检查 | `bun run typecheck`（`tsc -b protocol server cli` + `tsc --noEmit -p client`） | ✅ exit 0 |
+| client 类型 | `tsc --noEmit -p packages/client`（显式复核） | ✅ exit 0 |
+| 前端构建 | `bunx vite build` | ✅ built（index 527kB / addon-webgl 250kB，仅 chunk-size 提示，非错误） |
+| Tauri 壳构建 | `cargo build`（packages/client/src-tauri，dev profile） | ✅ Finished，exit 0 |
+
+**真实配置隔离验证**：对 `~/.claude.json` 做套件前后**内容级** diff（`claude.pre.json` vs `claude.post.json`，紧贴一次完整 `bun run test` 窗口）——top-level keys 增/删/改 = 空，projects 增/删/改 = 空。**结论：EMPTY**，Coolie 测试套件不触碰用户真实 claude 配置（COOLIE_CLAUDE_HOME 隔离生效）。注：跨整个工作会话的裸 md5 会变，但那是本机 Claude Code 进程自身的 session 记账（numStartups/caches），非套件所为，已被内容级 diff 排除。
+
+### GUI 手工冒烟清单（spec §十一 扩展版）
+
+执行说明：Task 16 在 **headless 槽位**执行，按 brief 纪律**不自行启动 `bunx tauri dev`**（需真实窗口/WebKit/WebGL/AppleScript）。因此下列**人眼可见的 GUI E2E 项统一标 ⏳（pending 人工/最终验收）**，并对每项标注**已自动化覆盖的底层单元/端点证据**（去风险）。纯 headless 可判定项（server 端点、SSE refcount）标 ✅ 附一行证据。最终发版前由人类照此单逐项走查真 claude 并回填 ✅/✗。
+
+**终端 E2E（spec §十一 原清单）**
+- ⏳ claude TUI 渲染（欢迎框/双栏/box-drawing，工作中无 scroll-jump）— 底层：WS 二进制帧零解码直写 xterm + tmux 吸收重画；`api-client`/`terminal-session-registry` 测试绿。
+- ⏳ Ctrl+A/Ctrl+E 行首/行尾穿透、Ctrl+C 打断 — 底层：`arbitrate.test.ts` 断言 Ctrl 系全透传进 PTY、Cmd 系不进。
+- ⏳ Cmd 快捷键 ⌘N/T/W/1..9/[/]/L/. 全生效且终端聚焦时不漏进 TUI — 底层：`hotkeys.test.ts` + `global-hotkeys.test.ts` + `arbitrate.test.ts`（registry/LIFO/三层仲裁纯函数全绿）。
+- ⏳ 中文 IME（终端 "你好世界"+全角标点；composer WebKit textarea 原生路径）— 需真实 WebKit，纯人工。
+- ⏳ resize reflow + 松手后 `tmux -L coolie list-clients` 尺寸一致 — 底层：client 150ms + server 50ms 双层防抖（landed），需真实拖窗。
+- ⏳ WebGL context loss 自动回落 DOM 不崩 — 底层：Terminal 保活只摘 DOM、WebGL→DOM fallback 已实装；需真实 GPU 触发。
+- ⏳ 惰性挂载（F3）：未看过 tab 零 WS、点进才挂活、切走保活、归档整 workspace 全 tab 断连无泄漏 — 底层：`terminal-session-registry.test.ts` 断言 dispose 回收 + `stores.test.ts` 断言 `workspace.archived/deleted → disposeWorkspaceSessions` 触发。
+
+**Composer / 创建流（spec §7.2）**
+- ⏳ 三档发送（空闲 Enter / 忙时 Enter 原生排队 / ⌘Enter 打断后投 / ⌥Enter 插入不回车 / ⇧Enter 换行）— 底层：`composer-send.test.ts` 断言六行键位映射（send/interrupt-send/insert/none + skipStable=engineWorking）。
+- ⏳ ⌘. 与 ■ 打断、⏳ 指示出现消失、投递中 × 撤回 — 底层：Dispatch 组件 + engine.interrupt 全局键（registry 测试覆盖键路径）。
+- ⏳ @文件选择器（模糊排序 Enter 插入）、/命令补全（内置 + repo `.claude/commands`）— 底层：`fuzzy.test.ts`（模糊排序）+ `filetree.test.ts`（文件树/命令扫描）绿；server `files`/`commands` 端点见下 ✅。
+- ⏳ 草稿两 workspace 互不干扰 + 重启保留 — 底层：`drafts.test.ts` 断言 per-workspace 草稿隔离与序列化。
+- ⏳ 模型选择器切 opus → claude `/model` 生效 — 底层：`/config` 组装 claudeModels + 创建后 `/model` 补投契约（api 形状测试绿）。
+- ⏳ ⌘N 创建流：prompt 落地首条消息 + 坏 setup script 错误重试路径 — 底层：create 流 + `POST /workspaces/:id/retry`（server 集成测试覆盖 error→retry 状态机）。
+
+**布局 / 状态（spec §7.1 + §十/§十二）**
+- ✅ 左栏徽标聚合 + `+N−M` 数据源 — server `GET /workspaces/:id/git/diffstat` 与 `git/changes` 端点已实装（`app.ts:454-455`）；`sidebar-badge.test.ts` 断言 workspace 徽标聚合纯函数正确。徽标随 hook 实时变化属 ⏳ 人工。
+- ⏳ 右栏默认收起、Changes 四分区与 `git status` 一致、Files 树 @注入 — 底层：`filetree.test.ts` + `git/changes` 端点 ✅。
+- ⏳ Open in iTerm2 里外同画面同输入 — 底层：`openInIterm` 拼 osascript 前 `/^[A-Za-z0-9._-]+$/` 校验（F6 防注入，已实装）；需真实 iTerm2。
+- ✅ server 崩溃（kill -9）→ offline 横幅 → 自动重拉 → SSE 恢复 → 终端重连无损 — SSE refcount/重连/role 的**真 daemon 集成测试**绿：`sse-e2e.test.ts` + `sse-role.test.ts`（"refcount 惰性退出（真实 SSE 客户端）" 用例通过：有 gui 持有→断开后 grace 退出、无 role→永不布防、非法 role→400、无 token→401）。GUI 横幅动画属 ⏳ 人工。
+- ⏳ tmux 引导：`PATH= bunx tauri dev` 出引导弹窗、装回 Recheck 通过 — 底层：Rust `binary_on_path`（不依赖 server）+ TmuxGuide（已实装）；需真实壳。
+- ⏳ archive → 归档区 → unarchive 恢复（branch 保留；`claude --resume` 由 Plan 4 接管，记录现状）— 底层：`stores.test.ts` 归档事件处理 + Plan 4 契约点已容错降级标注。
+
+**headless 已自动化判定汇总（✅）**：新增 5 组 server 端点（`GET /config`、`git/diffstat`、`git/changes`、`files`、`commands`、`POST /tabs`+`/input`、`DELETE /tabs/:id`）经 server 集成测试与 `app.ts` 路由复核确认落地；SSE `role=gui` refcount 全链路真 daemon 测试通过。**人眼 GUI 交互（渲染/IME/resize/WebGL/拖拽/AppleScript）保留为发版前人工验收（⏳）**，本次 headless 槽位不代跑。

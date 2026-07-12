@@ -90,3 +90,27 @@ server 数据在 `~/.coolie/`（`COOLIE_HOME` 可覆盖）；诊断日志在 `~/
 | 环境变量 | 作用 | 默认 |
 |---|---|---|
 | `COOLIE_LINGER_MS` | 最后一个 gui 断开后的惰性退出宽限期 | `60000` |
+
+## Client GUI（M1 Plan 5）
+
+Tauri 2 + React 18 + xterm.js 6 桌面壳，纯 protocol 消费者（REST + WS 二进制 + SSE 三通道，绝不自己碰 git/tmux）。
+
+```bash
+bun install
+cd packages/client && bunx tauri dev   # 自动发现/拉起 coolie-server（读 ~/.coolie/server.json）
+# 等价：cd packages/client && bun run dev（package.json 的 "dev": "tauri dev"）
+# 纯前端热更（不起 Tauri 壳）：bun run dev:vite；打包前端产物：bun run build:vite
+```
+
+- 左栏：project → workspace 两层列表；状态徽标（●工作中 ✓等输入 !错误 ○空闲）+ `+N−M`（server `git/diffstat` 端点 5s 轮询，client 无 git 访问）；搜索、pin 排序、归档区。
+- 中央：xterm.js 6（WebGL 渲染，context loss 时回落 DOM canvas）挂 tmux window；tabs = engine / setup / run / shell；`↗ Open in iTerm2`（osascript attach 同一 tmux session）同画面逃生舱。**惰性挂载**：只有被看过的 tab 才建会话/WS，未看过的后台 tab 是零连接占位符；切走保活（只摘 DOM，scrollback/连接不丢）；workspace 归档/删除时其全部 tab 连接一并回收。
+- Composer 三档：Enter 发送/排队（engine 忙时 `skipStable` 直投 claude nativeQueue）、⌘Enter 打断并发送、⌥Enter 仅插入、⇧Enter 换行；⌘. 打断；@文件（模糊排序 Enter 插入）、/命令（内置 + repo `.claude/commands` 扫描）、每 workspace 草稿（持久化，重启仍在）、模型选择器（切模型后 `/model` 补投，midSessionModelSwitch）。
+- 快捷键：⌘N 新建（composer 变首条 prompt）、⌘T/⌘W 开关 shell tab、⌘1..9 跳 workspace、⌘[/⌘] 上/下一个 workspace、⌘L 聚焦 composer、⌘/ 快捷键表（cheatsheet）；终端聚焦时 Cmd 系全局键不进 PTY，Ctrl 系全透传（三层仲裁 + LIFO 注册表）。
+- server 崩溃：SSE fetch 流指数退避（500ms→8s 封顶）+ `getInfo()` 自动重新拉起 daemon；offline 横幅 → 恢复即消；终端画面因 tmux 无损。GUI 的 SSE 连接带 `role=gui`（持有 server 惰性退出生命周期）。
+- 依赖：macOS + tmux（首启 Rust 侧 `binary_on_path` 检测缺失即出 TmuxGuide 引导，装回 Recheck 通过）+ rustc/cargo（开发构建）。
+
+新增 server 端点（本计划）：`GET /config`、`GET /workspaces/:id/git/{diffstat,changes}`、`GET /workspaces/:id/{files,commands}`；`POST /workspaces/:id/{tabs,input}`、`DELETE /workspaces/:id/tabs/:tabId`。全部经 loopback + Bearer 鉴权，CORS 放行 webview/vite-dev 跨源（token 是唯一安全边界）。
+
+> M1 已知裁剪（controller 批准，M2 补）：附件/图片注入、⌘K 命令面板、用户 JSON 键位覆盖、footer cheatsheet 常驻条、右栏行级 diff 评论写回。Plan 4 契约点（lease `POST /clients {role:"gui"}`、engine Resume）在 Plan 4 未合并时按 404/501 静默降级。
+
+GUI 手工冒烟清单（spec §十一 扩展版）与执行结果见 `docs/superpowers/plans/2026-07-11-coolie-m1-plan5-client.md` 末尾「冒烟记录」一节。
