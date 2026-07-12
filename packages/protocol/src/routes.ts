@@ -14,5 +14,10 @@ export const ROUTES = [
   { method: "GET",    path: "/events/stream",            description: "SSE：durable replay + live 推送 ?after=&workspace=" },
   { method: "GET",  path: "/workspaces/:id/tabs", description: "列出 workspace 的 tabs（GUI tab ↔ tmux window 映射）" },
   { method: "POST", path: "/hooks/claude",        description: "claude hook 回调 ?workspace=（结构化 engine 状态唯一入口）" },
+  { method: "GET",  path: "/config",                        description: "client 引导信息：tmuxSocket + engines（能力位/模型列表）" },
+  { method: "GET",  path: "/workspaces/:id/git/diffstat",   description: "vs baseRef 的 shortstat（左栏 +N−M 轮询）" },
+  { method: "GET",  path: "/workspaces/:id/git/changes",    description: "四分区 numstat：against-base/committed/staged/unstaged + untracked" },
+  { method: "GET",  path: "/workspaces/:id/files",          description: "worktree 文件列表（@文件选择器/Files 树）" },
+  { method: "GET",  path: "/workspaces/:id/commands",       description: "slash 命令扫描：repo .claude/commands + ~/.claude/commands" },
   { method: "GET",  path: "/ws/terminal",         description: "WS 终端通道 ?workspace=&window=&cols=&rows=&token=（二进制帧+JSON 控制帧）" },
 ] as const satisfies ReadonlyArray<{ method: "GET" | "POST" | "DELETE"; path: string; description: string }>

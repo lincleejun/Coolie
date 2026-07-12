@@ -10,6 +10,10 @@ import { WorkspacesRepo } from "../repo/workspaces.js"
 import { WorkspaceLifecycle } from "../workspace/lifecycle.js"
 import { TabsRepo } from "../repo/tabs.js"
 import { EngineRegistry } from "../engine/registry.js"
+import { ConflictError } from "../repo/errors.js"
+import type { GitReadOps } from "../git/inspect.js"
+import { scanSlashCommands } from "../engine/claude/commands.js"
+import { claudeModels } from "../engine/claude/adapter.js"
 import { tokenEquals } from "./token.js"
 import { handleEventsStream } from "./sse.js"
 export { newToken } from "./token.js"
@@ -34,6 +38,10 @@ export interface AppDeps {
   readonly sseHeartbeatMs?: number
   /** claude 转录根（标题派生用）；缺省跳过标题派生 */
   readonly claudeHome?: string
+  /** 只读 git 观察面（GUI）；未提供时相关路由 501 */
+  readonly gitRead?: GitReadOps
+  /** GET /config 下发的 client 引导信息 */
+  readonly config?: { readonly tmuxSocket: string }
 }
 
 const send = (res: ServerResponse, status: number, body?: unknown) => {
@@ -132,11 +140,29 @@ const intParam = (url: URL, name: string, dflt: number): number | null => {
   return Number.isSafeInteger(n) ? n : null
 }
 
-export const createApp = ({ runtime, token, onShutdown, onError, bus, sseHeartbeatMs, claudeHome }: AppDeps) =>
+export const createApp = ({ runtime, token, onShutdown, onError, bus, sseHeartbeatMs, claudeHome, gitRead, config }: AppDeps) =>
   (req: IncomingMessage, res: ServerResponse): void => {
     void (async () => {
       const url = new URL(req.url ?? "/", "http://local")
       const route = `${req.method} ${url.pathname}`
+      // CORS：webview/vite-dev 是跨源 origin；token 是唯一安全边界，这里只放行浏览器（agent-deck 姿势）
+      // 安全前提见下方 F7 note：* 只在 127.0.0.1 bind + 非 cookie 的 Bearer 认证下成立。
+      //
+      // F7（安全前提，勿删）：`access-control-allow-origin: *` 之所以安全，仅因为两条前提同时成立：
+      // (1) server 绑定 127.0.0.1（非 0.0.0.0），跨机根本连不上；
+      // (2) 认证是 Bearer token（非 cookie/session）——`*` 通配下浏览器禁止携带凭据 cookie，
+      //     且我们本就不用 cookie，token 由 JS 显式塞进 Authorization 头，CORS 通配不会让第三方站点拿到它。
+      // 一旦 bind 从 loopback 放宽（哪怕临时调试），这套 CORS 必须重新设计
+      //（收窄 origin 白名单 + 复核 token 暴露面），否则任意网页都能打这个端口。
+      res.setHeader("access-control-allow-origin", "*")
+      if (req.method === "OPTIONS") {
+        res.writeHead(204, {
+          "access-control-allow-methods": "GET, POST, DELETE, OPTIONS",
+          "access-control-allow-headers": "authorization, content-type",
+          "access-control-max-age": "86400",
+        }).end()
+        return
+      }
       if (route === "GET /health") return send(res, 200, { ok: true })
 
       const got = (req.headers.authorization ?? "").replace(/^Bearer /, "")
@@ -317,6 +343,50 @@ export const createApp = ({ runtime, token, onShutdown, onError, bus, sseHeartbe
               yield* (yield* WorkspaceLifecycle).delete(wsDel[1]!, { force: url.searchParams.get("force") === "1" })
             }),
             () => send(res, 204),
+            onError,
+          )
+        }
+        if (route === "GET /config") {
+          if (!config) return err(res, 500, "Internal", "config unavailable")
+          return await runRoute(
+            res, runtime,
+            Effect.gen(function* () {
+              const registry = yield* EngineRegistry
+              const claude = registry.get("claude")
+              return {
+                tmuxSocket: config.tmuxSocket,
+                engines: claude
+                  ? [{ id: claude.id, displayName: claude.displayName, capabilities: claude.capabilities, models: claudeModels }]
+                  : [],
+              }
+            }),
+            (body) => send(res, 200, body),
+            onError,
+          )
+        }
+        const gitRoute = url.pathname.match(/^\/workspaces\/([^/]+)\/(git\/diffstat|git\/changes|files|commands)$/)
+        if (req.method === "GET" && gitRoute) {
+          const wsId = gitRoute[1]!
+          const kind = gitRoute[2]!
+          if (kind !== "commands" && !gitRead) return err(res, 501, "Internal", "gitRead unavailable")
+          return await runRoute(
+            res, runtime,
+            Effect.gen(function* () {
+              const ws = yield* (yield* WorkspacesRepo).get(wsId)
+              if (ws.status !== "active")
+                return yield* new ConflictError({ message: `workspace 非 active（当前 ${ws.status}）` })
+              return ws
+            }),
+            async (ws) => {
+              try {
+                if (kind === "git/diffstat") return send(res, 200, await gitRead!.diffstat(ws.path, ws.baseRef))
+                if (kind === "git/changes") return send(res, 200, await gitRead!.changes(ws.path, ws.baseRef))
+                if (kind === "files") return send(res, 200, { files: await gitRead!.files(ws.path) })
+                return send(res, 200, { commands: claudeHome !== undefined ? scanSlashCommands(ws.path, claudeHome) : scanSlashCommands(ws.path, "") })
+              } catch (e: any) {
+                if (!res.headersSent) err(res, 500, "GitError", e?.message ?? String(e))
+              }
+            },
             onError,
           )
         }

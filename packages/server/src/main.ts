@@ -13,6 +13,7 @@ import { TabsRepo, TabsRepoLive } from "./repo/tabs.js"
 import { EventsBus, EventsBusLive } from "./events/bus.js"
 import { WorkspaceLifecycleLive } from "./workspace/lifecycle.js"
 import { GitServiceLive } from "./git/service.js"
+import { realGitRead } from "./git/inspect.js"
 import { makeSetupRunnerLive } from "./workspace/setup.js"
 import { TmuxService, TmuxServiceLive } from "./tmux/service.js"
 import { EngineRegistry, EngineRegistryLive } from "./engine/registry.js"
@@ -117,6 +118,8 @@ const cmdStart = async (): Promise<void> => {
 
   const app = createApp({
     runtime, token, bus, claudeHome: cfg.claudeHome,
+    gitRead: realGitRead,
+    config: { tmuxSocket: cfg.tmuxSocket },
     onShutdown: () => void shutdown(),
     onError: (e) => logger.error("http 500", e),
   })

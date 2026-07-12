@@ -42,3 +42,6 @@ export const claudeEngine: Engine = {
   prepareWorkspace: ({ cwd, claudeConfigPath }) => seedFolderTrust(claudeConfigPath ?? defaultClaudeConfigPath(), cwd),
 }
 export { encodeCwd }
+
+/** GUI 模型选择器选项（/model 别名；spec §六 UI 禁止硬编码 vendor 字符串——由 server 下发） */
+export const claudeModels = ["default", "opus", "sonnet", "haiku"]
