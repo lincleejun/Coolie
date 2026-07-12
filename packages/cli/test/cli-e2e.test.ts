@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeAll, afterAll } from "vitest"
-import { execFileSync } from "node:child_process"
+import { execFileSync, spawnSync } from "node:child_process"
 import * as fs from "node:fs"; import * as os from "node:os"; import * as path from "node:path"
 
 const TSX = path.resolve(__dirname, "../../../node_modules/.bin/tsx")
@@ -75,5 +75,16 @@ describe("coolie CLI e2e", () => {
     const out = coolie("events", "tail", "--after", "0")
     expect(out).toContain("project.added")
     expect(out).toMatch(/^\d+\t\d{4}-\d{2}-\d{2}T/m) // seq \t ISO 时间戳开头
+  })
+  it("resume：session 被外力清理 → 经 ensure 重建（enter 的 heal 同一条 server 路径）", () => {
+    execFileSync("git", ["-c", "user.email=t@t", "-c", "user.name=t", "commit", "--allow-empty", "-m", "init"], { cwd: repo })
+    const created = coolie("create", repo, "--name", "heal-me")
+    const id = /\(([^)]+)\)/.exec(created)![1]!
+    execFileSync("tmux", ["-L", TMUX_SOCK, "kill-session", "-t", `=coolie-${id}`])
+    const out = coolie("resume", id)
+    expect(out).toContain("action=recreated")
+    const has = spawnSync("tmux", ["-L", TMUX_SOCK, "has-session", "-t", `=coolie-${id}`])
+    expect(has.status).toBe(0) // session 回来了
+    coolie("delete", id, "--force") // 清场
   })
 })

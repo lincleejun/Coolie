@@ -84,3 +84,30 @@ describe("coolie doctor", () => {
     expect(fs.existsSync(path.join(home, "server.json"))).toBe(false) // doctor 不拉起 server
   })
 })
+
+describe("doctor stuck-creating（只读诊断）", () => {
+  it("creating 超过 10 分钟 → warn 行；新鲜 creating 不告警", () => {
+    const h = fs.mkdtempSync(path.join(os.tmpdir(), "coolie-doc-stuck-"))
+    const db = new Database(path.join(h, "coolie.db"))
+    db.exec(`CREATE TABLE IF NOT EXISTS workspaces (
+      id TEXT PRIMARY KEY, project_id TEXT, name TEXT, path TEXT, branch TEXT,
+      base_branch TEXT, base_ref TEXT, status TEXT, pinned INTEGER,
+      created_at INTEGER, archived_at INTEGER, data TEXT)`)
+    db.prepare(`INSERT INTO workspaces (id, project_id, name, path, branch, base_branch, base_ref, status, pinned, created_at, archived_at, data)
+      VALUES ('stuck1','p','old-one','/tmp/x','coolie/x','main','','creating',0,?,NULL,'{}')`).run(Date.now() - 30 * 60_000)
+    db.prepare(`INSERT INTO workspaces (id, project_id, name, path, branch, base_branch, base_ref, status, pinned, created_at, archived_at, data)
+      VALUES ('fresh1','p','new-one','/tmp/y','coolie/y','main','','creating',0,?,NULL,'{}')`).run(Date.now())
+    db.close()
+    const out = execFileSync(TSX, [CLI, "doctor"], { env: { ...process.env, COOLIE_HOME: h }, encoding: "utf8" })
+    const wsLine = out.split("\n").find((l) => l.includes("workspaces"))
+    expect(wsLine).toBeDefined()
+    expect(wsLine).toContain("warn")
+    expect(wsLine).toContain("stuck1")
+    expect(wsLine).not.toContain("fresh1")
+  })
+  it("无卡死行 → 无 workspaces warn", () => {
+    const h = fs.mkdtempSync(path.join(os.tmpdir(), "coolie-doc-clean-"))
+    const out = execFileSync(TSX, [CLI, "doctor"], { env: { ...process.env, COOLIE_HOME: h }, encoding: "utf8" })
+    expect(out.split("\n").some((l) => l.includes("workspaces") && l.includes("warn"))).toBe(false)
+  })
+})
