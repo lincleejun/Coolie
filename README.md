@@ -71,7 +71,63 @@ server 数据在 `~/.coolie/`（`COOLIE_HOME` 可覆盖）；诊断日志在 `~/
 | `COOLIE_CLAUDE_HOME` | claude 数据目录（转录） | `~/.claude` |
 | `COOLIE_CLAUDE_BIN` | claude 二进制显式路径 | 多路径自动发现 |
 | `COOLIE_CLAUDE_CMD` | engine 启动命令整体覆盖（原样使用，测试/调试用） | 无 |
-| `COOLIE_DISABLE_HOOKS` | `1` = 不注入 claude hooks | 注入 |
+| `COOLIE_DISABLE_HOOKS` | `1` = 不注入 hooks（claude/codex 同款） | 注入 |
+
+## Engine 抽象与 codex 接入（M2 Plan 1）
+
+engine 经能力位（`EngineCapabilities`）与注册表抽象，**UI/调用方禁止硬编码 vendor 字符串**——引擎清单、模型、effort 档位一律由 `GET /config` 的 `engines[]` 下发。M2 Plan 1 起注册表含 `claude` 与 `codex` 两引擎（`GET /config` 下发全部）。
+
+### 创建 codex workspace
+
+- **REST（当前唯一显式选引擎入口）**：`POST /workspaces {projectId, engineId:"codex", initialPrompt}`——`engineId` 贯通 create 流水线（bootstrap 读 `ctx.engineId`）。
+  ```bash
+  INFO=~/.coolie/server.json
+  curl -sX POST -H "Authorization: Bearer $(jq -r .token $INFO)" -H 'content-type: application/json' \
+    -d '{"projectId":"<pid>","engineId":"codex","initialPrompt":"回答 PONG 两个字"}' \
+    "http://127.0.0.1:$(jq -r .port $INFO)/workspaces"
+  ```
+- **GUI 引擎选择器**落 Plan 4；在此之前 GUI 的 Dispatch 默认取 `/config` 的 `engines[0]`（注册序 `claude` 在前 → 默认 claude）。
+- **CLI**：`coolie create` 暂无 `--engine` 旗标（默认 claude）；选 codex 走上面的 REST。
+- **`COOLIE_CODEX_CMD`** 是启动命令整体覆写 seam（原样使用、绝不追加 flag）——测试/调试用 `cat` 之类顶替真 binary。
+
+### codex 与 claude 行为差异
+
+| 维度 | claude | codex |
+|---|---|---|
+| session id 生命周期 | 客户端造 id：`launchCommand` 传 `--session-id <uuid>` | **服务端造 id**（`serverGeneratedId:true`）：bootstrap 起始存 `engineSessionId=null`，首个 `SessionStart` hook 经 `POST /hooks/codex` 回填真 UUIDv7（C4） |
+| hooks trust 门 | 无（`seedFolderTrust` 预置 `~/.claude.json` 跳过 trust dialog） | **有**——双保险：① 起 session 前 `seedCodexTrust` 原子 UPSERT `config.toml` 的 `[projects."<realpath>"] trust_level="trusted"`（merge-only、幂等，实测有效——TUI 首启不再弹目录 trust 对话框）；② `launchCommand` **无条件**追加 `--dangerously-bypass-hook-trust`。**⚠ bypass-flag 结论被真机冒烟修正**：0.139.0 实测该 flag 只抑制 hook review 对话框，**不会激活未信任的 hooks**（详见下方「已知缺陷」） |
+| 转录位置 | `~/.claude/...`（`COOLIE_CLAUDE_HOME`） | `~/.codex/sessions/<YYYY>/<MM>/<DD>/rollout-*-<sessionId>.jsonl`（文件名内嵌 UUIDv7，日期树 newest-first 反查；`COOLIE_CODEX_HOME`） |
+| effort 档位 | 无（`effort:false`，Noop） | `effort:true`，档位 `low`/`medium`/`high`/`xhigh`（`-c model_reasoning_effort=<档>`；`COOLIE_CODEX_MODELS` 只覆写 models，effort 档固定） |
+| nativeQueue | `true`——TUI 原生 mid-turn 排队，忙时直投 | **`false`**——忙时（tab `working`）`POST /input {mode:"send"}` 返回 **409 `EngineBusy`**（Plan 1 无 server 端队列；`interrupt`/`interrupt-send`/`insert` 仍放行）。守卫是 Plan-1-only，代码含 REMOVAL MARKER，Plan 2 队列落地时删除该 if 块换 enqueue |
+| resume | `claude --resume <sessionId>` | `codex resume <sessionId>` |
+| 模型选择 | `default`/`opus`/`sonnet`/`haiku` | `gpt-5-codex`/`gpt-5`（`COOLIE_CODEX_MODELS` 逗号分隔覆写） |
+| OSC title | engine 自写 | engine-owned；由 `-c tui.terminal_title=["activity","thread-title"]` 注入 |
+
+- **per-engine monitor**：mtime 兜底轮询按 `tab.engineId` 解析引擎（`resolveEngine`）与 per-engine 转录目录（`homeFor`→`engineHome`），各引擎读各自 home，替代 M1 硬编码 `claudeHome`。codex 服务端造 id 期（`engineSessionId=null`）rollout 文件尚不存在、mtime 兜底跳过——此期状态设计上由 hooks 独家负责（该假设在 0.139.0 上不成立，见下）。
+- **注入产物进 info/exclude**：codex 的 `.codex/hooks.json`（去 `PermissionRequest` 决策 hook，只留 `SessionStart`/`UserPromptSubmit`/`Stop` 观察事件）写入后随即 `git update-index` 排除，避免 isDirty 守卫误伤 archive/delete。
+
+### ⚠ 已知缺陷：codex hooks 链路在 codex-cli 0.139.0 上不通（真机冒烟结论，2026-07-12）
+
+真机冒烟（Task 12）证实 **Task 8 F3 的 bypass-flag 假设不成立**，codex 的 hooks→id 回填→徽标链路在 0.139.0 上全断，四个独立原因：
+
+1. **`[features] hooks` 在 0.139.0 默认关**——不开则 hooks 完全不加载（`/hooks` 面板全 0）。Coolie 未 seed 此键。
+2. **项目级 `<worktree>/.codex/hooks.json` 不被 0.139.0 发现**——即使 `features.hooks=true` 且目录已 trusted，`/hooks` 面板仍 Installed=0；只有用户级 `~/.codex/hooks.json` 被发现（官方文档描述的项目级发现应属更新版本）。
+3. **`--dangerously-bypass-hook-trust` 不激活未信任 hooks**——它只抑制启动时的「Review hooks / Trust all / Continue without trusting」对话框；未信任 hook 依旧不跑（banner 原文「*Enabled* hooks may run without review」，enabled = 已 trust）。真正的信任在 `config.toml [hooks.state."<file>:<event>:<i>:<j>"] trusted_hash = "sha256:…"`（哈希算法未公开，非平凡不可预 seed）。
+4. **即便 hooks 已信任，SessionStart 也不在 TUI 启动时执行**——实测延迟到首个 turn 才与 UserPromptSubmit/Stop 一起触发，故「`engine.session.started` 先于 `prompt.delivered`」的就绪门控在 0.139.0 上结构性不可达，首条 prompt 恒走 90s 超时降级（`prompt.delivery.degraded`，投递本身仍成功——codex composer 不吞字）。
+
+**后果**：真机 codex 的 `engineSessionId` 永不回填（null）、徽标不流转、标题不派生。服务端链路本身健全——手工以 codex 同款 payload POST `/hooks/codex` 后，回填/`engine.session.started`/working↔awaiting-input 流转/rollout 标题派生/409 EngineBusy 全部按设计工作。修复（feature seed、用户级 hooks 或 trusted_hash 预置、`notify=[]` 兜底、就绪门控放宽）划入 M2 Plan 2。
+
+### codex 环境变量
+
+| 环境变量 | 作用 | 默认 |
+|---|---|---|
+| `COOLIE_CODEX_HOME` | codex 数据目录（rollout 转录所在） | `~/.codex` |
+| `COOLIE_CODEX_CONFIG` | trust 预置写入的 `config.toml` 路径 | 缺省回落 `<COOLIE_CODEX_HOME>/config.toml` |
+| `COOLIE_CODEX_CMD` | engine 启动命令整体覆写（原样使用，测试/调试用） | 无（发现真 binary） |
+| `COOLIE_CODEX_BIN` | codex 二进制显式路径 | 多路径自动发现（`/opt/homebrew/bin/codex` 等） |
+| `COOLIE_CODEX_MODELS` | GUI 模型选择器选项（逗号分隔覆写） | `gpt-5-codex,gpt-5` |
+
+> **零泄漏纪律**：测试**必须**同设 `COOLIE_CODEX_HOME` **和** `COOLIE_CODEX_CONFIG` 指临时目录。否则 `seedCodexTrust` 会写进真实 `~/.codex/config.toml`、转录 reader 会读真实 `~/.codex/sessions/`。真机冒烟（用真 codex binary、不设这两变量、seeding 落真实 `config.toml`）须先快照 `~/.codex/config.toml`、事后逐段还原——清单见 `docs/superpowers/plans/2026-07-12-coolie-m2-plan1-codex-adapter.md`。
 
 ## daemon 生命周期与自愈（M1 Plan 4）
 
