@@ -102,8 +102,28 @@ describe("lifecycle × tmux × engine bootstrap", () => {
     }), layer) as Effect.Effect<any, never, never>)
     expect(archived.status).toBe("archived")
     expect(await Effect.runPromise(tmux.hasSession(session))).toBe(false)
-    expect(db.prepare("SELECT COUNT(*) c FROM tabs WHERE workspace_id = ?").get(ws.id)).toEqual({ c: 0 })
+    // Plan 4 行为变更：archive 保留 tabs 行——engineSessionId 是 unarchive 后 --resume 复活的钥匙
+    expect(db.prepare("SELECT COUNT(*) c FROM tabs WHERE workspace_id = ?").get(ws.id)).toEqual({ c: 1 })
+    expect((db.prepare("SELECT engine_session_id s FROM tabs WHERE workspace_id = ?").get(ws.id) as any).s).toBe("sess-fixed-1")
     expect(eventTypes()).toContain("workspace.tmux.killed")
+  })
+
+  it("delete 仍删 tabs 行（与 archive 保留分野：engineSessionId 复活钥匙只在 delete 时丢弃）", async () => {
+    const layer = buildLayer([fakeClaude])
+    const ws = await Effect.runPromise(Effect.provide(Effect.gen(function* () {
+      const projects = yield* ProjectsRepo
+      const lc = yield* WorkspaceLifecycle
+      const list = yield* projects.list()
+      return yield* lc.create({ projectId: list[0]!.id, name: "delete-tabs" })
+    }), layer) as Effect.Effect<any, never, never>)
+    // create 落一行 engine tab
+    expect(db.prepare("SELECT COUNT(*) c FROM tabs WHERE workspace_id = ?").get(ws.id)).toEqual({ c: 1 })
+    await Effect.runPromise(Effect.provide(Effect.gen(function* () {
+      yield* (yield* WorkspaceLifecycle).delete(ws.id, { force: true })
+    }), layer) as Effect.Effect<any, never, never>)
+    // delete 清空 tabs 行 + 拆 session（archive 保留 tabs、delete 才删——teardownRuntime reason 分野）
+    expect(db.prepare("SELECT COUNT(*) c FROM tabs WHERE workspace_id = ?").get(ws.id)).toEqual({ c: 0 })
+    expect(await Effect.runPromise(tmux.hasSession(sessionNameFor(ws.id)))).toBe(false)
   })
 
   it("bootstrap 失败（registry 缺 claude）→ status=error，无孤儿 session/tab", async () => {

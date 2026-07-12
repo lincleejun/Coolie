@@ -53,14 +53,16 @@ export const WorkspaceLifecycleLive = Layer.effect(
     const emit = (workspaceId: string | null, type: string, payload: unknown) =>
       events.append({ workspaceId, type, payload })
 
-    /** archive/delete 共用：杀 tmux session（engine 归 tmux，拆除是唯一合法杀点）+ 清 tabs 行。全程容错。 */
+    /** archive/delete 共用：杀 tmux session（engine 归 tmux，拆除是唯一合法杀点）。
+     * tabs 行是 engine 会话记忆（engineSessionId → unarchive 后 --resume 复活的钥匙，设计文档 §十）：
+     * archive 保留，仅 delete 删除。全程容错。 */
     const teardownRuntime = (ws: Workspace, reason: "archive" | "delete"): Effect.Effect<void> =>
       Effect.gen(function* () {
         if (Option.isSome(tmuxOpt)) {
           yield* tmuxOpt.value.killSession(tmuxSessionName(ws.id)).pipe(Effect.ignore)
           yield* emit(ws.id, "workspace.tmux.killed", { sessionName: tmuxSessionName(ws.id), reason }).pipe(Effect.ignore)
         }
-        if (Option.isSome(tabsOpt)) yield* tabsOpt.value.removeByWorkspace(ws.id).pipe(Effect.ignore)
+        if (reason === "delete" && Option.isSome(tabsOpt)) yield* tabsOpt.value.removeByWorkspace(ws.id).pipe(Effect.ignore)
       })
 
     /**
