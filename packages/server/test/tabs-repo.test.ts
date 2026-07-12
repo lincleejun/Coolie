@@ -114,6 +114,24 @@ describe("TabsRepo", () => {
     expect(rows[0]!.workspacePath).toBe("/tmp/ws1")
   })
 
+  it("remove：删单个 shell tab 行 + tab.closed 事件；后续 listByWorkspace 不含它", async () => {
+    const out = await run(Effect.gen(function* () {
+      const repo = yield* TabsRepo
+      const t = yield* repo.insert({ workspaceId: "w1", kind: "shell", tmuxWindow: 3 })
+      yield* repo.remove(t.id)
+      return { id: t.id, list: yield* repo.listByWorkspace("w1") }
+    }))
+    expect(out.list.some((t) => t.id === out.id)).toBe(false)
+    const closed = eventRows().find((e) => e.type === "tab.closed")
+    expect(closed).toBeDefined()
+    expect(JSON.parse(closed!.payload)).toMatchObject({ tabId: out.id, kind: "shell" })
+    expect(live.map((e) => e.type)).toContain("tab.closed")
+  })
+  it("remove：不存在的 tab → NotFoundError", async () => {
+    const exit = await runExit(Effect.gen(function* () { yield* (yield* TabsRepo).remove("ghost") }))
+    expect(Exit.isFailure(exit)).toBe(true)
+  })
+
   it("removeByWorkspace deletes all tabs; get then fails NotFound", async () => {
     const exit = await Effect.runPromiseExit(Effect.provide(Effect.gen(function* () {
       const repo = yield* TabsRepo

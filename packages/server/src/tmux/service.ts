@@ -43,6 +43,8 @@ export interface TmuxServiceShape {
   readonly pasteText: (target: string, text: string) => Effect.Effect<void, TmuxError>
   /** 命名键（Enter/Escape/C-c…）；Task 4 起走持久 control-mode client 热路径 */
   readonly sendKey: (target: string, key: string) => Effect.Effect<void, TmuxError>
+  /** kill-window（shell tab 关闭）；window 不存在视为成功（幂等） */
+  readonly killWindow: (session: string, index: number) => Effect.Effect<void, TmuxError>
 }
 export class TmuxService extends Context.Tag("TmuxService")<TmuxService, TmuxServiceShape>() {}
 
@@ -132,6 +134,11 @@ export const makeTmuxService = (socket: string, ctl?: ControlClient): TmuxServic
           catch: (e) => new TmuxError({ op: "send-keys", message: e instanceof Error ? e.message : String(e), exitCode: null, stderr: "" }),
         })
       : runTmux(socket, "send-keys", ["send-keys", "-t", `=${target}`, key]).pipe(Effect.asVoid),
+  killWindow: (session, index) =>
+    runTmux(socket, "kill-window", ["kill-window", "-t", `=${session}:${index}`]).pipe(
+      Effect.asVoid,
+      Effect.catchAll((e) => e.exitCode !== null ? Effect.void : Effect.fail(e)),
+    ),
 })
 
 export const TmuxServiceLive = Layer.scoped(

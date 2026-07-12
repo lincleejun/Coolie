@@ -16,6 +16,7 @@ import { GitServiceLive } from "./git/service.js"
 import { realGitRead } from "./git/inspect.js"
 import { makeSetupRunnerLive } from "./workspace/setup.js"
 import { TmuxService, TmuxServiceLive } from "./tmux/service.js"
+import { makeComposerOps } from "./tmux/ops.js"
 import { EngineRegistry, EngineRegistryLive } from "./engine/registry.js"
 import { EngineBootstrapHookLive } from "./engine/bootstrap.js"
 import { SessionEnsurerLive } from "./workspace/heal.js"
@@ -152,6 +153,7 @@ const cmdStart = async (): Promise<void> => {
     runtime, token, bus, claudeHome: cfg.claudeHome, clients,
     gitRead: realGitRead,
     config: { tmuxSocket: cfg.tmuxSocket },
+    composerOps: makeComposerOps(tmuxSvc),
     onShutdown: () => void shutdown(),
     onError: (e) => logger.error("http 500", e),
   })

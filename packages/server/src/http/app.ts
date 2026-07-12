@@ -12,7 +12,9 @@ import { WorkspacesRepo } from "../repo/workspaces.js"
 import { WorkspaceLifecycle } from "../workspace/lifecycle.js"
 import { TabsRepo } from "../repo/tabs.js"
 import { EngineRegistry } from "../engine/registry.js"
-import { ConflictError } from "../repo/errors.js"
+import { ConflictError, NotFoundError } from "../repo/errors.js"
+import { tmuxSessionName } from "@coolie/protocol"
+import type { ComposerOps, InputMode } from "../tmux/ops.js"
 import type { GitReadOps } from "../git/inspect.js"
 import { scanSlashCommands } from "../engine/claude/commands.js"
 import { claudeModels } from "../engine/claude/adapter.js"
@@ -47,6 +49,8 @@ export interface AppDeps {
   readonly config?: { readonly tmuxSocket: string }
   /** role 化 refcount（Plan 4）；未提供时 /clients 500、SSE role 参数忽略（测试友好） */
   readonly clients?: ClientRegistry
+  /** composer 投递 / shell tab 动作（tmux 门面）；未提供时相关路由 501 */
+  readonly composerOps?: ComposerOps
 }
 
 const send = (res: ServerResponse, status: number, body?: unknown) => {
@@ -145,7 +149,7 @@ const intParam = (url: URL, name: string, dflt: number): number | null => {
   return Number.isSafeInteger(n) ? n : null
 }
 
-export const createApp = ({ runtime, token, onShutdown, onError, bus, sseHeartbeatMs, claudeHome, gitRead, config, clients }: AppDeps) =>
+export const createApp = ({ runtime, token, onShutdown, onError, bus, sseHeartbeatMs, claudeHome, gitRead, config, clients, composerOps }: AppDeps) =>
   (req: IncomingMessage, res: ServerResponse): void => {
     void (async () => {
       const url = new URL(req.url ?? "/", "http://local")
@@ -453,6 +457,98 @@ export const createApp = ({ runtime, token, onShutdown, onError, bus, sseHeartbe
                 return send(res, 200, { commands: claudeHome !== undefined ? scanSlashCommands(ws.path, claudeHome) : scanSlashCommands(ws.path, "") })
               } catch (e: any) {
                 if (!res.headersSent) err(res, 500, "GitError", e?.message ?? String(e))
+              }
+            },
+            onError,
+          )
+        }
+        const tabsCreate = url.pathname.match(/^\/workspaces\/([^/]+)\/tabs$/)
+        if (req.method === "POST" && tabsCreate) {
+          if (!composerOps) return err(res, 501, "Internal", "composerOps unavailable")
+          const body = await readJson(req)
+          if (body.kind !== "shell") return err(res, 400, "Validation", "只支持 kind=shell")
+          return await runRoute(
+            res, runtime,
+            Effect.gen(function* () {
+              const ws = yield* (yield* WorkspacesRepo).get(tabsCreate[1]!)
+              if (ws.status !== "active")
+                return yield* new ConflictError({ message: `workspace 非 active（当前 ${ws.status}）` })
+              return ws
+            }),
+            async (ws) => {
+              try {
+                const idx = await composerOps.newShellWindow(tmuxSessionName(ws.id), ws.path)
+                const exit = await runtime(Effect.gen(function* () {
+                  return yield* (yield* TabsRepo).insert({ workspaceId: ws.id, kind: "shell", tmuxWindow: idx })
+                }))
+                Exit.match(exit, {
+                  onSuccess: (tab) => send(res, 201, tab),
+                  onFailure: (cause) => { const { status, body } = errorFromCause(cause, onError); send(res, status, body) },
+                })
+              } catch (e: any) {
+                if (!res.headersSent) err(res, 500, "TmuxError", e?.message ?? String(e))
+              }
+            },
+            onError,
+          )
+        }
+        const tabDel = url.pathname.match(/^\/workspaces\/([^/]+)\/tabs\/([^/]+)$/)
+        if (req.method === "DELETE" && tabDel) {
+          if (!composerOps) return err(res, 501, "Internal", "composerOps unavailable")
+          return await runRoute(
+            res, runtime,
+            Effect.gen(function* () {
+              const tab = yield* (yield* TabsRepo).get(tabDel[2]!)
+              if (tab.workspaceId !== tabDel[1]!) return yield* new NotFoundError({ message: "tab 不属于该 workspace" })
+              if (tab.kind !== "shell")
+                return yield* new ConflictError({ message: `只能关 shell tab（当前 ${tab.kind}）` })
+              return tab
+            }),
+            async (tab) => {
+              try {
+                if (tab.tmuxWindow !== null) await composerOps.killWindow(tmuxSessionName(tab.workspaceId), tab.tmuxWindow)
+                await runtime(Effect.gen(function* () { yield* (yield* TabsRepo).remove(tab.id) }))
+                send(res, 204)
+              } catch (e: any) {
+                if (!res.headersSent) err(res, 500, "TmuxError", e?.message ?? String(e))
+              }
+            },
+            onError,
+          )
+        }
+        const inputRoute = url.pathname.match(/^\/workspaces\/([^/]+)\/input$/)
+        if (req.method === "POST" && inputRoute) {
+          if (!composerOps) return err(res, 501, "Internal", "composerOps unavailable")
+          const body = await readJson(req)
+          const mode = body.mode as InputMode
+          if (!["send", "interrupt-send", "insert", "interrupt"].includes(mode))
+            return err(res, 400, "Validation", "mode 必须是 send|interrupt-send|insert|interrupt")
+          if (typeof body.text !== "string") return err(res, 400, "Validation", "text 必须是 string")
+          if (mode !== "interrupt" && body.text.trim() === "")
+            return err(res, 400, "Validation", "非 interrupt 模式 text 不能为空")
+          return await runRoute(
+            res, runtime,
+            Effect.gen(function* () {
+              const ws = yield* (yield* WorkspacesRepo).get(inputRoute[1]!)
+              if (ws.status !== "active")
+                return yield* new ConflictError({ message: `workspace 非 active（当前 ${ws.status}）` })
+              const tab = yield* (yield* TabsRepo).findEngineTab(ws.id)
+              if (!tab) return yield* new NotFoundError({ message: "无 engine tab" })
+              return { ws, tab }
+            }),
+            async ({ ws, tab }) => {
+              try {
+                const target = `${tmuxSessionName(ws.id)}:${tab.tmuxWindow ?? 0}`
+                await composerOps.input(target, { text: body.text, mode, skipStable: body.skipStable === true })
+                await runtime(Effect.gen(function* () {
+                  yield* (yield* EventsRepo).append({
+                    workspaceId: ws.id, type: "composer.delivered",
+                    payload: { mode, tabId: tab.id, chars: body.text.length },
+                  })
+                }))
+                send(res, 200, { ok: true })
+              } catch (e: any) {
+                if (!res.headersSent) err(res, 500, "TmuxError", e?.message ?? String(e))
               }
             },
             onError,

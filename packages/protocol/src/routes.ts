@@ -24,4 +24,7 @@ export const ROUTES = [
   { method: "POST", path: "/hooks/engine-exit",              description: "keep-alive 包装回报 engine 退出 ?workspace= {exitCode}" },
   { method: "POST", path: "/workspaces/:id/ensure",          description: "ensure-or-heal：tmux session 丢失则重建（engine --resume 复活）" },
   { method: "POST", path: "/workspaces/:id/tabs/:tabId/resume", description: "engine 退出后原地重启（--resume 优先；session 丢失自动转 heal）" },
+  { method: "POST",   path: "/workspaces/:id/tabs",        description: "新建 shell tab {kind:shell}（tmux new-window）" },
+  { method: "DELETE", path: "/workspaces/:id/tabs/:tabId", description: "关 shell tab（kill-window；engine/setup/run 拒绝）" },
+  { method: "POST",   path: "/workspaces/:id/input",       description: "composer 投递 {text, mode: send|interrupt-send|insert|interrupt, skipStable?}" },
 ] as const satisfies ReadonlyArray<{ method: "GET" | "POST" | "DELETE"; path: string; description: string }>
