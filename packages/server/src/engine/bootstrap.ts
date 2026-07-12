@@ -73,6 +73,16 @@ export const EngineBootstrapHookLive = Layer.effect(
           })
         }
 
+        // 起 tmux session 之前预置文件夹信任（claude）：新 worktree 首启的 trust dialog 在回答前
+        // 不触发 SessionStart，会死锁下方就绪门控。失败 = HookError → 走既有 lifecycle 回滚（此时尚未
+        // 建 session/tab，下方 tapError 的 killSession/removeByWorkspace 均 ignore，无副作用）。
+        if (engine.prepareWorkspace) {
+          yield* Effect.try({
+            try: () => engine.prepareWorkspace!({ cwd: ws.path, claudeConfigPath: cfg.claudeConfigPath }),
+            catch: (e) => new HookError({ message: `workspace 预备失败：${String(e)}` }),
+          })
+        }
+
         const wantsPrompt = ctx.initialPrompt !== undefined && ctx.initialPrompt.trim() !== ""
         const gateOnHooks = wantsPrompt && engine.capabilities.hooks && !hooksDisabled() && Option.isSome(bus)
 

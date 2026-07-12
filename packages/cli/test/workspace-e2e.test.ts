@@ -14,6 +14,7 @@ const coolie = (...args: string[]) =>
       ...process.env, COOLIE_HOME: home, COOLIE_WORKSPACES_ROOT: wsRoot,
       COOLIE_TMUX_SOCKET: TMUX_SOCK, COOLIE_CLAUDE_CMD: "cat", COOLIE_DISABLE_HOOKS: "1",
       COOLIE_CLAUDE_HOME: path.join(home, "claude-home"),
+      COOLIE_CLAUDE_CONFIG: path.join(home, "claude.json"), // trust 种子绝不能写真实 ~/.claude.json
     },
     encoding: "utf8",
   })
@@ -43,6 +44,9 @@ describe("coolie workspace commands e2e", () => {
     expect(fs.existsSync(path.join(wsPath, "README.md"))).toBe(true)
     expect(coolie("list")).toContain(`${wsId}\t`)
     expect(coolie("list")).toContain("active")
+    // 守卫：folder-trust 种子必须落在 COOLIE_CLAUDE_CONFIG 指向的临时文件（而非真实 ~/.claude.json）。
+    const trustCfg = JSON.parse(fs.readFileSync(path.join(home, "claude.json"), "utf8"))
+    expect(trustCfg.projects?.[fs.realpathSync(wsPath)]?.hasTrustDialogAccepted).toBe(true)
   }, 60_000)
   it("archive removes the worktree dir, keeps the branch", () => {
     expect(coolie("archive", wsId)).toContain(`archived ${wsId}`)

@@ -12,3 +12,4 @@ refs/tux/
 node_modules/
 dist/
 *.tsbuildinfo
+.worktrees/

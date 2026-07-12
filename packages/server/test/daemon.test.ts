@@ -16,7 +16,11 @@ const startServer = async (extraEnv: Record<string, string> = {}) => {
   // grandchild node process, so killing only child.pid orphans the actual server;
   // cleanup must kill the whole group (see afterEach).
   child = spawn(TSX, [MAIN, "start"], {
-    env: { ...process.env, COOLIE_HOME: home, COOLIE_TMUX_SOCKET: DAEMON_TMUX_SOCK, COOLIE_DISABLE_HOOKS: "1", ...extraEnv },
+    env: {
+      ...process.env, COOLIE_HOME: home, COOLIE_TMUX_SOCKET: DAEMON_TMUX_SOCK, COOLIE_DISABLE_HOOKS: "1",
+      COOLIE_CLAUDE_CONFIG: path.join(home, "claude.json"), // trust 种子绝不能写真实 ~/.claude.json
+      ...extraEnv,
+    },
     stdio: "pipe", detached: true,
   })
   const deadline = Date.now() + 15_000
@@ -97,6 +101,7 @@ describe("engine ownership（不可违背原则）", () => {
       ...process.env, COOLIE_HOME: home2, COOLIE_WORKSPACES_ROOT: wsRoot,
       COOLIE_TMUX_SOCKET: sock, COOLIE_CLAUDE_CMD: "cat", COOLIE_DISABLE_HOOKS: "1",
       COOLIE_CLAUDE_HOME: path.join(home2, "claude-home"),
+      COOLIE_CLAUDE_CONFIG: path.join(home2, "claude.json"), // trust 种子绝不能写真实 ~/.claude.json
     }
     const srv = spawn(TSX, [MAIN, "start"], { env, stdio: "pipe", detached: true })
     try {
@@ -148,6 +153,7 @@ describe("keep-alive 闭环（wrapper → /hooks/engine-exit → engine.exited�
       ...process.env, COOLIE_HOME: home2, COOLIE_WORKSPACES_ROOT: wsRoot,
       COOLIE_TMUX_SOCKET: sock, COOLIE_CLAUDE_CMD: exit7, COOLIE_DISABLE_HOOKS: "1",
       COOLIE_CLAUDE_HOME: path.join(home2, "claude-home"),
+      COOLIE_CLAUDE_CONFIG: path.join(home2, "claude.json"), // trust 种子绝不能写真实 ~/.claude.json
     }
     const srv = spawn(TSX, [MAIN, "start"], { env, stdio: "pipe", detached: true })
     try {

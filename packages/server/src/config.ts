@@ -11,6 +11,9 @@ export interface CoolieConfigShape {
   readonly tmuxSocket: string
   /** claude 引擎自己的数据目录（转录所在）；测试注入临时目录 */
   readonly claudeHome: string
+  /** claude 文件夹信任配置文件（~/.claude.json，projects[].hasTrustDialogAccepted 存于此）；
+   * bootstrap 起 engine 前预置此标志规避新 worktree 的 trust dialog 死锁。`COOLIE_CLAUDE_CONFIG` 覆盖（测试注入临时文件）。 */
+  readonly claudeConfigPath?: string
   /** Plan3 Task15：首条 prompt 投递等待 SessionStart hook 就绪信号的上限（ms）；
    * 缺省 90000（要跑赢真实 claude 首启延迟——claude-mem 首会话播种记忆时 SessionStart 实测 ~22.3s，
    * 20s 门控会早约 2s 超时误降级 → 吞字；留足余量）。`COOLIE_PROMPT_READY_TIMEOUT_MS` 可覆盖，
@@ -28,6 +31,7 @@ export const CoolieConfigLive = Layer.sync(CoolieConfig, () => {
     workspacesRoot: process.env.COOLIE_WORKSPACES_ROOT ?? path.join(os.homedir(), "coolie", "workspaces"),
     tmuxSocket: process.env.COOLIE_TMUX_SOCKET ?? "coolie",
     claudeHome: process.env.COOLIE_CLAUDE_HOME ?? path.join(os.homedir(), ".claude"),
+    claudeConfigPath: process.env.COOLIE_CLAUDE_CONFIG ?? path.join(os.homedir(), ".claude.json"),
     promptReadyTimeoutMs: Number(process.env.COOLIE_PROMPT_READY_TIMEOUT_MS ?? 90_000),
   }
 })

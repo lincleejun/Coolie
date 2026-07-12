@@ -243,3 +243,77 @@ git commit -m "docs: README Plan 3 (tmux/engine/WS/unix socket) + manual claude 
 - 全量：`bun run test` → **Test Files 33 passed (33) / Tests 239 passed (239)**（既有 236 + 新增 3），Duration 8.81s。
 - `bun run typecheck`（`tsc -b packages/protocol packages/server packages/cli`）无输出、退出 0。
 - 无进程泄漏：各测试文件独立 disposable `-L` socket + `afterAll kill-server`；`ps aux | grep '[t]mux.*coolie-test'` 无遗留。
+
+---
+
+## 追加：预置 claude 文件夹信任（trust dialog 导致 SessionStart 死锁的根因修复）
+
+### 状态：FIXED（真实 claude 冒烟 2/2 通过）
+
+**根因（验收 forensics）**：全新 worktree 首启时真实 `claude` 卡在「Do you trust this folder?」对话框，且**回答之前不触发 SessionStart**——就绪门控在任何超时下都必然死锁；超时降级的 paste+Enter 恰好把 Enter 喂给对话框（= 意外授信），prompt 文本被对话框吃掉，SessionStart 在 ~0.5s 后才响。已信任目录下 SessionStart <1s 即达。产品决策：Coolie 为用户已添加项目自建的 worktree 属隐式信任范围，起 engine 前预置信任、整个跳过对话框。
+
+### 信任机制（实证发现，先探后写）
+
+对照实验（快照 `~/.claude.json` → 一次性 tmux socket 跑真 claude 于 mktemp 目录 → send-keys 回答对话框 → diff → jq 手术摘除 → 恢复核验）：
+
+- 存储位置：`~/.claude.json` 顶层 `projects` 对象。
+- 键：cwd 的 **realpath**（macOS `/tmp/x` → `/private/tmp/x`，软链解析后）。
+- 确切 shape（diff 摘录，claude 2.1.207 接受对话框后写入）：
+
+```json
+"projects": {
+  "/private/tmp/coolie-fixtrust-TWSgFC": {
+    "allowedTools": [], "mcpContextUris": [], "mcpServers": {},
+    "enabledMcpjsonServers": [], "disabledMcpjsonServers": [],
+    "hasTrustDialogAccepted": true,
+    "projectOnboardingSeenCount": 0,
+    "hasClaudeMdExternalIncludesApproved": false,
+    "hasClaudeMdExternalIncludesWarningShown": false,
+    "lastGracefulShutdown": false, "lastVersionBase": "2.1.207"
+  }
+}
+```
+
+- 反向验证（de-risk）：只预写**最小 seed** `projects[<realpath>] = {"hasTrustDialogAccepted": true}` 再启 claude → 对话框不出现，直达 prompt。其余字段 claude 自己回填，无需模仿。
+- 两轮实验后均 jq 手术摘除自建条目，`projects` 键集与快照逐一比对一致（其余 diff 仅 claude 自身运行计数器 numStartups/usageCount 等）。
+
+### 改动
+
+1. **`engine/claude/trust.ts`（新）**：`seedFolderTrust(configPath, folder)`——read-or-default `{}`（缺文件/坏 JSON 安全重建）→ 仅并入 `projects[realpath(folder)].hasTrustDialogAccepted=true`（该 folder 已有条目保留其余字段；其它 project/顶层键原样，绝不丢键）→ 同目录 tmp + rename 原子写（mode 0600 对齐 claude 自身）。`defaultClaudeConfigPath()`：`COOLIE_CLAUDE_CONFIG` ?? `~/.claude.json`。
+2. **`config.ts`**：`CoolieConfig.claudeConfigPath`（沿用既有 env 风格，`COOLIE_CLAUDE_CONFIG` 覆盖）。
+3. **`engine/types.ts`**：`Engine.prepareWorkspace?: (ctx: {cwd, claudeConfigPath?}) => void`（可选 = hooks-less/fake 引擎零影响）；claude adapter 实现为 `seedFolderTrust`。
+4. **`engine/bootstrap.ts`**：起 tmux session **之前** guard 调用 `engine.prepareWorkspace`，`Effect.try` 包裹，失败 = HookError → 既有 lifecycle 回滚路径。
+
+### 测试（RED→GREEN）
+
+- `engine-trust.test.ts`（新，5 例）：缺文件新建（含父目录）+ 确切 shape 字面断言；保留他人条目与顶层键；并入不覆盖已有 folder 条目其余字段；幂等（重复 seed 字节级一致）；坏 JSON 安全重建。
+- `bootstrap-prompt-gate.test.ts` 追加 1 例：录音引擎 + 包装 TmuxService，断言 `prepareWorkspace` 以 worktree cwd 与透传的 `claudeConfigPath` 被调用一次，且时序严格早于 `newSession`（`order === ["prepare","newSession"]`）。
+- 全量：`bun run test` → **34 files / 245 passed**（239 + 6 新增）；`bun run typecheck` 退出 0。
+
+### 真实 claude 冒烟（SELF-SMOKE，2/2 PASS）
+
+隔离：临时 `COOLIE_HOME`/`COOLIE_WORKSPACES_ROOT`、一次性 `-L coolie-smoke-*` socket、mktemp git repo；server `tsx main.ts start` 后台；`cli create <repo> --prompt "say the word pineapple and nothing else"`。
+
+| 轮次 | tmux.created → engine.session.started | session.started → prompt.delivered | degraded | pane 回答 |
+|---|---|---|---|---|
+| 1（japan-nikko） | +697ms（seq 3→7） | +688ms（seq 7→8，**started 在前**） | 无 | `⏺ pineapple` |
+| 2（canada-jasper） | +614ms（seq 15→19） | +938ms（seq 19→20，**started 在前**） | 无 | `⏺ pineapple` |
+
+修复前该场景 SessionStart 永不触发（对话框阻塞）→ 90s 死等 + 降级吞字；修复后 create 全程 <2s 返回。`prompt.delivery.degraded` 全库计数 0。
+
+冒烟后清场：jq 摘除 3 条 `/private/tmp/coolie-smoke-*` 信任条目（2 条我方 seed 的 worktree + 1 条 claude 自记的 repo root），`projects` 键集与冒烟前快照逐一相同（残余 diff 仅 claude 自身的 tengu_* feature-flag 缓存刷新与运行计数器，与 seeding 无关）；smoke server/tmux/claude 进程全灭，临时目录删除，真实 `tmux -L coolie` 无 server 未受扰。
+
+### 修补（FIXER follow-up）：e2e 泄漏真实 ~/.claude.json
+
+验收 agent 发现：`bun run test` 会把 folder-trust 条目写进 **真实** `~/.claude.json`。根因：e2e 只设了 `COOLIE_CLAUDE_HOME` 没设 `COOLIE_CLAUDE_CONFIG`，`prepareWorkspace` → `seedFolderTrust` 落回默认 `~/.claude.json`。
+
+**RED 证据（受控一次性运行）**：快照 cp `~/.claude.json`（sha256 `8e255d22…`）→ 单跑修复前 `packages/cli/test/workspace-e2e.test.ts` → 语义 diff 显示 `projects` 新增 2 个临时 worktree 键（`…/japan-daisetsuzan`、`…/prompted-ws`，均 `hasTrustDialogAccepted: true`）→ cp 快照原样恢复，sha256 复核一致（顺带丢弃的仅本机 claude 会话并发写的元数据，与泄漏无关）。
+
+**修复**：给所有起真实 server / 走真实 claude adapter lifecycle 的 e2e env 注入 `COOLIE_CLAUDE_CONFIG=<临时 home>/claude.json`：
+- `packages/cli/test/workspace-e2e.test.ts`（实际泄漏者：create 走 bootstrap）——并加守卫断言：create 后临时 claude.json 里 `projects[realpath(wsPath)].hasTrustDialogAccepted === true`，证明种子落在 override 路径；
+- `packages/server/test/daemon.test.ts`（实际泄漏者：survival 测试经 HTTP 建 workspace；`startServer` 处同样注入作防御）；
+- `packages/cli/test/cli-e2e.test.ts`（防御性：起真实 server 但当前不建 workspace）。
+
+审计其余测试：`bootstrap-prompt-gate` / `lifecycle-tmux` 用无 `prepareWorkspace` 的假引擎、`engine-trust` 显式传临时路径、`monitor`/`engine-claude` 不调 `prepareWorkspace`、`export-doctor` daemon-free —— 均无泄漏。
+
+**GREEN**：修复后单跑 workspace-e2e，真实文件字节级不变（`cmp` 通过）；全量 `bun run test` **34 files / 245 passed**、`typecheck` 退出 0，套件前后真实 `~/.claude.json` diff 为空（sha256 `d04b3d5d…` 前后一致）。
