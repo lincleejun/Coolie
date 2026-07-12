@@ -61,7 +61,9 @@ export const EngineBootstrapHookLive = Layer.effect(
           Effect.mapError((e) => new HookError({ message: e.message })),
         )
         const session = sessionNameFor(ws.id)
-        const sessionId = engine.newSessionId()
+        // 服务端造 id（codex）：起始 null，首个 SessionStart hook 经 /hooks/:engine 回填真 id（C4）。
+        // F4：serverGeneratedId 可选 → 用 === true 判定（缺省/false 走客户端造 id，同 claude）。
+        const sessionId: string | null = engine.serverGeneratedId === true ? null : engine.newSessionId()
 
         if (engine.capabilities.hooks && !hooksDisabled()) {
           yield* Effect.try({
@@ -86,7 +88,7 @@ export const EngineBootstrapHookLive = Layer.effect(
         // 建 session/tab，下方 tapError 的 killSession/removeByWorkspace 均 ignore，无副作用）。
         if (engine.prepareWorkspace) {
           yield* Effect.try({
-            try: () => engine.prepareWorkspace!({ cwd: ws.path, claudeConfigPath: cfg.claudeConfigPath }),
+            try: () => engine.prepareWorkspace!({ cwd: ws.path, claudeConfigPath: cfg.claudeConfigPath, codexConfigPath: cfg.codexConfigPath }),
             catch: (e) => new HookError({ message: `workspace 预备失败：${String(e)}` }),
           })
         }

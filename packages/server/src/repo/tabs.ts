@@ -23,7 +23,7 @@ export type TabStatusSource = "hook" | "poller" | "wrapper" | "heal"
 export interface TabsRepoShape {
   readonly insert: (t: {
     workspaceId: string; kind: TabKind
-    engineId?: string; engineSessionId?: string; tmuxWindow?: number; title?: string
+    engineId?: string; engineSessionId?: string | null; tmuxWindow?: number; title?: string
   }) => Effect.Effect<Tab>
   readonly get: (id: string) => Effect.Effect<Tab, NotFoundError>
   readonly listByWorkspace: (workspaceId: string) => Effect.Effect<Tab[]>

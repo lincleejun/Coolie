@@ -16,6 +16,11 @@ export interface CoolieConfigShape {
   /** claude 文件夹信任配置文件（~/.claude.json，projects[].hasTrustDialogAccepted 存于此）；
    * bootstrap 起 engine 前预置此标志规避新 worktree 的 trust dialog 死锁。`COOLIE_CLAUDE_CONFIG` 覆盖（测试注入临时文件）。 */
   readonly claudeConfigPath?: string
+  /** codex 文件夹信任配置文件（~/.codex/config.toml，projects."<path>".trust_level 存于此）；
+   * bootstrap 起 codex 前预置 project trust 跳过 TUI 首启信任对话框。`COOLIE_CODEX_CONFIG` 覆盖
+   * （测试注入临时文件防污染真实 ~/.codex/config.toml——Task6 零泄漏不变量）。缺省 undefined →
+   * codex adapter 回落 defaultCodexConfigPath(codexHome)。 */
+  readonly codexConfigPath?: string | undefined
   /** Plan3 Task15：首条 prompt 投递等待 SessionStart hook 就绪信号的上限（ms）；
    * 缺省 90000（要跑赢真实 claude 首启延迟——claude-mem 首会话播种记忆时 SessionStart 实测 ~22.3s，
    * 20s 门控会早约 2s 超时误降级 → 吞字；留足余量）。`COOLIE_PROMPT_READY_TIMEOUT_MS` 可覆盖，
@@ -35,6 +40,8 @@ export const CoolieConfigLive = Layer.sync(CoolieConfig, () => {
     claudeHome: process.env.COOLIE_CLAUDE_HOME ?? path.join(os.homedir(), ".claude"),
     codexHome: process.env.COOLIE_CODEX_HOME ?? path.join(os.homedir(), ".codex"),
     claudeConfigPath: process.env.COOLIE_CLAUDE_CONFIG ?? path.join(os.homedir(), ".claude.json"),
+    // 缺省 undefined → codex adapter 回落 defaultCodexConfigPath(codexHome)；测试用 COOLIE_CODEX_CONFIG 指向临时文件。
+    codexConfigPath: process.env.COOLIE_CODEX_CONFIG,
     promptReadyTimeoutMs: Number(process.env.COOLIE_PROMPT_READY_TIMEOUT_MS ?? 90_000),
   }
 })
