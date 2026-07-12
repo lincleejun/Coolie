@@ -38,9 +38,16 @@ export const codexEfforts = ["low", "medium", "high", "xhigh"]
 export const codexEngine: Engine = {
   id: "codex",
   displayName: "Codex",
-  capabilities: { nativeQueue: false, midSessionModelSwitch: true, resume: true, hooks: true, effort: true },
+  // hooks:false —— codex 0.139.0 实测 hooks 四断点（task-12-report §3）：features.hooks 默认关、项目级
+  // .codex/hooks.json 不被发现、--dangerously-bypass-hook-trust 不激活未信任 hooks、SessionStart 推迟到
+  // 首个 turn。故 codex 走无-hooks 通路：就绪 + id 回填改由 rollout 文件门控（bootstrap gateOnRollout），
+  // 状态由 mtime 轮询独家负责（monitor，lastHookAt 恒 null → mtime 恒当值）。
+  // 【hooks 重启检查】codex≥0.144 一旦实测确认「项目级 .codex/hooks.json 被发现 + features.hooks 默认开 +
+  // SessionStart 首启即触发」，把此位改回 true 即可：bootstrap gateOnHooks 会自动优先、gateOnRollout 让位，
+  // /hooks/codex 端点 + injectCodexHooks + statusFromHookEvent 已就绪（本次保留、future-ready），无需改调用点。
+  capabilities: { nativeQueue: false, midSessionModelSwitch: true, resume: true, hooks: false, effort: true },
   terminalTitle: "engine-owned", // codex OSC0 标题可配（codex.md §8）
-  serverGeneratedId: true,       // 服务端造 id：bootstrap 起始存 null，首个 SessionStart hook 回填
+  serverGeneratedId: true,       // 服务端造 id：bootstrap 起始存 null，rollout 文件出现后回填真 id
   models: codexModels,
   efforts: codexEfforts,
   // 占位 id：codex 不支持预指定 session id，此值永不传给 codex（serverGeneratedId 分流后 bootstrap 都不会用它）。
@@ -53,8 +60,9 @@ export const codexEngine: Engine = {
     args.push("-c", 'tui.terminal_title=["activity","thread-title"]')
     if (model) args.push("--model", model)
     if (effort) args.push("-c", `model_reasoning_effort=${effort}`)
-    // F3 已核实（codex-cli 0.139.0 交互式 codex 支持此 flag）：无条件旁路 hook trust，
-    // 因 Coolie 亲自注入 .codex/hooks.json（来源已 vet），保证 SessionStart hook 首启即触发。
+    // 保留此 flag（0.139.0 实测：只抑制 hook trust review 对话框，不激活未信任 hooks——见 task-12-report §3
+    // 断点 3）：无害且 future-ready，避免未来重启 hooks 时首启弹信任对话框死锁就绪门控。当前无-hooks 通路
+    // 不依赖它，就绪由 rollout 文件门控。
     args.push("--dangerously-bypass-hook-trust")
     return args
   },

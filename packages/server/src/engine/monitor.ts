@@ -35,8 +35,8 @@ export interface TranscriptPollerDeps {
 export const pollOnce = async (deps: TranscriptPollerDeps): Promise<void> => {
   const now = (deps.now ?? Date.now)()
   for (const { tab, workspacePath } of await deps.listEngineTabs()) {
-    // F2：codex 服务端造 id 在首个 SessionStart hook 回填前为 null；此期 rollout 文件尚不存在，
-    // mtime 兜底无从做起，状态由 hooks 独家负责（F3 的 --dangerously-bypass-hook-trust 保证 hook 首启即达）。
+    // codex 服务端造 id 在 rollout 文件出现、bootstrap 回填前为 null；此期 rollout 尚不存在，mtime 无从做起，
+    // 跳过（回填后本 tab 即进入下方 mtime 轮询）。codex 无-hooks：lastHookAt 恒 null → mtime 恒当值。
     if (tab.engineSessionId === null) continue
     const engine = deps.resolveEngine(tab.engineId)
     if (engine === undefined) continue // 未注册引擎：跳过（防御）

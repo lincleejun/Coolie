@@ -400,3 +400,109 @@ describe("bootstrap：serverGeneratedId 引擎先启动后回填（服务端造 
     expect(after?.engine_session_id).toBe("real-cx-id")
   })
 })
+
+describe("bootstrap：codex 无-hooks 通路——rollout 文件就绪门控 + id 回填（0.139 四断点修复）", () => {
+  // fake codex：hooks 能力关（0.139 现实）+ serverGeneratedId。initialPrompt 有值 → 触发 gateOnRollout。
+  // launchCommand = exec cat（pane 存活可收字，供投递验证）；newSessionId 返回哨兵——rollout 门控回填真 id，
+  // 绝不该用 newSessionId 的值。
+  const ROLLOUT_UUID = "019f5586-002d-73c1-98b9-ef17a05f06c9"
+  const rolloutCodex: Engine = {
+    id: "codex", displayName: "Fake Codex (rollout-gated)",
+    capabilities: { nativeQueue: false, midSessionModelSwitch: true, resume: true, hooks: false, effort: true },
+    terminalTitle: "engine-owned",
+    serverGeneratedId: true,
+    newSessionId: () => "codex-SHOULD-NOT-APPEAR",
+    launchCommand: () => ["/bin/bash", "-c", "exec cat"],
+    statusFromHookEvent: () => null,
+    transcriptPath: ({ home: h, sessionId }) => path.join(h, `${sessionId}.jsonl`),
+    deriveTitle: () => null,
+    resumeArgs: (s) => ["resume", s],
+  }
+
+  it("rollout 文件出现 → 回填 engineSessionId(=文件名 UUID) + engine.session.started(早于 delivered)，无 90s 降级", async () => {
+    const layer = buildLayer(rolloutCodex, 4000)
+    const program = Effect.gen(function* () {
+      const projects = yield* ProjectsRepo
+      const lc = yield* WorkspaceLifecycle
+      const list = yield* projects.list()
+      const project = list[0]!
+      return yield* lc.create({ projectId: project.id, name: "codex-rollout-1", engineId: "codex", initialPrompt: "rollout-me" })
+    })
+    const createExit = Effect.runPromiseExit(Effect.provide(program, layer) as Effect.Effect<any, any, never>)
+
+    // 等 ws 行（拿 path，rollout session_meta.cwd 必须精确等于 worktree path）+ tab 行（证明已起 session、门控开始轮询）
+    const ws = await waitForValue(() => db.prepare("SELECT id, path FROM workspaces WHERE name = 'codex-rollout-1'").get() as { id: string; path: string } | undefined)
+    await waitForValue(() => (db.prepare("SELECT id FROM tabs WHERE workspace_id = ?").get(ws.id) as any)?.id)
+
+    // 起 session 之后落地 rollout 文件（codexHome/sessions 日期树；session_meta 首行带 id + 本 worktree 的 cwd）
+    const codexHome = path.join(home, "codex-home")
+    const rolloutPath = path.join(codexHome, "sessions", "2026", "07", "12", `rollout-2026-07-12T00-00-00-${ROLLOUT_UUID}.jsonl`)
+    fs.mkdirSync(path.dirname(rolloutPath), { recursive: true })
+    fs.writeFileSync(rolloutPath, JSON.stringify({ type: "session_meta", payload: { id: ROLLOUT_UUID, cwd: ws.path } }) + "\n")
+
+    const exit = await createExit
+    expect(Exit.isSuccess(exit)).toBe(true)
+
+    // ① engineSessionId 回填成 rollout 文件名内嵌的真 UUID（不是哨兵）
+    const tabRow = db.prepare("SELECT engine_session_id FROM tabs WHERE workspace_id = ? AND kind = 'engine'").get(ws.id) as any
+    expect(tabRow?.engine_session_id).toBe(ROLLOUT_UUID)
+
+    const rows = db.prepare("SELECT seq, type, payload FROM events WHERE workspace_id = ? ORDER BY seq").all(ws.id) as Array<{ seq: number; type: string; payload: string }>
+    const started = rows.find((r) => r.type === "engine.session.started")
+    const delivered = rows.find((r) => r.type === "prompt.delivered")
+    const degraded = rows.find((r) => r.type === "prompt.delivery.degraded")
+    const sessionChanged = rows.find((r) => r.type === "tab.session.changed")
+    // ② engine.session.started 追加（同 hooks 词汇，下游统一），带真 id
+    expect(started).toBeDefined()
+    expect(JSON.parse(started!.payload).sessionId).toBe(ROLLOUT_UUID)
+    // ③ 回填经 setEngineSessionId → tab.session.changed（resume/标题/mtime 状态自此解锁）
+    expect(sessionChanged).toBeDefined()
+    expect(JSON.parse(sessionChanged!.payload).sessionId).toBe(ROLLOUT_UUID)
+    // ④ 就绪信号早于投递（≠ 缺陷时序：delivered 早于 started），且无结构性 90s 降级
+    expect(delivered).toBeDefined()
+    expect(started!.seq).toBeLessThan(delivered!.seq)
+    expect(degraded).toBeUndefined()
+  })
+
+  it("rollout 文件始终不出现 → rollout-timeout 降级取证（排在 delivered 前），仍投递成功", async () => {
+    // 极短 rollout 就绪超时快速练到降级路径（不落任何 rollout 文件）。
+    const cfgLayer = Layer.succeed(CoolieConfig, {
+      home, dbPath: ":memory:", serverInfoPath: path.join(home, "server.json"),
+      workspacesRoot: wsRoot, tmuxSocket: SOCK, claudeHome: path.join(home, "claude-home"), codexHome: path.join(home, "codex-home"),
+      promptReadyTimeoutMs: 4000, rolloutReadyTimeoutMs: 200,
+    })
+    const layer = WorkspaceLifecycleLive.pipe(
+      Layer.provideMerge(EngineBootstrapHookLive),
+      Layer.provideMerge(Layer.mergeAll(
+        GitServiceLive, SetupRunnerLive,
+        Layer.succeed(TmuxService, tmux),
+        Layer.succeed(EngineRegistry, new Map([[rolloutCodex.id, rolloutCodex]])),
+      )),
+      Layer.provideMerge(Layer.mergeAll(ProjectsRepoLive, EventsRepoLive, WorkspacesRepoLive, TabsRepoLive)),
+      Layer.provideMerge(Layer.succeed(EventsBus, bus)),
+      Layer.provideMerge(Layer.succeed(Db, db)),
+      Layer.provideMerge(cfgLayer),
+    )
+    const program = Effect.gen(function* () {
+      const projects = yield* ProjectsRepo
+      const lc = yield* WorkspaceLifecycle
+      const project = (yield* projects.list())[0]!
+      return yield* lc.create({ projectId: project.id, name: "codex-rollout-2", engineId: "codex", initialPrompt: "rollout-timeout-me" })
+    })
+    const exit = await Effect.runPromiseExit(Effect.provide(program, layer) as Effect.Effect<any, any, never>)
+    expect(Exit.isSuccess(exit)).toBe(true)
+    if (Exit.isSuccess(exit)) {
+      const wsId = exit.value.id
+      const rows = db.prepare("SELECT seq, type, payload FROM events WHERE workspace_id = ? ORDER BY seq").all(wsId) as Array<{ seq: number; type: string; payload: string }>
+      const degraded = rows.find((r) => r.type === "prompt.delivery.degraded")
+      const delivered = rows.find((r) => r.type === "prompt.delivered")
+      expect(degraded).toBeDefined()
+      expect(JSON.parse(degraded!.payload)).toEqual({ reason: "rollout-timeout", timeoutMs: 200 })
+      expect(delivered).toBeDefined()
+      expect(degraded!.seq).toBeLessThan(delivered!.seq)
+      // id 未回填（rollout 从未出现）：保持 null
+      const tabRow = db.prepare("SELECT engine_session_id FROM tabs WHERE workspace_id = ? AND kind = 'engine'").get(wsId) as any
+      expect(tabRow?.engine_session_id).toBeNull()
+    }
+  })
+})
