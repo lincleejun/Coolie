@@ -10,13 +10,13 @@ const MAIN = path.resolve(__dirname, "../src/main.ts")
 const TSX = path.resolve(__dirname, "../../../node_modules/.bin/tsx")
 const DAEMON_TMUX_SOCK = `coolie-test-${process.pid}-d`
 
-const startServer = async () => {
+const startServer = async (extraEnv: Record<string, string> = {}) => {
   home = fs.mkdtempSync(path.join(os.tmpdir(), "coolie-daemon-"))
   // detached: true → child leads its own process group. tsx's CLI re-execs into a
   // grandchild node process, so killing only child.pid orphans the actual server;
   // cleanup must kill the whole group (see afterEach).
   child = spawn(TSX, [MAIN, "start"], {
-    env: { ...process.env, COOLIE_HOME: home, COOLIE_TMUX_SOCKET: DAEMON_TMUX_SOCK, COOLIE_DISABLE_HOOKS: "1" },
+    env: { ...process.env, COOLIE_HOME: home, COOLIE_TMUX_SOCKET: DAEMON_TMUX_SOCK, COOLIE_DISABLE_HOOKS: "1", ...extraEnv },
     stdio: "pipe", detached: true,
   })
   const deadline = Date.now() + 15_000
@@ -128,5 +128,60 @@ describe("engine ownership（不可违背原则）", () => {
       try { process.kill(-srv.pid!, "SIGKILL") } catch { /* already dead */ }
       try { execFileSync("tmux", ["-L", sock, "kill-server"]) } catch { /* gone */ }
     }
+  })
+})
+
+describe("daemon 加固（Plan 4）", () => {
+  it("shutdown：挂着 SSE 长连接也在时限内退出，server.json 与 coolie.sock 都清掉", async () => {
+    const info = await startServer()
+    // 一条保持打开的 SSE 连接——没有 closeAllConnections 时 server.close 永不完成
+    const req = http.get({
+      host: "127.0.0.1", port: info.port, path: "/events/stream?after=0",
+      headers: { Authorization: `Bearer ${info.token}` },
+    })
+    await new Promise<void>((resolve, reject) => { req.on("response", () => resolve()); req.on("error", reject) })
+    await fetch(`http://127.0.0.1:${info.port}/shutdown`, {
+      method: "POST", headers: { Authorization: `Bearer ${info.token}` },
+    })
+    const deadline = Date.now() + 8_000
+    while (Date.now() < deadline) {
+      if (!fs.existsSync(path.join(home, "server.json")) && !fs.existsSync(path.join(home, "coolie.sock"))) break
+      await new Promise((r) => setTimeout(r, 100))
+    }
+    expect(fs.existsSync(path.join(home, "server.json"))).toBe(false)
+    expect(fs.existsSync(path.join(home, "coolie.sock"))).toBe(false)
+    // 进程真的退了：/health 不再应答
+    expect((await fetch(`http://127.0.0.1:${info.port}/health`).catch(() => null))).toBe(null)
+    req.destroy()
+  })
+
+  it("并发 shutdown（SIGTERM + POST /shutdown 同时到达）→ 恰好一次干净退出、无 double-rm/double-close 抛错", async () => {
+    const info = await startServer()
+    // 一条开着的 SSE 长连接：迫使 closeAllConnections 真正参与（否则 close 永不完成 → 只能靠兜底超时退）
+    const sse = http.get({
+      host: "127.0.0.1", port: info.port, path: "/events/stream?after=0",
+      headers: { Authorization: `Bearer ${info.token}` },
+    })
+    await new Promise<void>((resolve, reject) => { sse.on("response", () => resolve()); sse.on("error", reject) })
+    let stderr = ""
+    child.stderr?.on("data", (b) => { stderr += String(b) })
+    const exits: Array<number | null> = []
+    child.on("exit", (code) => exits.push(code))
+    // 两条自退路径并发触发同一个 shutdown()：POST /shutdown 与 SIGTERM 竞相进入
+    await Promise.all([
+      fetch(`http://127.0.0.1:${info.port}/shutdown`, {
+        method: "POST", headers: { Authorization: `Bearer ${info.token}` },
+      }).catch(() => {}),
+      Promise.resolve().then(() => { try { process.kill(child!.pid!, "SIGTERM") } catch { /* 已退 */ } }),
+    ])
+    const deadline = Date.now() + 8_000
+    while (Date.now() < deadline && exits.length === 0) await new Promise((r) => setTimeout(r, 50))
+    // 幂等 guard（shuttingDown）保证只跑一次：恰好退一次、且是干净码 0（非双次、非崩溃码）
+    expect(exits).toEqual([0])
+    // 第二次进入 shutdown 若无 guard：un-forced `fs.rmSync(sockPath)` 抛 ENOENT / Scope.close 二次关抛错 → 落 crash-net stderr
+    expect(stderr).not.toMatch(/ENOENT|UnhandledPromiseRejection|Error:/)
+    expect(fs.existsSync(path.join(home, "server.json"))).toBe(false)
+    expect(fs.existsSync(path.join(home, "coolie.sock"))).toBe(false)
+    sse.destroy()
   })
 })

@@ -22,7 +22,7 @@ import { startTranscriptPoller } from "./engine/monitor.js"
 import { attachTerminalWs } from "./http/ws.js"
 import { createApp, newToken } from "./http/app.js"
 import type { AppServices } from "./http/app.js"
-import { readServerInfo, writeServerInfo, probeAlive } from "./daemon/info.js"
+import { readServerInfo, claimServerInfo, probeAlive } from "./daemon/info.js"
 import { rotateLogIfNeeded } from "./log/rotate.js"
 import { createLogger, installCrashNet } from "./log/logger.js"
 
@@ -103,14 +103,26 @@ const cmdStart = async (): Promise<void> => {
     : () => {}
 
   const sockPath = path.join(cfg.home, "coolie.sock")
-  const shutdown = async () => {
+
+  // ---- Plan 4：幂等 + awaited close 的 shutdown ----
+  let shuttingDown = false
+  const closeHttp = (s: http.Server): Promise<void> =>
+    new Promise((resolve) => {
+      s.close(() => resolve())            // 未 listen 的 server：回调带 err 也会触发 → 照样 resolve
+      s.closeAllConnections()             // SSE/WS 长连接不断掉，close 永不完成（Node ≥18.2）
+    })
+  const shutdown = async (): Promise<void> => {
+    if (shuttingDown) return              // POST /shutdown、SIGTERM、idle-exit 可能并发到达
+    shuttingDown = true
     logger.info("shutdown")
     stopPoller()
     fs.rmSync(cfg.serverInfoPath, { force: true })
-    server.close()
-    unixServer.close()
+    await Promise.race([
+      Promise.all([closeHttp(server), closeHttp(unixServer)]),
+      new Promise((r) => setTimeout(r, 2000)), // 兜底：close 卡住也要退
+    ])
     fs.rmSync(sockPath, { force: true })
-    await Effect.runPromise(Scope.close(scope, Exit.void)) // scope 关闭 → control client dispose；tmux server/session 不动
+    await Effect.runPromise(Scope.close(scope, Exit.void)) // control client dispose；tmux server/session 不动
     await Promise.race([logger.flush(), new Promise((r) => setTimeout(r, 2000))])
     process.exit(0)
   }
@@ -135,16 +147,25 @@ const cmdStart = async (): Promise<void> => {
     log: (m) => logger.warn(m),
   })
 
-  // unix socket 监听（设计文档 §2.1）：同一 app、同一 token；先清陈旧 sock
+  // ---- Plan 4：先 TCP listen，claim 赢了才碰 unix socket ----
+  // 旧顺序（先 rm sock 再 listen sock 再 TCP）下，两个竞态 start 会互删对方的 sock。
   fs.mkdirSync(cfg.home, { recursive: true })
-  fs.rmSync(sockPath, { force: true })
   const unixServer = http.createServer(app)
-  unixServer.listen(sockPath, () => logger.info(`listening on unix socket ${sockPath}`))
 
   server.listen(0, "127.0.0.1", () => {
-    const port = (server.address() as { port: number }).port
-    writeServerInfo(cfg.serverInfoPath, { port, token, pid: process.pid, sock: sockPath })
-    logger.info(`coolie-server listening on 127.0.0.1:${port}`)
+    void (async () => {
+      const port = (server.address() as { port: number }).port
+      const won = await claimServerInfo(cfg.serverInfoPath, { port, token, pid: process.pid, sock: sockPath })
+      if (!won) {
+        logger.warn("单实例竞态落败：另一个 coolie-server 已注册 server.json，本进程退出（不碰对方的 sock）")
+        server.close(); server.closeAllConnections()
+        await Promise.race([logger.flush(), new Promise((r) => setTimeout(r, 1000))])
+        process.exit(1)
+      }
+      fs.rmSync(sockPath, { force: true }) // 赢家清陈旧 sock
+      unixServer.listen(sockPath, () => logger.info(`listening on unix socket ${sockPath}`))
+      logger.info(`coolie-server listening on 127.0.0.1:${port}`)
+    })()
   })
   process.on("SIGINT", () => void shutdown())
   process.on("SIGTERM", () => void shutdown())
