@@ -16,8 +16,9 @@ import { tmuxSessionName, type CoolieEvent } from "@coolie/protocol"
 /** 命名唯一真源在 protocol（tmuxSessionName）；此别名只为 server 侧调用点可读性。 */
 export const sessionNameFor = tmuxSessionName
 
-/** hooks 就绪信号超时兜底（cfg.promptReadyTimeoutMs 未注入时用这个）。 */
-const DEFAULT_PROMPT_READY_TIMEOUT_MS = 20_000
+/** hooks 就绪信号超时兜底（cfg.promptReadyTimeoutMs 未注入时用这个）；
+ * 与 config.ts 缺省对齐——90s 跑赢真实 claude 首启（claude-mem 播种 ~22.3s）。 */
+const DEFAULT_PROMPT_READY_TIMEOUT_MS = 90_000
 
 /** hook 派生事件类型前缀：只有这些（/hooks/claude 转发出来的）才算「claude 活着」的证据——
  * "engine.started" 是 bootstrap 自己无条件写的，不能拿来当就绪信号，否则等于没等。 */
@@ -109,6 +110,15 @@ export const EngineBootstrapHookLive = Layer.effect(
             hookReady = yield* ready.pipe(
               Effect.timeoutTo({ duration: timeoutMs, onTimeout: () => false, onSuccess: () => true }),
             )
+            // gate 武装过（hooks 能力 + 有 prompt）却没等到 SessionStart 信号：即将降级走强化 waitStable
+            // 兜底——真实 claude 首启慢于门控上限时这条路径会吞字（reader 尚未接管 stdin）。先记一条
+            // 取证事件（kobe：prompt.delivered 早于 engine.session.started 即命中此降级），再照常降级投递。
+            if (!hookReady) {
+              yield* events.append({
+                workspaceId: ws.id, type: "prompt.delivery.degraded",
+                payload: { reason: "session-start-timeout", timeoutMs },
+              })
+            }
           }
           yield* detachListener // 拿到（或超时放弃）就绪信号后立刻摘监听器，不再需要
           // hookReady：已确认 claude 真活着（hook 打过），waitStable 只需最低限度确认一次就行；

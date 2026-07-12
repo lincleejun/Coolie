@@ -10,6 +10,7 @@ describe("CoolieConfig", () => {
     delete process.env.COOLIE_WORKSPACES_ROOT
     delete process.env.COOLIE_TMUX_SOCKET
     delete process.env.COOLIE_CLAUDE_HOME
+    delete process.env.COOLIE_PROMPT_READY_TIMEOUT_MS
   })
   it("respects COOLIE_HOME", () => {
     process.env.COOLIE_HOME = "/tmp/coolie-test-home"
@@ -39,5 +40,14 @@ describe("CoolieConfig", () => {
     const c = load()
     expect(c.tmuxSocket).toBe("coolie")
     expect(c.claudeHome.endsWith("/.claude")).toBe(true)
+  })
+  it("defaults promptReadyTimeoutMs=90000 (outlasts real SessionStart latency)", () => {
+    const c = load()
+    expect(c.promptReadyTimeoutMs).toBe(90_000)
+  })
+  it("respects COOLIE_PROMPT_READY_TIMEOUT_MS override", () => {
+    process.env.COOLIE_PROMPT_READY_TIMEOUT_MS = "1234"
+    const c = load()
+    expect(c.promptReadyTimeoutMs).toBe(1234)
   })
 })
