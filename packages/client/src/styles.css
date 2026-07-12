@@ -87,7 +87,10 @@ button { font: inherit; color: inherit; background: none; border: none; cursor: 
 .add-project { padding: 10px; display: flex; flex-direction: column; gap: 8px; }
 
 /* === tabsbar (Task 11) === */
-.center-area { display: flex; flex-direction: column; height: 100%; min-height: 0; }
+/* flex:1（而非 height:100%）：col-center 里 CenterArea 与 Composer 纵向同列，height:100% 令二者
+ * 名义总高超出容器、全靠 flex-shrink 兜底解算——composer 动态长高（多行草稿/队列指示）时边界易抖。
+ * flex:1 + min-height:0 是正解：终端区 = 减去 composer 后的剩余空间，视口干净地终于 composer 之上。 */
+.center-area { display: flex; flex-direction: column; flex: 1; min-height: 0; }
 .tabsbar { flex: none; display: flex; align-items: center; gap: 2px; padding: 6px 8px 0; border-bottom: 1px solid var(--border); }
 .tab { display: flex; align-items: center; gap: 6px; padding: 5px 12px; border-radius: 6px 6px 0 0; color: var(--fg-dim); }
 .tab.active { background: var(--panel); color: var(--fg); }
@@ -102,8 +105,11 @@ button { font: inherit; color: inherit; background: none; border: none; cursor: 
 .center-empty { display: flex; align-items: center; justify-content: center; height: 100%; }
 
 /* === composer (Task 12) === */
-.composer { flex: none; border-top: 1px solid var(--border); padding: 10px 12px; }
-.composer-box { display: flex; gap: 8px; align-items: flex-end; background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 8px 10px; }
+/* conductor 参照（refs/input.png）：composer 是明显独立于终端的卡片——
+ * 底带略深背景 + 可见分隔线 + 实底圆角卡片；否则 claude TUI 自己的输入行贴着它渲染，
+ * 看起来像两个叠在一起的输入框（2026-07-12 二次 walkthrough 反馈）。 */
+.composer { flex: none; border-top: 1px solid rgba(255,255,255,0.14); background: rgba(0,0,0,0.18); padding: 10px 12px 12px; }
+.composer-box { display: flex; gap: 8px; align-items: flex-end; background: rgba(26,26,30,0.85); border: 1px solid rgba(255,255,255,0.14); border-radius: 10px; padding: 8px 10px; }
 .composer-box:focus-within { border-color: var(--accent); }
 .composer textarea {
   flex: 1; background: transparent; border: none; outline: none; resize: none;
