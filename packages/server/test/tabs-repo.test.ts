@@ -26,6 +26,7 @@ const layer = () => TabsRepoLive.pipe(
   Layer.provide(Layer.succeed(EventsBus, bus)),
 )
 const run = <A, E>(eff: Effect.Effect<A, E, TabsRepo>) => Effect.runPromise(Effect.provide(eff, layer()))
+const runExit = <A, E>(eff: Effect.Effect<A, E, TabsRepo>) => Effect.runPromiseExit(Effect.provide(eff, layer()))
 const eventRows = () => db.prepare("SELECT type, payload FROM events ORDER BY seq").all() as Array<{ type: string; payload: string }>
 
 describe("TabsRepo", () => {
@@ -66,6 +67,25 @@ describe("TabsRepo", () => {
     expect(tab.title).toBe("Fix the login bug")
     expect(tab.lastHookAt).toBe(1234)
     expect(eventRows().map((e) => e.type)).toContain("tab.title.changed")
+  })
+
+  it("setEngineSessionId：更新 + 同事务 tab.session.changed；同值 no-op 不发事件", async () => {
+    const tab = await run(Effect.gen(function* () {
+      const tabs = yield* TabsRepo
+      const t = yield* tabs.insert({ workspaceId: "w1", kind: "engine", engineId: "claude", engineSessionId: "old-id", tmuxWindow: 0 })
+      yield* tabs.setEngineSessionId(t.id, "new-id")
+      yield* tabs.setEngineSessionId(t.id, "new-id") // 同值：不写库不发事件
+      return yield* tabs.get(t.id)
+    }))
+    expect(tab.engineSessionId).toBe("new-id")
+    const evs = (db.prepare("SELECT type FROM events ORDER BY seq").all() as any[]).map((r) => r.type)
+    expect(evs.filter((t) => t === "tab.session.changed")).toHaveLength(1)
+  })
+  it("setEngineSessionId：不存在的 tab → NotFoundError", async () => {
+    const exit = await runExit(Effect.gen(function* () {
+      yield* (yield* TabsRepo).setEngineSessionId("ghost", "x")
+    }))
+    expect(Exit.isFailure(exit)).toBe(true)
   })
 
   it("findEngineTab returns the engine tab, null when absent", async () => {

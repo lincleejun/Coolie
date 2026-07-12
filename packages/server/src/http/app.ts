@@ -194,6 +194,12 @@ export const createApp = ({ runtime, token, onShutdown, onError, bus, sseHeartbe
               const tab = engine ? yield* tabs.findEngineTab(wsId) : null
               if (!engine || !tab) return { ok: true } // hook 永远成功：无 tab（已归档/删除）静默吞掉
               yield* tabs.touchHookAt(tab.id, Date.now())
+              // --resume 会 fork 新 session id：以 hook 上报为真源同步，否则 mtime 轮询/标题派生盯旧转录
+              const hookSid = typeof (body as any)?.session_id === "string" && (body as any).session_id !== ""
+                ? (body as any).session_id as string : null
+              const sid = hookSid ?? tab.engineSessionId
+              if (hookSid !== null && tab.engineSessionId !== null && hookSid !== tab.engineSessionId)
+                yield* tabs.setEngineSessionId(tab.id, hookSid)
               const status = engine.statusFromHookEvent(body)
               if (status !== null) yield* tabs.setStatus(tab.id, status, "hook")
               const evtName = (body as any)?.hook_event_name
@@ -205,12 +211,12 @@ export const createApp = ({ runtime, token, onShutdown, onError, bus, sseHeartbe
                 // SessionStart：Plan3 Task15——冷启动就绪信号，bootstrap 订阅 EventsBus 等它再投首条 prompt
                 : evtName === "SessionStart" ? "engine.session.started" : null
               if (evType !== null)
-                yield* (yield* EventsRepo).append({ workspaceId: wsId, type: evType, payload: { tabId: tab.id, sessionId: tab.engineSessionId } })
+                yield* (yield* EventsRepo).append({ workspaceId: wsId, type: evType, payload: { tabId: tab.id, sessionId: sid } })
               // historyReader 兜底：首个 turn 完成且尚无标题 → 从转录派生
-              if (evtName === "Stop" && tab.title === null && tab.engineSessionId !== null && claudeHome !== undefined) {
+              if (evtName === "Stop" && tab.title === null && sid !== null && claudeHome !== undefined) {
                 const ws = yield* (yield* WorkspacesRepo).get(wsId).pipe(Effect.option)
                 if (Option.isSome(ws)) {
-                  const tp = engine.transcriptPath({ home: claudeHome, cwd: ws.value.path, sessionId: tab.engineSessionId })
+                  const tp = engine.transcriptPath({ home: claudeHome, cwd: ws.value.path, sessionId: sid })
                   const title = yield* Effect.sync(() => {
                     try { return engine.deriveTitle(fs.readFileSync(tp, "utf8")) } catch { return null }
                   })

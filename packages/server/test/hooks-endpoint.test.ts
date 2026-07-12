@@ -107,6 +107,17 @@ describe("POST /hooks/claude endpoint", () => {
     expect(eventTypes()).toContain("tab.title.changed")
   })
 
+  it("hook 报来新 session_id（--resume fork）→ engineSessionId 同步 + tab.session.changed", async () => {
+    const NEW_ID = "99999999-8888-4777-a666-555555555555"
+    await post("?workspace=w1", { hook_event_name: "UserPromptSubmit", session_id: NEW_ID })
+    expect(tabRow().engine_session_id).toBe(NEW_ID)
+    expect(eventTypes()).toContain("tab.session.changed")
+  })
+  it("session_id 与在册一致 → 不发 tab.session.changed", async () => {
+    await post("?workspace=w1", { hook_event_name: "UserPromptSubmit", session_id: SESSION_ID })
+    expect(eventTypes()).not.toContain("tab.session.changed")
+  })
+
   it("missing workspace param → 400; unknown workspace → 200 ok（hook 永远成功）", async () => {
     expect((await post("", { hook_event_name: "Stop" })).status).toBe(400)
     const r = await post("?workspace=nope", { hook_event_name: "Stop" })
