@@ -10,6 +10,7 @@ import { TmuxService, TmuxError } from "../tmux/service.js"
 import { EngineRegistry, EngineError, getEngine } from "../engine/registry.js"
 import { NotFoundError, ConflictError } from "../repo/errors.js"
 import { startEngineSession } from "../engine/session.js"
+import { ensureKeepAliveScript, wrapEngineCommand } from "../engine/keepalive.js"
 
 /** observe→decide 的纯决策（设计文档 §十）：apply 之外可独立单测。 */
 export type HealPlan =
@@ -33,6 +34,9 @@ export type EnsureError = NotFoundError | ConflictError | TmuxError | EngineErro
 export interface SessionEnsurerShape {
   /** ensure-or-heal：session 在则 no-op；丢失则重建（--resume 优先）。 */
   readonly ensure: (wsId: string) => Effect.Effect<HealOutcome, EnsureError>
+  /** Resume 按钮语义：engine 已退出（pane=keep-alive 落回的 shell）→ respawn-window 原地重启 engine；
+   * session 整个丢失 → 降级 ensure。 */
+  readonly resumeTab: (wsId: string, tabId: string) => Effect.Effect<HealOutcome, EnsureError>
 }
 export class SessionEnsurer extends Context.Tag("SessionEnsurer")<SessionEnsurer, SessionEnsurerShape>() {}
 
@@ -90,6 +94,35 @@ export const SessionEnsurerLive = Layer.effect(
         return { action: "recreated", resumed: plan.resume, sessionName, tabId, sessionId: plan.sessionId } satisfies HealOutcome
       })
 
-    return { ensure }
+    const resumeTab: SessionEnsurerShape["resumeTab"] = (wsId, tabId) =>
+      Effect.gen(function* () {
+        const ws = yield* repo.get(wsId)
+        if (ws.status !== "active")
+          return yield* new ConflictError({ message: `只能 resume active 的 workspace（当前 ${ws.status}）` })
+        const tab = yield* tabs.get(tabId)
+        if (tab.workspaceId !== wsId || tab.kind !== "engine")
+          return yield* new ConflictError({ message: `tab ${tabId} 不是该 workspace 的 engine tab` })
+        const sessionName = tmuxSessionName(ws.id)
+        if (!(yield* tmux.hasSession(sessionName))) return yield* ensure(wsId) // session 整个没了 → heal
+        const engine = yield* getEngine(registry, tab.engineId ?? "claude")
+        const canResume = yield* Effect.sync(() => transcriptExists(engine, ws.path, tab.engineSessionId))
+        const resume = canResume && tab.engineSessionId !== null
+        const sessionId = resume ? tab.engineSessionId! : engine.newSessionId()
+        const engineCommand = engine.launchCommand({ sessionId, resume })
+        yield* Effect.try({
+          try: () => ensureKeepAliveScript(cfg.home),
+          catch: (e) => new TmuxError({ op: "keepalive-script", message: `keep-alive 脚本写入失败：${String(e)}`, exitCode: null, stderr: "" }),
+        })
+        yield* tmux.respawnWindow({
+          session: sessionName, window: tab.tmuxWindow ?? 0, cwd: ws.path,
+          command: wrapEngineCommand(cfg.home, ws.id, engineCommand),
+        })
+        if (!resume) yield* tabs.setEngineSessionId(tab.id, sessionId)
+        yield* tabs.setStatus(tab.id, "idle", "heal").pipe(Effect.ignore)
+        yield* events.append({ workspaceId: ws.id, type: "engine.resumed", payload: { tabId: tab.id, sessionId, resumed: resume } })
+        return { action: "respawned", resumed: resume, sessionName, tabId: tab.id, sessionId } satisfies HealOutcome
+      })
+
+    return { ensure, resumeTab }
   }),
 )

@@ -78,4 +78,20 @@ describe("TmuxService on dedicated test socket", () => {
   it("version() returns a tmux version string", async () => {
     expect(await run(svc.version())).toMatch(/tmux \d/)
   })
+
+  it("respawnWindow -k 原地替换 window 进程（窗口数不变）", async () => {
+    const S4 = "coolie-respawn-test"
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "coolie-respawn-"))
+    await Effect.runPromise(svc.newSession({ name: S4, cwd, windowName: "w", command: ["sleep", "30"] }))
+    await Effect.runPromise(svc.respawnWindow({ session: S4, window: 0, cwd, command: ["sh", "-c", "printf respawn-ok; sleep 30"] }))
+    const deadline = Date.now() + 5000
+    let seen = false
+    while (Date.now() < deadline && !seen) {
+      seen = (await Effect.runPromise(svc.capturePane(`${S4}:0`))).includes("respawn-ok")
+      if (!seen) await new Promise((r) => setTimeout(r, 100))
+    }
+    expect(seen).toBe(true)
+    expect(await Effect.runPromise(svc.listWindows(S4))).toHaveLength(1)
+    await Effect.runPromise(svc.killSession(S4))
+  })
 })

@@ -12,6 +12,7 @@ import { WorkspacesRepo } from "../repo/workspaces.js"
 import { WorkspaceLifecycle } from "../workspace/lifecycle.js"
 import { TabsRepo } from "../repo/tabs.js"
 import { EngineRegistry } from "../engine/registry.js"
+import { SessionEnsurer } from "../workspace/heal.js"
 import { tokenEquals } from "./token.js"
 import { handleEventsStream } from "./sse.js"
 export { newToken } from "./token.js"
@@ -22,7 +23,7 @@ export { newToken } from "./token.js"
 // on it is not a reliable way to recover the original TaggedError. Running via
 // `Effect.runPromiseExit` and unwrapping with `Exit.match` + `Cause.failureOption`
 // (mirrors the pattern already used in test/projects-repo.test.ts) is robust.
-export type AppServices = ProjectsRepo | EventsRepo | WorkspacesRepo | WorkspaceLifecycle | TabsRepo | EngineRegistry
+export type AppServices = ProjectsRepo | EventsRepo | WorkspacesRepo | WorkspaceLifecycle | TabsRepo | EngineRegistry | SessionEnsurer
 export type Runtime = <A, E>(eff: Effect.Effect<A, E, AppServices>) => Promise<Exit.Exit<A, E>>
 export interface AppDeps {
   readonly runtime: Runtime
@@ -355,6 +356,24 @@ export const createApp = ({ runtime, token, onShutdown, onError, bus, sseHeartbe
               return yield* lc.retry(id)
             }),
             (ws) => send(res, 200, ws),
+            onError,
+          )
+        }
+        const wsEnsure = url.pathname.match(/^\/workspaces\/([^/]+)\/ensure$/)
+        if (req.method === "POST" && wsEnsure) {
+          return await runRoute(
+            res, runtime,
+            Effect.gen(function* () { return yield* (yield* SessionEnsurer).ensure(wsEnsure[1]!) }),
+            (out) => send(res, 200, out),
+            onError,
+          )
+        }
+        const tabResume = url.pathname.match(/^\/workspaces\/([^/]+)\/tabs\/([^/]+)\/resume$/)
+        if (req.method === "POST" && tabResume) {
+          return await runRoute(
+            res, runtime,
+            Effect.gen(function* () { return yield* (yield* SessionEnsurer).resumeTab(tabResume[1]!, tabResume[2]!) }),
+            (out) => send(res, 200, out),
             onError,
           )
         }
