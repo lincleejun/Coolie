@@ -1,0 +1,12 @@
+/* === picker (Task 13) ===
+   注：本文件承接 brief 原定 styles.css 追加内容。CONTROLLER-AUTHORIZED 范围调整——
+   T14 并发独占 styles.css/App.tsx，故拆出独立 picker.css，由 Picker.tsx import。
+   var(--border) 仍解析自全局 styles.css 的 :root。 */
+.composer { position: relative; }
+.picker {
+  position: absolute; bottom: calc(100% - 4px); left: 12px; right: 12px; max-height: 240px; overflow-y: auto;
+  background: #26262b; border: 1px solid var(--border); border-radius: 8px; z-index: 50; padding: 4px;
+}
+.picker-row { padding: 5px 10px; border-radius: 5px; font-family: Menlo, monospace; font-size: 12px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.picker-row.active { background: rgba(122,162,247,0.22); }

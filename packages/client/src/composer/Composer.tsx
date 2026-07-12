@@ -3,6 +3,9 @@ import { useData } from "../stores/data"
 import { useUi } from "../stores/ui"
 import { planComposerKey } from "./send"
 import { makeDrafts } from "./drafts"
+import { fuzzyFilter, detectToken, type TokenHit } from "./fuzzy"
+import { Picker } from "./Picker"
+import type { SlashCommand } from "../stores/types"
 
 const drafts = makeDrafts(localStorage)
 
@@ -41,6 +44,46 @@ export const Composer = ({ wsId, onSubmitOverride, placeholder }: ComposerProps)
   const engineWorking = engineTab?.status === "working"
   const engine = config?.engines.find((e) => e.id === (engineTab?.engineId ?? "claude"))
   const [model, setModel] = useState("default")
+
+  const [token, setToken] = useState<TokenHit | null>(null)
+  const [files, setFiles] = useState<string[]>([])
+  const [commands, setCommands] = useState<SlashCommand[]>([])
+
+  // @ 首次触发时懒加载文件/命令列表（workspace 切换时失效）
+  useEffect(() => { setFiles([]); setCommands([]); setToken(null) }, [wsId])
+  const ensureLists = (kind: "file" | "command"): void => {
+    const api = useData.getState().getApi()
+    if (!api) return
+    if (kind === "file" && files.length === 0)
+      void api.req("GET", `/workspaces/${wsId}/files`).then((r) => setFiles(r.files)).catch(() => {})
+    if (kind === "command" && commands.length === 0)
+      void api.req("GET", `/workspaces/${wsId}/commands`).then((r) => setCommands(r.commands)).catch(() => setCommands([]))
+  }
+
+  const BUILTIN_COMMANDS = ["model", "clear", "compact", "resume", "help"] // claude 内置常用子集
+  const pickerItems = token === null ? [] :
+    token.kind === "file"
+      ? fuzzyFilter(files, token.query)
+      : fuzzyFilter([...new Set([...BUILTIN_COMMANDS, ...commands.map((c) => c.name)])], token.query)
+
+  const refreshToken = (v: string, caret: number): void => {
+    const t = detectToken(v, caret)
+    setToken(t)
+    if (t) ensureLists(t.kind)
+  }
+
+  const insertAtToken = (replacement: string): void => {
+    if (!token || !ta.current) return
+    const caret = ta.current.selectionStart
+    const next = text.slice(0, token.start) + replacement + " " + text.slice(caret)
+    update(next)
+    setToken(null)
+    requestAnimationFrame(() => {
+      const pos = token.start + replacement.length + 1
+      ta.current?.setSelectionRange(pos, pos)
+      ta.current?.focus()
+    })
+  }
 
   useEffect(() => { setText(drafts.load(wsId)) }, [wsId])
   useEffect(() => { ta.current?.focus() }, [focusNonce])
@@ -94,14 +137,25 @@ export const Composer = ({ wsId, onSubmitOverride, placeholder }: ComposerProps)
   return (
     <div className="composer">
       <QueueIndicator wsId={wsId} />
+      {token && pickerItems.length > 0 && (
+        <Picker
+          items={pickerItems}
+          onClose={() => setToken(null)}
+          onPick={(item) => insertAtToken(token.kind === "file" ? `@${item}` : `/${item}`)}
+        />
+      )}
       <div className="composer-box">
         <textarea
           ref={ta}
           value={text}
           rows={Math.min(8, Math.max(1, text.split("\n").length))}
           placeholder={placeholder ?? "给 engine 的话… Enter 发送 · ⌘Enter 打断并发送 · ⌥Enter 仅插入 · ⇧Enter 换行"}
-          onChange={(e) => update(e.target.value)}
-          onKeyDown={onKeyDown}
+          onChange={(e) => { update(e.target.value); refreshToken(e.target.value, e.target.selectionStart) }}
+          onKeyDown={(e) => {
+            if (token && pickerItems.length > 0 && ["ArrowUp", "ArrowDown", "Enter", "Tab", "Escape"].includes(e.key))
+              return // PickerKeys 在 document capture 层接管
+            onKeyDown(e)
+          }}
         />
         <div className="composer-side">
           {engineWorking && (
