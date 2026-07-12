@@ -7,7 +7,7 @@ import { tmuxSessionName } from "@coolie/protocol"
 import { CoolieConfig, CoolieConfigLive } from "./config.js"
 import { DbLive } from "./db/sqlite.js"
 import { ProjectsRepoLive } from "./repo/projects.js"
-import { EventsRepoLive } from "./repo/events.js"
+import { EventsRepo, EventsRepoLive } from "./repo/events.js"
 import { WorkspacesRepo, WorkspacesRepoLive } from "./repo/workspaces.js"
 import { TabsRepo, TabsRepoLive } from "./repo/tabs.js"
 import { EventsBus, EventsBusLive } from "./events/bus.js"
@@ -23,6 +23,7 @@ import { attachTerminalWs } from "./http/ws.js"
 import { createApp, newToken } from "./http/app.js"
 import type { AppServices } from "./http/app.js"
 import { readServerInfo, claimServerInfo, probeAlive } from "./daemon/info.js"
+import { makeClientRegistry } from "./daemon/clients.js"
 import { rotateLogIfNeeded } from "./log/rotate.js"
 import { createLogger, installCrashNet } from "./log/logger.js"
 
@@ -116,6 +117,7 @@ const cmdStart = async (): Promise<void> => {
     shuttingDown = true
     logger.info("shutdown")
     stopPoller()
+    clients.dispose()
     fs.rmSync(cfg.serverInfoPath, { force: true })
     await Promise.race([
       Promise.all([closeHttp(server), closeHttp(unixServer)]),
@@ -127,8 +129,25 @@ const cmdStart = async (): Promise<void> => {
     process.exit(0)
   }
 
+  // refcount 惰性退出（设计文档 §2.1）：COOLIE_LINGER_MS 只在此边缘读取——
+  // 不进 CoolieConfig（5 个测试 fixture 注入完整 config shape，加必填字段会全体破坏）
+  const lingerRaw = Number(process.env.COOLIE_LINGER_MS ?? "")
+  const lingerMs = Number.isFinite(lingerRaw) && lingerRaw > 0 ? lingerRaw : 60_000
+  const clients = makeClientRegistry({
+    graceMs: lingerMs,
+    onIdleExpired: () => {
+      logger.info(`refcount 惰性退出：最后一个 gui 持有者断开已超 ${lingerMs}ms`)
+      void (async () => {
+        await runtime(Effect.gen(function* () {
+          yield* (yield* EventsRepo).append({ workspaceId: null, type: "daemon.idle.exit", payload: { graceMs: lingerMs } })
+        }))
+        await shutdown() // 与 POST /shutdown 同一条路：engine 归 tmux，session 分毫不动
+      })()
+    },
+  })
+
   const app = createApp({
-    runtime, token, bus, claudeHome: cfg.claudeHome,
+    runtime, token, bus, claudeHome: cfg.claudeHome, clients,
     onShutdown: () => void shutdown(),
     onError: (e) => logger.error("http 500", e),
   })
@@ -136,7 +155,7 @@ const cmdStart = async (): Promise<void> => {
 
   // WS 终端通道（挂 TCP server；GUI/浏览器从 TCP 连）
   attachTerminalWs(server, {
-    token, tmuxSocket: cfg.tmuxSocket,
+    token, tmuxSocket: cfg.tmuxSocket, clients,
     resolveSession: async (wsId) => {
       const exit = await runtime(Effect.gen(function* () { return yield* (yield* WorkspacesRepo).get(wsId) }))
       return Exit.match(exit, {

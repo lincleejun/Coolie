@@ -185,3 +185,65 @@ describe("daemon 加固（Plan 4）", () => {
     sse.destroy()
   })
 })
+
+describe("refcount 惰性退出（真实 SSE 客户端 + 短 grace）", () => {
+  const openSse = (info: { port: number; token: string }, role?: string): Promise<http.ClientRequest> =>
+    new Promise((resolve, reject) => {
+      const req = http.get({
+        host: "127.0.0.1", port: info.port,
+        path: `/events/stream?after=0${role ? `&role=${role}` : ""}`,
+        headers: { Authorization: `Bearer ${info.token}` },
+      })
+      req.on("response", (res) => { res.resume(); resolve(req) })
+      req.on("error", reject)
+    })
+  const serverGone = async (ms: number): Promise<boolean> => {
+    const deadline = Date.now() + ms
+    while (Date.now() < deadline) {
+      if (!fs.existsSync(path.join(home, "server.json"))) return true
+      await new Promise((r) => setTimeout(r, 100))
+    }
+    return false
+  }
+
+  it("最后一个 gui 断开 → grace 后 server 自退并清理 server.json/sock", async () => {
+    const info = await startServer({ COOLIE_LINGER_MS: "400" })
+    const gui = await openSse(info, "gui")
+    const cs = await (await fetch(`http://127.0.0.1:${info.port}/clients`, {
+      headers: { Authorization: `Bearer ${info.token}` },
+    })).json()
+    expect(cs.guiHolders).toBe(1)
+    expect(cs.lingerMs).toBe(400)
+    gui.destroy()
+    expect(await serverGone(8_000)).toBe(true)
+    expect(fs.existsSync(path.join(home, "coolie.sock"))).toBe(false)
+  })
+
+  it("宽限期内 gui 重连 → 不退", async () => {
+    const info = await startServer({ COOLIE_LINGER_MS: "800" })
+    const g1 = await openSse(info, "gui")
+    g1.destroy()
+    await new Promise((r) => setTimeout(r, 200))
+    const g2 = await openSse(info, "gui") // 回归：取消退出
+    await new Promise((r) => setTimeout(r, 1_500))
+    expect((await fetch(`http://127.0.0.1:${info.port}/health`).catch(() => null))?.ok).toBe(true)
+    g2.destroy()
+  })
+
+  it("无 role 的 SSE 连接不持有：断开后 server 不退（从未有 gui → 永不布防）", async () => {
+    const info = await startServer({ COOLIE_LINGER_MS: "300" })
+    const plain = await openSse(info)
+    plain.destroy()
+    await new Promise((r) => setTimeout(r, 1_000))
+    expect((await fetch(`http://127.0.0.1:${info.port}/health`).catch(() => null))?.ok).toBe(true)
+  })
+
+  it("非法 role → 400；GET /clients 无 token → 401", async () => {
+    const info = await startServer()
+    const r = await fetch(`http://127.0.0.1:${info.port}/events/stream?after=0&role=browser`, {
+      headers: { Authorization: `Bearer ${info.token}` },
+    })
+    expect(r.status).toBe(400)
+    expect((await fetch(`http://127.0.0.1:${info.port}/clients`)).status).toBe(401)
+  })
+})

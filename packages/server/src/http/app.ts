@@ -4,6 +4,8 @@ import * as fs from "node:fs"
 import * as path from "node:path"
 import { Effect, Exit, Cause, Option } from "effect"
 import type { ApiErrorBody } from "@coolie/protocol"
+import type { ClientRegistry } from "../daemon/clients.js"
+import type { ClientRole } from "@coolie/protocol"
 import { ProjectsRepo } from "../repo/projects.js"
 import { EventsRepo } from "../repo/events.js"
 import { WorkspacesRepo } from "../repo/workspaces.js"
@@ -34,6 +36,8 @@ export interface AppDeps {
   readonly sseHeartbeatMs?: number
   /** claude 转录根（标题派生用）；缺省跳过标题派生 */
   readonly claudeHome?: string
+  /** role 化 refcount（Plan 4）；未提供时 /clients 500、SSE role 参数忽略（测试友好） */
+  readonly clients?: ClientRegistry
 }
 
 const send = (res: ServerResponse, status: number, body?: unknown) => {
@@ -132,7 +136,7 @@ const intParam = (url: URL, name: string, dflt: number): number | null => {
   return Number.isSafeInteger(n) ? n : null
 }
 
-export const createApp = ({ runtime, token, onShutdown, onError, bus, sseHeartbeatMs, claudeHome }: AppDeps) =>
+export const createApp = ({ runtime, token, onShutdown, onError, bus, sseHeartbeatMs, claudeHome, clients }: AppDeps) =>
   (req: IncomingMessage, res: ServerResponse): void => {
     void (async () => {
       const url = new URL(req.url ?? "/", "http://local")
@@ -151,10 +155,27 @@ export const createApp = ({ runtime, token, onShutdown, onError, bus, sseHeartbe
           try { onShutdown() } catch { /* swallow: response already sent */ }
           return
         }
+        if (route === "GET /clients") {
+          if (!clients) return err(res, 500, "Internal", "client registry unavailable")
+          return send(res, 200, {
+            clients: clients.list(),
+            guiHolders: clients.guiCount(),
+            lingerMs: clients.graceMs,
+            idleExitArmed: clients.idleExitArmed(),
+          })
+        }
         if (route === "GET /events/stream") {
           if (!bus) return err(res, 500, "Internal", "event bus unavailable")
           const after = intParam(url, "after", 0)
           if (after === null) return err(res, 400, "Validation", "after must be a non-negative integer")
+          const roleRaw = url.searchParams.get("role")
+          if (roleRaw !== null && !["gui", "terminal", "cli"].includes(roleRaw))
+            return err(res, 400, "Validation", "role must be gui|terminal|cli")
+          if (clients && roleRaw !== null) {
+            // lease 与连接同生共死：GUI 崩溃 = 连接断 = 自动释放（绝不做显式 unregister API）
+            const lease = clients.register(roleRaw as ClientRole, url.searchParams.get("label") ?? undefined)
+            req.on("close", () => clients.release(lease.id))
+          }
           const ws = url.searchParams.get("workspace")
           return await handleEventsStream(req, res,
             { runtime, bus, ...(sseHeartbeatMs !== undefined ? { heartbeatMs: sseHeartbeatMs } : {}) },

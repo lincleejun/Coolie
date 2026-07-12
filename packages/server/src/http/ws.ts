@@ -3,6 +3,7 @@ import type { Server } from "node:http"
 import type { Duplex } from "node:stream"
 import { tokenEquals } from "./token.js"
 import { spawnTmuxAttach } from "../pty/attach.js"
+import type { ClientRegistry } from "../daemon/clients.js"
 
 export const TERMINAL_WS_PATH = "/ws/terminal"
 
@@ -12,6 +13,8 @@ export interface TerminalWsDeps {
   /** workspace id → tmux session 名；无效/非 active 返回 null */
   readonly resolveSession: (workspaceId: string) => Promise<string | null>
   readonly log?: (msg: string) => void
+  /** 登记进 /clients 视图；WS 终端一律 role=terminal——pane 永不持有 server 生命周期（§2.1） */
+  readonly clients?: ClientRegistry
 }
 
 const clampInt = (raw: string | null, min: number, max: number, dflt: number): number => {
@@ -58,6 +61,7 @@ const handleConn = async (ws: WebSocket, url: URL, deps: TerminalWsDeps): Promis
     return
   }
 
+  const lease = deps.clients?.register("terminal")
   let closed = false
   p.onData((d: string | Buffer) => {
     if (ws.readyState !== WebSocket.OPEN) return
@@ -98,6 +102,7 @@ const handleConn = async (ws: WebSocket, url: URL, deps: TerminalWsDeps): Promis
     } catch { /* 坏控制帧：忽略 */ }
   })
   ws.on("close", () => {
+    if (lease) deps.clients?.release(lease.id)
     closed = true
     if (resizeTimer !== null) clearTimeout(resizeTimer)
     try { p.kill() } catch { /* 已退出 */ }
