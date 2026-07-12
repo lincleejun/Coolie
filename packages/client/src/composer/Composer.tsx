@@ -86,7 +86,8 @@ export const Composer = ({ wsId, onSubmitOverride, placeholder }: ComposerProps)
   }
 
   useEffect(() => { setText(drafts.load(wsId)) }, [wsId])
-  useEffect(() => { ta.current?.focus() }, [focusNonce])
+  // T14-handoff：右栏 @注入 走 drafts.save + focusNonce bump——聚焦时重载草稿使注入立即上屏
+  useEffect(() => { setText(drafts.load(wsId)); ta.current?.focus() }, [focusNonce])
 
   const update = (v: string): void => { setText(v); drafts.save(wsId, v) }
 
