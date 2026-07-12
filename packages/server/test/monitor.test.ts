@@ -42,7 +42,7 @@ describe("pollOnce（注入 fakes）", () => {
       listEngineTabs: async () => [{ tab: mkTab(), workspacePath: "/tmp/wsx" }],
       statMtimeMs: (p) => { statted.push(p); return NOW - 1000 },
       setStatus: async (id, s) => { set.push([id, s]) },
-      engine: claudeEngine, home: "/h/.claude", now: () => NOW,
+      resolveEngine: () => claudeEngine, homeFor: () => "/h/.claude", now: () => NOW,
     })
     expect(statted[0]).toBe(claudeEngine.transcriptPath({ home: "/h/.claude", cwd: "/tmp/wsx", sessionId: "s-1" }))
     expect(set).toEqual([["t1", "working"]])
@@ -57,7 +57,7 @@ describe("pollOnce（注入 fakes）", () => {
       ],
       statMtimeMs: () => NOW - 1000,
       setStatus: async (id, s) => { set.push([id, s]) },
-      engine: claudeEngine, home: "/h", now: () => NOW,
+      resolveEngine: () => claudeEngine, homeFor: () => "/h", now: () => NOW,
     })
     expect(set).toEqual([])
   })

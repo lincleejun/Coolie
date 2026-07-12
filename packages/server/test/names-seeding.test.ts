@@ -38,7 +38,7 @@ const layer = () => WorkspaceLifecycleLive.pipe(
   Layer.provideMerge(Layer.succeed(Db, db)),
   Layer.provideMerge(Layer.succeed(CoolieConfig, {
     home, dbPath: ":memory:", serverInfoPath: path.join(home, "server.json"),
-    workspacesRoot: wsRoot, tmuxSocket: "coolie-test-unused", claudeHome: path.join(home, "ch"),
+    workspacesRoot: wsRoot, tmuxSocket: "coolie-test-unused", claudeHome: path.join(home, "ch"), codexHome: path.join(home, "cx"),
   })),
 )
 

@@ -17,7 +17,7 @@ import { realGitRead } from "./git/inspect.js"
 import { makeSetupRunnerLive } from "./workspace/setup.js"
 import { TmuxService, TmuxServiceLive } from "./tmux/service.js"
 import { makeComposerOps } from "./tmux/ops.js"
-import { EngineRegistry, EngineRegistryLive } from "./engine/registry.js"
+import { EngineRegistry, EngineRegistryLive, engineHome } from "./engine/registry.js"
 import { EngineBootstrapHookLive } from "./engine/bootstrap.js"
 import { SessionEnsurerLive } from "./workspace/heal.js"
 import { ensureHookScript } from "./engine/claude/hooks.js"
@@ -88,23 +88,20 @@ const cmdStart = async (): Promise<void> => {
     (e) => logger.warn(`tmux 不可用：${String(e)}（brew install tmux；coolie doctor 检查）`),
   )
 
-  // turn detector 兜底：转录 mtime 轮询（hooks 沉默时接管）
+  // turn detector 兜底：转录 mtime 轮询（hooks 沉默时接管）——F1：per-engine 解析，非只 claude。
   const registry = Context.get(runtimeCtx, EngineRegistry)
-  const claude = registry.get("claude")
-  const stopPoller = claude
-    ? startTranscriptPoller({
-        listEngineTabs: async () => {
-          const exit = await runtime(Effect.gen(function* () { return yield* (yield* TabsRepo).listEngineTabs() }))
-          return Exit.isSuccess(exit) ? exit.value : []
-        },
-        statMtimeMs: (p) => { try { return fs.statSync(p).mtimeMs } catch { return null } },
-        setStatus: async (tabId, status) => {
-          await runtime(Effect.gen(function* () { yield* (yield* TabsRepo).setStatus(tabId, status, "poller") }))
-        },
-        engine: claude,
-        home: cfg.claudeHome,
-      })
-    : () => {}
+  const stopPoller = startTranscriptPoller({
+    listEngineTabs: async () => {
+      const exit = await runtime(Effect.gen(function* () { return yield* (yield* TabsRepo).listEngineTabs() }))
+      return Exit.isSuccess(exit) ? exit.value : []
+    },
+    statMtimeMs: (p) => { try { return fs.statSync(p).mtimeMs } catch { return null } },
+    setStatus: async (tabId, status) => {
+      await runtime(Effect.gen(function* () { yield* (yield* TabsRepo).setStatus(tabId, status, "poller") }))
+    },
+    resolveEngine: (engineId) => registry.get(engineId ?? "claude"),
+    homeFor: (engineId) => engineHome(engineId, cfg),
+  })
 
   const sockPath = path.join(cfg.home, "coolie.sock")
 

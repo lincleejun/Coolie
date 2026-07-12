@@ -56,7 +56,7 @@ const gatedEngine = (discardSeconds: number): Engine => ({
 const buildLayer = (engine: Engine, promptReadyTimeoutMs: number) => {
   const cfgLayer = Layer.succeed(CoolieConfig, {
     home, dbPath: ":memory:", serverInfoPath: path.join(home, "server.json"),
-    workspacesRoot: wsRoot, tmuxSocket: SOCK, claudeHome: path.join(home, "claude-home"),
+    workspacesRoot: wsRoot, tmuxSocket: SOCK, claudeHome: path.join(home, "claude-home"), codexHome: path.join(home, "codex-home"),
     promptReadyTimeoutMs,
   })
   return WorkspaceLifecycleLive.pipe(
@@ -211,7 +211,7 @@ describe("bootstrap：起 session 前调用 engine.prepareWorkspace（预置文�
     const recordingTmux: TmuxService = { ...tmux, newSession: (opts) => { order.push("newSession"); return tmux.newSession(opts) } }
     const cfgLayer = Layer.succeed(CoolieConfig, {
       home, dbPath: ":memory:", serverInfoPath: path.join(home, "server.json"),
-      workspacesRoot: wsRoot, tmuxSocket: SOCK, claudeHome: path.join(home, "claude-home"),
+      workspacesRoot: wsRoot, tmuxSocket: SOCK, claudeHome: path.join(home, "claude-home"), codexHome: path.join(home, "codex-home"),
       claudeConfigPath: path.join(home, "trust-config.json"), promptReadyTimeoutMs: 4000,
     })
     const layer = WorkspaceLifecycleLive.pipe(

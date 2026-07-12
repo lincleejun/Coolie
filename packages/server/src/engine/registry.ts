@@ -12,3 +12,8 @@ export const getEngine = (reg: ReadonlyMap<string, Engine>, id: string): Effect.
   const e = reg.get(id)
   return e ? Effect.succeed(e) : Effect.fail(new EngineError({ message: `engine 未注册：${id}` }))
 }
+
+/** per-engine 转录/数据目录解析：claude→claudeHome、codex→codexHome、null/未知→claudeHome 兜底。
+ * transcriptPath/deriveTitle/mtime 轮询的调用点用它，替代 M1 硬编码的 cfg.claudeHome。 */
+export const engineHome = (engineId: string | null, cfg: { readonly claudeHome: string; readonly codexHome: string }): string =>
+  engineId === "codex" ? cfg.codexHome : cfg.claudeHome

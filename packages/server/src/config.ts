@@ -11,6 +11,8 @@ export interface CoolieConfigShape {
   readonly tmuxSocket: string
   /** claude 引擎自己的数据目录（转录所在）；测试注入临时目录 */
   readonly claudeHome: string
+  /** codex 引擎自己的数据目录（rollout 转录所在）；`COOLIE_CODEX_HOME` 覆写，默认 ~/.codex */
+  readonly codexHome: string
   /** claude 文件夹信任配置文件（~/.claude.json，projects[].hasTrustDialogAccepted 存于此）；
    * bootstrap 起 engine 前预置此标志规避新 worktree 的 trust dialog 死锁。`COOLIE_CLAUDE_CONFIG` 覆盖（测试注入临时文件）。 */
   readonly claudeConfigPath?: string
@@ -31,6 +33,7 @@ export const CoolieConfigLive = Layer.sync(CoolieConfig, () => {
     workspacesRoot: process.env.COOLIE_WORKSPACES_ROOT ?? path.join(os.homedir(), "coolie", "workspaces"),
     tmuxSocket: process.env.COOLIE_TMUX_SOCKET ?? "coolie",
     claudeHome: process.env.COOLIE_CLAUDE_HOME ?? path.join(os.homedir(), ".claude"),
+    codexHome: process.env.COOLIE_CODEX_HOME ?? path.join(os.homedir(), ".codex"),
     claudeConfigPath: process.env.COOLIE_CLAUDE_CONFIG ?? path.join(os.homedir(), ".claude.json"),
     promptReadyTimeoutMs: Number(process.env.COOLIE_PROMPT_READY_TIMEOUT_MS ?? 90_000),
   }

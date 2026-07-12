@@ -7,7 +7,7 @@ import { ProjectsRepo } from "../repo/projects.js"
 import { TabsRepo } from "../repo/tabs.js"
 import { EventsRepo } from "../repo/events.js"
 import { TmuxService, TmuxError } from "../tmux/service.js"
-import { EngineRegistry, EngineError, getEngine } from "../engine/registry.js"
+import { EngineRegistry, EngineError, getEngine, engineHome } from "../engine/registry.js"
 import { NotFoundError, ConflictError } from "../repo/errors.js"
 import { startEngineSession } from "../engine/session.js"
 import { ensureKeepAliveScript, wrapEngineCommand } from "../engine/keepalive.js"
@@ -51,9 +51,9 @@ export const SessionEnsurerLive = Layer.effect(
     const tmux = yield* TmuxService
     const registry = yield* EngineRegistry
 
-    const transcriptExists = (engine: { transcriptPath: (o: { home: string; cwd: string; sessionId: string }) => string },
+    const transcriptExists = (engine: { id: string; transcriptPath: (o: { home: string; cwd: string; sessionId: string }) => string },
       cwd: string, sessionId: string | null): boolean =>
-      sessionId !== null && fs.existsSync(engine.transcriptPath({ home: cfg.claudeHome, cwd, sessionId }))
+      sessionId !== null && fs.existsSync(engine.transcriptPath({ home: engineHome(engine.id, cfg), cwd, sessionId }))
 
     const ensure: SessionEnsurerShape["ensure"] = (wsId) =>
       Effect.gen(function* () {

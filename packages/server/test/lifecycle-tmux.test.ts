@@ -37,7 +37,7 @@ const fakeClaude: Engine = {
 const buildLayer = (engines: ReadonlyArray<Engine>) => {
   const cfgLayer = Layer.succeed(CoolieConfig, {
     home, dbPath: ":memory:", serverInfoPath: path.join(home, "server.json"),
-    workspacesRoot: wsRoot, tmuxSocket: SOCK, claudeHome: path.join(home, "claude-home"),
+    workspacesRoot: wsRoot, tmuxSocket: SOCK, claudeHome: path.join(home, "claude-home"), codexHome: path.join(home, "codex-home"),
   })
   return WorkspaceLifecycleLive.pipe(
     Layer.provideMerge(EngineBootstrapHookLive),

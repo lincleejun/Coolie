@@ -1,5 +1,7 @@
 import { describe, it, expect, afterEach } from "vitest"
 import { Effect } from "effect"
+import * as os from "node:os"
+import * as path from "node:path"
 import { CoolieConfig, CoolieConfigLive } from "../src/config.js"
 
 const load = () => Effect.runSync(CoolieConfig.pipe(Effect.provide(CoolieConfigLive)))
@@ -10,6 +12,7 @@ describe("CoolieConfig", () => {
     delete process.env.COOLIE_WORKSPACES_ROOT
     delete process.env.COOLIE_TMUX_SOCKET
     delete process.env.COOLIE_CLAUDE_HOME
+    delete process.env.COOLIE_CODEX_HOME
     delete process.env.COOLIE_PROMPT_READY_TIMEOUT_MS
   })
   it("respects COOLIE_HOME", () => {
@@ -40,6 +43,13 @@ describe("CoolieConfig", () => {
     const c = load()
     expect(c.tmuxSocket).toBe("coolie")
     expect(c.claudeHome.endsWith("/.claude")).toBe(true)
+  })
+  it("codexHome 默认 ~/.codex，可经 COOLIE_CODEX_HOME 覆写", () => {
+    const a = load()
+    expect(a.codexHome).toBe(path.join(os.homedir(), ".codex"))
+    process.env.COOLIE_CODEX_HOME = "/tmp/cx"
+    const b = load()
+    expect(b.codexHome).toBe("/tmp/cx")
   })
   it("defaults promptReadyTimeoutMs=90000 (outlasts real SessionStart latency)", () => {
     const c = load()
