@@ -1,0 +1,27 @@
+/* === base (Task 1) === */
+* { box-sizing: border-box; margin: 0; padding: 0; }
+:root {
+  --bg: rgba(30, 30, 34, 0.72);
+  --panel: rgba(255, 255, 255, 0.04);
+  --border: rgba(255, 255, 255, 0.09);
+  --fg: #e6e6e9;
+  --fg-dim: #9a9aa3;
+  --accent: #7aa2f7;
+  --danger: #f7768e;
+  --ok: #9ece6a;
+  --warn: #e0af68;
+  --titlebar-h: 38px;
+}
+html, body, #root { height: 100%; }
+body {
+  font-family: -apple-system, "SF Pro Text", "Helvetica Neue", sans-serif;
+  font-size: 13px;
+  color: var(--fg);
+  background: transparent; /* vibrancy 透出 */
+  overflow: hidden;
+  user-select: none;
+  cursor: default;
+}
+input, textarea { user-select: text; cursor: text; }
+button { font: inherit; color: inherit; background: none; border: none; cursor: pointer; }
+.app-boot { padding: 40px; }

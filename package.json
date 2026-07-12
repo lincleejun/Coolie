@@ -6,7 +6,7 @@
   "engines": { "node": ">=22" },
   "scripts": {
     "test": "vitest run",
-    "typecheck": "tsc -b packages/protocol packages/server packages/cli",
+    "typecheck": "tsc -b packages/protocol packages/server packages/cli && tsc --noEmit -p packages/client",
     "postinstall": "find node_modules -path '*node-pty*' -name spawn-helper -exec chmod +x {} + 2>/dev/null || true"
   },
   "devDependencies": {
