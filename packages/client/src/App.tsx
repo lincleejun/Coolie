@@ -13,6 +13,7 @@ import { WarningToasts } from "./chrome/Toasts"
 import { Sidebar } from "./sidebar/Sidebar"
 import { CenterArea } from "./terminal/TabsBar"
 import { Composer } from "./composer/Composer"
+import { DispatchPanel, ErrorActions } from "./composer/Dispatch"
 import { RightPanel } from "./rightpanel/RightPanel"
 
 export const App = () => {
@@ -55,6 +56,9 @@ export const App = () => {
 
   const rightPanel = useUi((s) => s.rightPanel)
   const selectedWs = useUi((s) => s.selectedWs)
+  const dispatchMode = useUi((s) => s.dispatchMode)
+  const status = useData((s) => s.status)
+  const selWs = useData((s) => s.workspaces.find((w) => w.id === selectedWs))
   if (bootErr)
     return (
       <div className="app-frame">
@@ -72,15 +76,29 @@ export const App = () => {
       <div className="columns">
         <aside className="col-left"><Sidebar /></aside>
         <main className="col-center">
-          {selectedWs ? (
-            <>
-              <CenterArea wsId={selectedWs} />
-              <Composer wsId={selectedWs} />
-            </>
-          ) : <div className="dim center-empty">选择或创建一个 workspace（⌘N）</div>}
+          {status === "offline" && <div className="offline-banner">server 重连中…（终端画面由 tmux 保管，不会丢）</div>}
+          {dispatchMode ? (
+            <DispatchPanel />
+          ) : selectedWs && selWs ? (
+            selWs.status === "error" ? (
+              <ErrorActions wsId={selectedWs} />
+            ) : selWs.status === "archived" ? (
+              <div className="error-actions">
+                <span className="dim">已归档（branch 保留）</span>
+                <button className="btn" onClick={() => void useData.getState().getApi()?.req("POST", `/workspaces/${selectedWs}/unarchive`, {})}>恢复</button>
+              </div>
+            ) : (
+              <>
+                <CenterArea wsId={selectedWs} />
+                <Composer wsId={selectedWs} />
+              </>
+            )
+          ) : (
+            <div className="dim center-empty">选择或创建一个 workspace（⌘N）</div>
+          )}
         </main>
         <aside className={`col-right ${rightPanel === "collapsed" ? "collapsed" : ""}`}>
-          {selectedWs && <RightPanel wsId={selectedWs} />}
+          {selectedWs && !dispatchMode && <RightPanel wsId={selectedWs} />}
         </aside>
       </div>
       <TmuxGuide />
