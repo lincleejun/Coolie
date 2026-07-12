@@ -26,4 +26,8 @@ export interface Engine {
   readonly transcriptPath: (opts: { readonly home: string; readonly cwd: string; readonly sessionId: string }) => string
   readonly deriveTitle: (jsonl: string) => string | null
   readonly resumeArgs: (sessionId: string) => string[]
+  /** worktree 起 session 前的预备钩子（可选）：claude 借此预置文件夹信任，跳过新 worktree 首启的
+   * 「Do you trust this folder?」对话框（该对话框在回答前不触发 SessionStart，会死锁就绪门控）。
+   * 无此需求的 engine（fake/codex）不实现 = Noop，bootstrap guard 调用。 */
+  readonly prepareWorkspace?: (ctx: { readonly cwd: string; readonly claudeConfigPath?: string | undefined }) => void
 }
