@@ -13,6 +13,7 @@ import { WarningToasts } from "./chrome/Toasts"
 import { Sidebar } from "./sidebar/Sidebar"
 import { CenterArea } from "./terminal/TabsBar"
 import { Composer } from "./composer/Composer"
+import { RightPanel } from "./rightpanel/RightPanel"
 
 export const App = () => {
   const [bootErr, setBootErr] = useState<string | null>(null)
@@ -78,7 +79,9 @@ export const App = () => {
             </>
           ) : <div className="dim center-empty">选择或创建一个 workspace（⌘N）</div>}
         </main>
-        <aside className={`col-right ${rightPanel === "collapsed" ? "collapsed" : ""}`}>{/* Task 14: <RightPanel/> */}</aside>
+        <aside className={`col-right ${rightPanel === "collapsed" ? "collapsed" : ""}`}>
+          {selectedWs && <RightPanel wsId={selectedWs} />}
+        </aside>
       </div>
       <TmuxGuide />
       <Cheatsheet />

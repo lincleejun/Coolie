@@ -1,0 +1,138 @@
+import { useEffect, useState } from "react"
+import { useData } from "../stores/data"
+import { useUi } from "../stores/ui"
+import { makeDrafts, type DraftStorage } from "../composer/drafts"
+import type { FileChange } from "../stores/types"
+
+// node 测试环境（filetree.test）会 import 本模块取 buildTree；此处不能裸引 localStorage（node 无此全局会 ReferenceError）。
+const storage: DraftStorage =
+  typeof localStorage !== "undefined"
+    ? localStorage
+    : { getItem: () => null, setItem: () => {}, removeItem: () => {} }
+const drafts = makeDrafts(storage)
+
+export interface TreeNode { name: string; path: string; children: TreeNode[] }
+
+export const buildTree = (paths: readonly string[]): TreeNode => {
+  const root: TreeNode = { name: "", path: "", children: [] }
+  for (const p of paths) {
+    let node = root
+    const parts = p.split("/")
+    parts.forEach((part, i) => {
+      const path = parts.slice(0, i + 1).join("/")
+      let child = node.children.find((c) => c.name === part)
+      if (!child) { child = { name: part, path, children: [] }; node.children.push(child) }
+      node = child
+    })
+  }
+  const sort = (n: TreeNode): void => {
+    n.children.sort((a, b) =>
+      (Number(b.children.length > 0) - Number(a.children.length > 0)) || a.name.localeCompare(b.name))
+    n.children.forEach(sort)
+  }
+  sort(root)
+  return root
+}
+
+// @注入：追加到该 ws 草稿尾部（drafts.ts 无 append，且 composer/ 不在本任务改动域 → 用现有 load/save 就地拼接），
+// 再 focusComposer()。注意：Composer 需在 focusNonce effect 里重读草稿注入才会「即时」出现于输入框——
+// 该 Composer.tsx 一行改动属 T13 域，见 task-14-report「@注入 wiring」。
+const injectAt = (wsId: string, path: string): void => {
+  const cur = drafts.load(wsId)
+  drafts.save(wsId, cur === "" ? `@${path}` : `${cur} @${path}`)
+  useUi.getState().focusComposer()
+}
+
+const Tree = ({ node, wsId, depth }: { node: TreeNode; wsId: string; depth: number }) => {
+  const [open, setOpen] = useState(depth < 1)
+  const isDir = node.children.length > 0
+  return (
+    <div>
+      {node.name !== "" && (
+        <div className="tree-row" style={{ paddingLeft: depth * 14 }}
+          onClick={() => (isDir ? setOpen(!open) : injectAt(wsId, node.path))}
+          title={isDir ? node.path : `@${node.path} 注入 composer`}>
+          {isDir ? (open ? "▾ " : "▸ ") : "· "}{node.name}
+        </div>
+      )}
+      {open && node.children.map((c) => <Tree key={c.path} node={c} wsId={wsId} depth={depth + 1} />)}
+    </div>
+  )
+}
+
+const ChangeSection = ({ title, list }: { title: string; list: FileChange[] }) => {
+  const [open, setOpen] = useState(true)
+  return (
+    <section className="chg-section">
+      <h4 onClick={() => setOpen(!open)}>{open ? "▾" : "▸"} {title}（{list.length}）</h4>
+      {open && list.map((f) => (
+        <div className="chg-row" key={f.path} title={f.path}>
+          <span className="chg-path">{f.path}</span>
+          <span className="diffcount"><em className="plus">+{f.insertions}</em><em className="minus">−{f.deletions}</em></span>
+        </div>
+      ))}
+    </section>
+  )
+}
+
+export const RightPanel = ({ wsId }: { wsId: string }) => {
+  const panel = useUi((s) => s.rightPanel)
+  const changes = useData((s) => s.changesByWs[wsId])
+  const stat = useData((s) => s.diffstatByWs[wsId])
+  const [files, setFiles] = useState<string[]>([])
+
+  useEffect(() => {
+    if (panel === "changes") void useData.getState().refreshChanges(wsId).catch(() => {})
+    if (panel === "files")
+      void useData.getState().getApi()?.req("GET", `/workspaces/${wsId}/files`)
+        .then((r) => setFiles(r.files)).catch(() => {})
+  }, [panel, wsId])
+
+  // 展开时跟随 turn 结束刷新（changes 已由 data store 的 engine.turn.finished → refreshDiffstat 带动；这里补 changes）
+  useEffect(() => {
+    if (panel !== "changes") return
+    const t = setInterval(() => { if (document.hasFocus()) void useData.getState().refreshChanges(wsId).catch(() => {}) }, 8000)
+    return () => clearInterval(t)
+  }, [panel, wsId])
+
+  if (panel === "collapsed")
+    return (
+      <div className="right-collapsed">
+        <button className="right-entry" onClick={() => useUi.getState().setRightPanel("changes")}>
+          Changes{stat && (stat.insertions > 0 || stat.deletions > 0) ? ` +${stat.insertions}−${stat.deletions}` : ""}
+        </button>
+        <button className="right-entry" onClick={() => useUi.getState().setRightPanel("files")}>Files</button>
+      </div>
+    )
+
+  return (
+    <div className="right-open">
+      <div className="right-head">
+        <button className={panel === "changes" ? "active" : ""} onClick={() => useUi.getState().setRightPanel("changes")}>Changes</button>
+        <button className={panel === "files" ? "active" : ""} onClick={() => useUi.getState().setRightPanel("files")}>Files</button>
+        <span className="tabsbar-spacer" />
+        <button onClick={() => useUi.getState().setRightPanel("collapsed")}>»</button>
+      </div>
+      <div className="right-body">
+        {panel === "changes" && (
+          changes ? (
+            <>
+              <div className="chg-total">vs base：{stat ? `+${stat.insertions} −${stat.deletions}（${stat.filesChanged} 文件）` : "…"}</div>
+              <ChangeSection title="Against base" list={changes.againstBase} />
+              <ChangeSection title="Committed" list={changes.committed} />
+              <ChangeSection title="Staged" list={changes.staged} />
+              <ChangeSection title="Unstaged" list={changes.unstaged} />
+              {changes.untracked.length > 0 && (
+                <section className="chg-section">
+                  <h4>Untracked（{changes.untracked.length}）</h4>
+                  {changes.untracked.map((p) => <div className="chg-row" key={p}><span className="chg-path">{p}</span></div>)}
+                </section>
+              )}
+            </>
+          ) : <div className="dim">加载中…</div>
+        )}
+        {panel === "files" && <Tree node={buildTree(files)} wsId={wsId} depth={0} />}
+      </div>
+    </div>
+  )
+}
