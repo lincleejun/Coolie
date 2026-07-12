@@ -6,7 +6,7 @@ export const ROUTES = [
   { method: "DELETE", path: "/projects/:id", description: "忘记项目（只删记录）" },
   { method: "GET",    path: "/events",       description: "事件流游标读取 ?after=&limit=&workspace=" },
   { method: "GET",    path: "/workspaces",               description: "列出 workspace ?project=" },
-  { method: "POST",   path: "/workspaces",               description: "创建 workspace {projectId, branchSlug?, name?, initialPrompt?}（同步跑完流水线才返回）" },
+  { method: "POST",   path: "/workspaces",               description: "创建 workspace {projectId, engineId?, branchSlug?, name?, initialPrompt?}（engineId 缺省 claude；同步跑完流水线才返回）" },
   { method: "POST",   path: "/workspaces/:id/archive",   description: "归档：删 worktree 留 branch {force?}" },
   { method: "POST",   path: "/workspaces/:id/unarchive", description: "从保留的 branch 重建 worktree" },
   { method: "POST",   path: "/workspaces/:id/retry",     description: "error 状态重跑创建流水线" },

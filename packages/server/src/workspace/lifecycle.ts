@@ -18,7 +18,7 @@ import { SessionEnsurer } from "./heal.js"
 
 /** Plan 3 插拔点落地：tmux session / engine 启动 / 首条 prompt 投递以 hook 形式挂进 create 流水线末尾。 */
 export class HookError extends Data.TaggedError("HookError")<{ readonly message: string }> {}
-export interface PostCreateContext { readonly initialPrompt?: string }
+export interface PostCreateContext { readonly initialPrompt?: string; readonly engineId?: string }
 export type PostCreateHook = (ws: Workspace, ctx: PostCreateContext) => Effect.Effect<void, HookError>
 export class PostCreateHooks extends Context.Tag("PostCreateHooks")<PostCreateHooks, ReadonlyArray<PostCreateHook>>() {}
 export const PostCreateHooksEmpty = Layer.succeed(PostCreateHooks, [])
@@ -28,7 +28,7 @@ export type LifecycleError = NotFoundError | ConflictError | GitError
 
 export interface WorkspaceLifecycleShape {
   readonly create: (opts: {
-    projectId: string; branchSlug?: string; name?: string; initialPrompt?: string
+    projectId: string; branchSlug?: string; name?: string; initialPrompt?: string; engineId?: string
   }) => Effect.Effect<Workspace, CreateError>
   readonly retry: (id: string) => Effect.Effect<Workspace, CreateError>
   readonly archive: (id: string, opts?: { force?: boolean }) => Effect.Effect<Workspace, LifecycleError>
@@ -167,7 +167,10 @@ export const WorkspaceLifecycleLive = Layer.effect(
           baseBranch: project.defaultBaseBranch, portBase,
         })
         yield* emit(ws.id, "workspace.creating", { id: ws.id, projectId: project.id, name, branch, path: wsPath, portBase })
-        return yield* provision(ws, project.repoRoot, { ...(opts.initialPrompt !== undefined ? { initialPrompt: opts.initialPrompt } : {}) }).pipe(
+        return yield* provision(ws, project.repoRoot, {
+          ...(opts.initialPrompt !== undefined ? { initialPrompt: opts.initialPrompt } : {}),
+          ...(opts.engineId !== undefined ? { engineId: opts.engineId } : {}),
+        }).pipe(
           Effect.catchAll((e) => rollbackToError(ws, project.repoRoot, e)),
         )
       })

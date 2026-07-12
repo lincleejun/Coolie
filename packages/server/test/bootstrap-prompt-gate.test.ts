@@ -197,6 +197,62 @@ describe("bootstrap：首条 prompt 投递按 SessionStart hook 就绪信号门�
   })
 })
 
+describe("bootstrap：create 带 engineId 走对应引擎（M2 Task2 流水线贯通）", () => {
+  it("create 带 engineId=codex → tab.engineId=codex、launch 用 codex 命令、.codex/hooks.json 进 info/exclude", async () => {
+    const claude = gatedEngine(0)
+    // fake codex：hooks 能力开着，用来验证 bootstrap 走 codex 注入分支（.codex/hooks.json + info/exclude），
+    // 而非 M1 硬编码的 claude 分支。launchCommand 返回可辨识哨兵，供 tmux 命令断言。
+    const fakeCodex: Engine = {
+      id: "codex", displayName: "Fake Codex",
+      capabilities: { nativeQueue: false, midSessionModelSwitch: true, resume: true, hooks: true, effort: true },
+      terminalTitle: "engine-owned",
+      newSessionId: () => `codex-${Math.random().toString(36).slice(2, 8)}`,
+      launchCommand: () => ["codex-fake"],
+      statusFromHookEvent: () => null,
+      transcriptPath: ({ home: h, sessionId }) => path.join(h, `${sessionId}.jsonl`),
+      deriveTitle: () => null,
+      resumeArgs: (s) => ["resume", s],
+    }
+    let lastCommand: string[] | undefined
+    const recordingTmux: TmuxService = { ...tmux, newSession: (opts) => { lastCommand = opts.command; return tmux.newSession(opts) } }
+    const cfgLayer = Layer.succeed(CoolieConfig, {
+      home, dbPath: ":memory:", serverInfoPath: path.join(home, "server.json"),
+      workspacesRoot: wsRoot, tmuxSocket: SOCK, claudeHome: path.join(home, "claude-home"), codexHome: path.join(home, "codex-home"),
+      promptReadyTimeoutMs: 4000,
+    })
+    const layer = WorkspaceLifecycleLive.pipe(
+      Layer.provideMerge(EngineBootstrapHookLive),
+      Layer.provideMerge(Layer.mergeAll(
+        GitServiceLive, SetupRunnerLive,
+        Layer.succeed(TmuxService, recordingTmux),
+        Layer.succeed(EngineRegistry, new Map([[claude.id, claude], [fakeCodex.id, fakeCodex]])),
+      )),
+      Layer.provideMerge(Layer.mergeAll(ProjectsRepoLive, EventsRepoLive, WorkspacesRepoLive, TabsRepoLive)),
+      Layer.provideMerge(Layer.succeed(EventsBus, bus)),
+      Layer.provideMerge(Layer.succeed(Db, db)),
+      Layer.provideMerge(cfgLayer),
+    )
+    const program = Effect.gen(function* () {
+      const projects = yield* ProjectsRepo
+      const lc = yield* WorkspaceLifecycle
+      const list = yield* projects.list()
+      const project = list.length > 0 ? list[0]! : yield* projects.add(repoRoot)
+      return yield* lc.create({ projectId: project.id, name: "codex-ws-1", engineId: "codex", initialPrompt: "" })
+    })
+    const exit = await Effect.runPromiseExit(Effect.provide(program, layer) as Effect.Effect<any, any, never>)
+    expect(Exit.isSuccess(exit)).toBe(true)
+    if (Exit.isSuccess(exit)) {
+      const ws = exit.value
+      const tabRow = db.prepare("SELECT engine_id FROM tabs WHERE workspace_id = ? AND kind = 'engine'").get(ws.id) as any
+      expect(tabRow?.engine_id).toBe("codex")
+      expect((lastCommand ?? []).join(" ")).toContain("codex-fake")
+      // 门 gate-review 绑定项：codex hooks 产物 .codex/hooks.json 必须写进 info/exclude（同 M1 claude 手法）
+      const exclude = fs.readFileSync(path.join(repoRoot, ".git", "info", "exclude"), "utf8")
+      expect(exclude).toContain(".codex/hooks.json")
+    }
+  })
+})
+
 describe("bootstrap：起 session 前调用 engine.prepareWorkspace（预置文件夹信任，跳过 trust dialog 死锁）", () => {
   it("prepareWorkspace 以 worktree cwd 被调用，且严格早于 tmux session 创建", async () => {
     const order: string[] = []

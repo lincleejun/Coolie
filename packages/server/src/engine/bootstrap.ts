@@ -10,6 +10,7 @@ import { deliverPrompt } from "../tmux/delivery.js"
 import { startEngineSession } from "./session.js"
 import { injectInfoExclude } from "../workspace/include.js"
 import { ensureHookScript, injectClaudeHooks, hooksDisabled } from "./claude/hooks.js"
+import { injectCodexHooks } from "./codex/hooks.js"
 import { EventsBus, EVENT_CHANNEL } from "../events/bus.js"
 import { tmuxSessionName, type CoolieEvent } from "@coolie/protocol"
 
@@ -53,8 +54,9 @@ export const EngineBootstrapHookLive = Layer.effect(
       })
 
       return Effect.gen(function* () {
-        const engine = registry.get("claude")
-        if (!engine) return yield* new HookError({ message: "claude engine 未注册" })
+        const engineId = ctx.engineId ?? "claude"
+        const engine = registry.get(engineId)
+        if (!engine) return yield* new HookError({ message: `engine 未注册：${engineId}` })
         const project = yield* projects.get(ws.projectId).pipe(
           Effect.mapError((e) => new HookError({ message: e.message })),
         )
@@ -65,9 +67,15 @@ export const EngineBootstrapHookLive = Layer.effect(
           yield* Effect.try({
             try: () => {
               const scriptPath = ensureHookScript(cfg.home)
-              injectClaudeHooks({ worktreePath: ws.path, workspaceId: ws.id, scriptPath })
-              // settings.local.json 是我们写进 worktree 的：必须排除，否则 isDirty 守卫误伤 archive/delete
-              injectInfoExclude(project.repoRoot, ".claude/settings.local.json")
+              // per-engine hooks 产物：写进 worktree 的注入文件必须一并进 info/exclude，
+              // 否则 isDirty 守卫误伤 archive/delete（M1 claude 手法，codex 同款——门 gate-review 绑定项）。
+              if (engine.id === "codex") {
+                injectCodexHooks({ worktreePath: ws.path, workspaceId: ws.id, scriptPath })
+                injectInfoExclude(project.repoRoot, ".codex/hooks.json")
+              } else {
+                injectClaudeHooks({ worktreePath: ws.path, workspaceId: ws.id, scriptPath })
+                injectInfoExclude(project.repoRoot, ".claude/settings.local.json")
+              }
             },
             catch: (e) => new HookError({ message: `hooks 注入失败：${String(e)}` }),
           })
