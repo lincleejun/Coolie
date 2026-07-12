@@ -11,6 +11,8 @@ const HOOK_STATUS: Record<string, TabStatus> = {
   Stop: "awaiting-input",
   Notification: "awaiting-input",
   SessionEnd: "idle",
+  // SessionStart：会话刚就绪，TUI 已 attach stdin，等价于「等你输入」
+  SessionStart: "awaiting-input",
 }
 
 export const claudeEngine: Engine = {

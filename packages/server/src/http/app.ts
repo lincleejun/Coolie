@@ -180,7 +180,9 @@ export const createApp = ({ runtime, token, onShutdown, onError, bus, sseHeartbe
                 evtName === "UserPromptSubmit" ? "engine.turn.started"
                 : evtName === "Stop" ? "engine.turn.finished"
                 : evtName === "Notification" ? "engine.notification"
-                : evtName === "SessionEnd" ? "engine.session.ended" : null
+                : evtName === "SessionEnd" ? "engine.session.ended"
+                // SessionStart：Plan3 Task15——冷启动就绪信号，bootstrap 订阅 EventsBus 等它再投首条 prompt
+                : evtName === "SessionStart" ? "engine.session.started" : null
               if (evType !== null)
                 yield* (yield* EventsRepo).append({ workspaceId: wsId, type: evType, payload: { tabId: tab.id, sessionId: tab.engineSessionId } })
               // historyReader 兜底：首个 turn 完成且尚无标题 → 从转录派生

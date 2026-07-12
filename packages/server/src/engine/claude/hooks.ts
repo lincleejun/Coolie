@@ -1,7 +1,9 @@
 import * as fs from "node:fs"
 import * as path from "node:path"
 
-export const HOOK_EVENTS = ["UserPromptSubmit", "Stop", "Notification", "SessionEnd"] as const
+// SessionStart：Plan3 Task15 修复——claude 会话就绪信号（TUI attach 前的冷启动窗口结束），
+// 用于门控首条 prompt 投递（bootstrap 等它，而非只信一次画面稳定就投）。
+export const HOOK_EVENTS = ["UserPromptSubmit", "Stop", "Notification", "SessionEnd", "SessionStart"] as const
 
 export const hookScriptPath = (home: string): string => path.join(home, "hooks", "claude-hook.sh")
 
