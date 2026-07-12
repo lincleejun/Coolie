@@ -68,11 +68,13 @@ describe("coolie workspace commands e2e", () => {
     expect(out.trim()).toBe(`tmux -L ${TMUX_SOCK} attach -t coolie-someid`)
   })
 
-  it("enter exits non-zero with guidance when the session is missing", () => {
+  it("enter exits non-zero with guidance when the workspace is missing", () => {
+    // Plan 4: enter 丢失 session → 走 ensure-or-heal（POST /ensure）；不存在的 workspace
+    // 由 server 报 NotFound「workspace 不存在」，CLI fail() 打到 stderr 并 exit 1。
     let failed = false
     try { coolie("enter", "no-such-ws") } catch (e: any) {
       failed = true
-      expect(String(e.stderr)).toContain("tmux session")
+      expect(String(e.stderr)).toContain("不存在")
     }
     expect(failed).toBe(true)
   })
