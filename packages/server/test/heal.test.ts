@@ -186,4 +186,36 @@ describe("SessionEnsurer.ensure（真 tmux）", () => {
     expect(launches).toEqual([{ sessionId: sid, resume: true }])            // 且是 --resume 复活
     expect(eventTypes()).toContain("workspace.tmux.healed")
   })
+
+  it("D3：archive 带 shell tab → unarchive 后死 shell tab 行被 prune，engine tab 存活", async () => {
+    const layer = buildLayer()
+    const ws = await runIn(layer, Effect.gen(function* () {
+      const list = yield* (yield* ProjectsRepo).list()
+      return yield* (yield* WorkspaceLifecycle).create({ projectId: list[0]!.id, name: "heal-prune" })
+    }))
+    const session = sessionNameFor(ws.id)
+    const sid = (db.prepare("SELECT engine_session_id s FROM tabs WHERE workspace_id = ?").get(ws.id) as any).s as string
+    const tp = recordingClaude.transcriptPath({ home: path.join(home, "claude-home"), cwd: ws.path, sessionId: sid })
+    fs.mkdirSync(path.dirname(tp), { recursive: true }); fs.writeFileSync(tp, "{}\n")
+    // 真 tmux 开一个 shell window（idx 1）+ 落一条 shell tab 行，指向 window 1
+    execFileSync("tmux", ["-L", SOCK, "new-window", "-t", `=${session}:`, "-n", "shell", "-c", ws.path, "/bin/sh"])
+    await runIn(layer, Effect.gen(function* () { yield* (yield* TabsRepo).insert({ workspaceId: ws.id, kind: "shell", tmuxWindow: 1 }) }))
+    const engineTabId = (db.prepare("SELECT id FROM tabs WHERE workspace_id = ? AND kind = 'engine'").get(ws.id) as any).id as string
+    expect((db.prepare("SELECT COUNT(*) c FROM tabs WHERE workspace_id = ?").get(ws.id) as any).c).toBe(2)
+
+    await runIn(layer, Effect.gen(function* () { yield* (yield* WorkspaceLifecycle).archive(ws.id, { force: true }) }))
+    expect(await Effect.runPromise(tmux.hasSession(session))).toBe(false)
+    const back = await runIn(layer, Effect.gen(function* () { return yield* (yield* WorkspaceLifecycle).unarchive(ws.id) }))
+    expect(back.status).toBe("active")
+
+    // recreate 的 session 只余 window 0（engine）；window 1 的 shell tab 行是死记录 → 应被 prune
+    const rows = db.prepare("SELECT id, kind, tmux_window FROM tabs WHERE workspace_id = ?").all(ws.id) as any[]
+    expect(rows.length).toBe(1)
+    expect(rows[0].id).toBe(engineTabId)      // engine tab 存活
+    expect(rows[0].kind).toBe("engine")
+    expect(rows[0].tmux_window).toBe(0)
+    const closed = (db.prepare("SELECT payload FROM events WHERE type = 'tab.closed'").all() as any[])
+      .map((r) => JSON.parse(r.payload))
+    expect(closed.some((p) => p.kind === "shell")).toBe(true) // 死 shell tab 发了 tab.closed
+  })
 })

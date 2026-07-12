@@ -87,6 +87,14 @@ export const SessionEnsurerLive = Layer.effect(
           yield* tabs.setEngineSessionId(tab.id, plan.sessionId) // 换新会话：钥匙同步
         }
         if (tabId !== null) yield* tabs.setStatus(tabId, "idle", "heal").pipe(Effect.ignore)
+        // D3：recreate 后 session 只余 engine window——历史 shell/run tab 行仍指向已不存在的 window
+        //（GUI 表现为「can't find window: N」死 tab，要手动重连才消失）。按真实 window 存在性 prune
+        // 非 engine tab（每次 remove 与其 tab.closed 事件同事务；engine tab 由上面的重建流程自愈，保活）。
+        const liveWindows = new Set((yield* tmux.listWindows(sessionName)).map((w) => w.index))
+        const staleTabs = (yield* tabs.listByWorkspace(ws.id)).filter(
+          (t) => t.id !== tabId && (t.tmuxWindow === null || !liveWindows.has(t.tmuxWindow)),
+        )
+        for (const t of staleTabs) yield* tabs.remove(t.id).pipe(Effect.ignore)
         yield* events.append({
           workspaceId: ws.id, type: "workspace.tmux.healed",
           payload: { sessionName, resumed: plan.resume, sessionId: plan.sessionId, tabId },
