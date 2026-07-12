@@ -12,6 +12,7 @@ import { Cheatsheet } from "./chrome/Cheatsheet"
 import { WarningToasts } from "./chrome/Toasts"
 import { Sidebar } from "./sidebar/Sidebar"
 import { CenterArea } from "./terminal/TabsBar"
+import { Composer } from "./composer/Composer"
 
 export const App = () => {
   const [bootErr, setBootErr] = useState<string | null>(null)
@@ -70,7 +71,12 @@ export const App = () => {
       <div className="columns">
         <aside className="col-left"><Sidebar /></aside>
         <main className="col-center">
-          {selectedWs ? <CenterArea wsId={selectedWs} /> : <div className="dim center-empty">选择或创建一个 workspace（⌘N）</div>}
+          {selectedWs ? (
+            <>
+              <CenterArea wsId={selectedWs} />
+              <Composer wsId={selectedWs} />
+            </>
+          ) : <div className="dim center-empty">选择或创建一个 workspace（⌘N）</div>}
         </main>
         <aside className={`col-right ${rightPanel === "collapsed" ? "collapsed" : ""}`}>{/* Task 14: <RightPanel/> */}</aside>
       </div>
