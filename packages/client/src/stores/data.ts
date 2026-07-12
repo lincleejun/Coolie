@@ -33,6 +33,11 @@ interface DataState {
   refreshChanges(wsId: string): Promise<void>
   applyEvent(e: CoolieEventLike): void
   sendInput(wsId: string, req: { text: string; mode: string; skipStable: boolean }): Promise<void>
+  /** 生命周期动作（D2）：包已有 REST 端点。列表由 workspace.* SSE 事件重拉，故这里不手动刷新。
+   *  archive 脏树会被 server 409 拒（force=false）；调用方据此弹确认再以 force=true 重试。 */
+  archiveWs(wsId: string, force?: boolean): Promise<void>
+  unarchiveWs(wsId: string): Promise<void>
+  deleteWs(wsId: string, force?: boolean): Promise<void>
   cancelSend(id: number): void
   pushWarning(code: string, message: string): void
   dismissWarning(id: number): void
@@ -125,6 +130,9 @@ export const useData = create<DataState>((set, get) => ({
       set((s) => ({ pendingSends: s.pendingSends.filter((p) => p.id !== id) }))
     }
   },
+  archiveWs: async (wsId, force = false) => { if (api) await api.req("POST", `/workspaces/${wsId}/archive`, { force }) },
+  unarchiveWs: async (wsId) => { if (api) await api.req("POST", `/workspaces/${wsId}/unarchive`, {}) },
+  deleteWs: async (wsId, force = true) => { if (api) await api.req("DELETE", `/workspaces/${wsId}${force ? "?force=1" : ""}`) },
   cancelSend: (id) => {
     const p = get().pendingSends.find((x) => x.id === id)
     p?.abort.abort()

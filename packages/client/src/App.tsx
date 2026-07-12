@@ -86,7 +86,11 @@ export const App = () => {
             ) : selWs.status === "archived" ? (
               <div className="error-actions">
                 <span className="dim">已归档（branch 保留）</span>
-                <button className="btn" onClick={() => void useData.getState().getApi()?.req("POST", `/workspaces/${selectedWs}/unarchive`, {})}>恢复</button>
+                <button className="btn" onClick={() => void useData.getState().unarchiveWs(selectedWs)}>恢复</button>
+                <button onClick={() => {
+                  if (window.confirm(`删除 workspace「${selWs.name}」？\nworktree 会被删除，branch ⑂${selWs.branch} 保留。`))
+                    void useData.getState().deleteWs(selectedWs, true)
+                }}>删除…</button>
               </div>
             ) : (
               <>

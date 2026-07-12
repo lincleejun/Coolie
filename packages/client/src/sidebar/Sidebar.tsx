@@ -1,7 +1,8 @@
-import { useEffect } from "react"
+import { useEffect, useState } from "react"
 import type { Workspace, Tab } from "@coolie/protocol"
 import { useData } from "../stores/data"
 import { useUi } from "../stores/ui"
+import { ApiError } from "../api/client"
 import { orderedActiveWs } from "../hotkeys/useGlobalHotkeys"
 
 /** 状态徽标（spec §六）：workspace 状态优先，active 时取 engine tab 状态 */
@@ -24,16 +25,65 @@ const DiffCount = ({ wsId }: { wsId: string }) => {
   return <span className="diffcount"><em className="plus">+{d.insertions}</em><em className="minus">−{d.deletions}</em></span>
 }
 
+/** 行内上下文动作（D2）：hover 露出 ⋯，右键同菜单。归档/恢复/删除都走 data store 的生命周期动作。
+ *  archive 脏树被 server 409 拒 → 弹确认后带 force 重试；delete 一律先确认（branch 保留）。 */
+const WsRowMenu = ({ ws, onClose }: { ws: Workspace; onClose: () => void }) => {
+  const [busy, setBusy] = useState(false)
+  const run = (fn: () => Promise<unknown>): void => {
+    setBusy(true)
+    void fn().catch((e: unknown) => alert(e instanceof Error ? e.message : String(e))).finally(() => { setBusy(false); onClose() })
+  }
+  const archive = (): void => run(async () => {
+    const d = useData.getState()
+    try { await d.archiveWs(ws.id, false) }
+    catch (e) {
+      // 脏 worktree：server 以 409 ConflictError 拒绝无 force 归档 → 征得确认后强制
+      if (e instanceof ApiError && e.status === 409 && window.confirm(`「${ws.name}」有未提交改动。仍要归档吗？（改动留在 worktree）`))
+        await d.archiveWs(ws.id, true)
+      else if (!(e instanceof ApiError && e.status === 409)) throw e
+    }
+  })
+  const unarchive = (): void => run(() => useData.getState().unarchiveWs(ws.id))
+  const del = (): void => {
+    if (!window.confirm(`删除 workspace「${ws.name}」？\nworktree 会被删除，branch ⑂${ws.branch} 保留。`)) { onClose(); return }
+    run(() => useData.getState().deleteWs(ws.id, true))
+  }
+  return (
+    <div className="ws-menu" role="menu" onClick={(e) => e.stopPropagation()}>
+      {ws.status === "active" && <button role="menuitem" disabled={busy} onClick={archive}>归档</button>}
+      {ws.status === "archived" && <button role="menuitem" disabled={busy} onClick={unarchive}>恢复</button>}
+      <button role="menuitem" className="danger" disabled={busy} onClick={del}>删除…</button>
+    </div>
+  )
+}
+
 const WsRow = ({ ws }: { ws: Workspace }) => {
   const selected = useUi((s) => s.selectedWs === ws.id)
   const tabs = useData((s) => s.tabsByWs[ws.id])
   const badge = wsBadge(ws, tabs)
+  const [menuOpen, setMenuOpen] = useState(false)
+  // 点击行外任意处关菜单
+  useEffect(() => {
+    if (!menuOpen) return
+    const close = (): void => setMenuOpen(false)
+    window.addEventListener("click", close)
+    return () => window.removeEventListener("click", close)
+  }, [menuOpen])
   return (
-    <div className={`ws-row ${selected ? "selected" : ""}`} onClick={() => useUi.getState().selectWs(ws.id)}>
+    <div
+      className={`ws-row ${selected ? "selected" : ""}`}
+      onClick={() => useUi.getState().selectWs(ws.id)}
+      onContextMenu={(e) => { e.preventDefault(); setMenuOpen(true) }}
+    >
       <span className={`badge ${badge.cls}`} title={badge.title}>{badge.glyph}</span>
       <span className="ws-name">{ws.pinned ? "📌 " : ""}{ws.name}</span>
       <span className="ws-branch" title={ws.branch}>⑂{ws.branch.replace(/^coolie\//, "")}</span>
       {ws.status === "active" && <DiffCount wsId={ws.id} />}
+      <button
+        className="ws-more" title="更多动作" aria-label="更多动作"
+        onClick={(e) => { e.stopPropagation(); setMenuOpen((v) => !v) }}
+      >⋯</button>
+      {menuOpen && <WsRowMenu ws={ws} onClose={() => setMenuOpen(false)} />}
     </div>
   )
 }

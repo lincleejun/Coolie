@@ -71,8 +71,18 @@ button { font: inherit; color: inherit; background: none; border: none; cursor: 
 .side-search { background: var(--panel); border: 1px solid var(--border); border-radius: 6px; padding: 5px 8px; color: var(--fg); outline: none; }
 .side-list { flex: 1; overflow-y: auto; padding: 8px 6px; }
 .proj-h { font-size: 11px; color: var(--fg-dim); padding: 8px 6px 4px; text-transform: none; }
-.ws-row { display: flex; align-items: center; gap: 6px; padding: 5px 8px; border-radius: 6px; overflow: hidden; }
+.ws-row { display: flex; align-items: center; gap: 6px; padding: 5px 8px; border-radius: 6px; position: relative; }
 .ws-row:hover { background: var(--panel); } .ws-row.selected { background: rgba(122,162,247,0.18); }
+.ws-more { flex: none; width: 20px; height: 20px; line-height: 1; font-size: 15px; color: var(--fg-dim); border-radius: 4px; opacity: 0; }
+.ws-row:hover .ws-more, .ws-row.selected .ws-more { opacity: 1; }
+.ws-more:hover { background: rgba(255,255,255,0.09); color: var(--fg); }
+.ws-menu { position: absolute; top: 100%; right: 6px; margin-top: 2px; z-index: 30;
+  background: #26262b; border: 1px solid var(--border); border-radius: 8px; padding: 4px;
+  display: flex; flex-direction: column; min-width: 128px; box-shadow: 0 6px 20px rgba(0,0,0,0.45); }
+.ws-menu button { text-align: left; padding: 6px 10px; border-radius: 5px; color: var(--fg); font-size: 13px; }
+.ws-menu button:hover { background: var(--panel); }
+.ws-menu button.danger { color: var(--danger); }
+.ws-menu button:disabled { opacity: 0.5; cursor: default; }
 .ws-name { flex: none; max-width: 45%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ws-branch { flex: 1; color: var(--fg-dim); font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .badge { flex: none; width: 14px; text-align: center; }

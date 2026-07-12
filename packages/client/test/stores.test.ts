@@ -73,6 +73,26 @@ describe("useData.applyEvent", () => {
   })
 })
 
+describe("useData 生命周期动作（D2：archive/unarchive/delete 打对端点）", () => {
+  it("archiveWs 默认 force=false；确认后可 force=true", async () => {
+    const calls: Array<{ m: string; p: string; b: any }> = []
+    const api = { info: { port: 1, token: "t", pid: 1 }, req: async (m: string, p: string, b: any) => { calls.push({ m, p, b }); return {} }, wsTerminalUrl: () => "" } as any
+    useData.getState().setApi(api)
+    await useData.getState().archiveWs("W")
+    expect(calls[0]).toEqual({ m: "POST", p: "/workspaces/W/archive", b: { force: false } })
+    await useData.getState().archiveWs("W", true)
+    expect(calls[1]).toEqual({ m: "POST", p: "/workspaces/W/archive", b: { force: true } })
+  })
+  it("unarchiveWs POST /unarchive；deleteWs DELETE 带 force=1", async () => {
+    const calls: string[] = []
+    const api = { info: { port: 1, token: "t", pid: 1 }, req: async (m: string, p: string) => { calls.push(`${m} ${p}`); return {} }, wsTerminalUrl: () => "" } as any
+    useData.getState().setApi(api)
+    await useData.getState().unarchiveWs("W")
+    await useData.getState().deleteWs("W")
+    expect(calls).toEqual(["POST /workspaces/W/unarchive", "DELETE /workspaces/W?force=1"])
+  })
+})
+
 describe("useData.sendInput", () => {
   it("记账 pendingSends 并在失败后清除（fetch 打向死端口必然 reject）", async () => {
     const api = fakeApi(); useData.getState().setApi(api)
