@@ -14,6 +14,7 @@ import { allocatePortBase, portEnv } from "./ports.js"
 import { injectInfoExclude, readWorktreeIncludePatterns, copyIncludedFiles } from "./include.js"
 import { TmuxService } from "../tmux/service.js"
 import { TabsRepo } from "../repo/tabs.js"
+import { SessionEnsurer } from "./heal.js"
 
 /** Plan 3 插拔点落地：tmux session / engine 启动 / 首条 prompt 投递以 hook 形式挂进 create 流水线末尾。 */
 export class HookError extends Data.TaggedError("HookError")<{ readonly message: string }> {}
@@ -49,6 +50,7 @@ export const WorkspaceLifecycleLive = Layer.effect(
     // 运行时拆除依赖：可选注入（生产 main.ts 提供；单测不提供时 teardown 自动 no-op）
     const tmuxOpt = yield* Effect.serviceOption(TmuxService)
     const tabsOpt = yield* Effect.serviceOption(TabsRepo)
+    const ensurerOpt = yield* Effect.serviceOption(SessionEnsurer)
 
     const emit = (workspaceId: string | null, type: string, payload: unknown) =>
       events.append({ workspaceId, type, payload })
@@ -258,6 +260,13 @@ export const WorkspaceLifecycleLive = Layer.effect(
           )
         }
         const out = yield* repo.setStatus(id, "active")
+        // ensure-or-heal（设计文档 §十）：worktree 已恢复，session best-effort 重建——
+        // 失败不阻塞 unarchive（enter/GUI attach 会再触发 ensure），只记事件供排查
+        if (Option.isSome(ensurerOpt))
+          yield* ensurerOpt.value.ensure(id).pipe(
+            Effect.tapError((e) => emit(id, "workspace.heal.failed", { id, error: { tag: e._tag, message: e.message } }).pipe(Effect.ignore)),
+            Effect.ignore,
+          )
         yield* emit(id, "workspace.unarchived", { id })
         return out
       })

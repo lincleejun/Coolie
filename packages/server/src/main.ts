@@ -17,6 +17,7 @@ import { makeSetupRunnerLive } from "./workspace/setup.js"
 import { TmuxService, TmuxServiceLive } from "./tmux/service.js"
 import { EngineRegistry, EngineRegistryLive } from "./engine/registry.js"
 import { EngineBootstrapHookLive } from "./engine/bootstrap.js"
+import { SessionEnsurerLive } from "./workspace/heal.js"
 import { ensureHookScript } from "./engine/claude/hooks.js"
 import { startTranscriptPoller } from "./engine/monitor.js"
 import { attachTerminalWs } from "./http/ws.js"
@@ -58,7 +59,7 @@ const cmdStart = async (): Promise<void> => {
 
   const scope = Effect.runSync(Scope.make())
   const appLayer = WorkspaceLifecycleLive.pipe(
-    Layer.provideMerge(EngineBootstrapHookLive),
+    Layer.provideMerge(Layer.mergeAll(EngineBootstrapHookLive, SessionEnsurerLive)),
     Layer.provideMerge(Layer.mergeAll(
       GitServiceLive,
       makeSetupRunnerLive((chunk) => logger.info(`setup: ${chunk.trimEnd()}`)),
