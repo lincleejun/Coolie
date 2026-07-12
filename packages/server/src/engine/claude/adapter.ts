@@ -16,11 +16,16 @@ const HOOK_STATUS: Record<string, TabStatus> = {
   SessionStart: "awaiting-input",
 }
 
+/** GUI 模型选择器选项（/model 别名；spec §六 UI 禁止硬编码 vendor 字符串——由 server 下发） */
+export const claudeModels = ["default", "opus", "sonnet", "haiku"]
+
 export const claudeEngine: Engine = {
   id: "claude",
   displayName: "Claude Code",
   capabilities: { nativeQueue: true, midSessionModelSwitch: true, resume: true, hooks: true, effort: false },
   terminalTitle: "engine-owned",
+  serverGeneratedId: false,
+  models: claudeModels,
   newSessionId: () => randomUUID(),
   launchCommand: ({ sessionId, model, resume }) => {
     // 用户/测试覆盖 seam（kobe engineCommand.<vendor> 同款）：原样使用，绝不追加 flag
@@ -42,6 +47,3 @@ export const claudeEngine: Engine = {
   prepareWorkspace: ({ cwd, claudeConfigPath }) => seedFolderTrust(claudeConfigPath ?? defaultClaudeConfigPath(), cwd),
 }
 export { encodeCwd }
-
-/** GUI 模型选择器选项（/model 别名；spec §六 UI 禁止硬编码 vendor 字符串——由 server 下发） */
-export const claudeModels = ["default", "opus", "sonnet", "haiku"]
