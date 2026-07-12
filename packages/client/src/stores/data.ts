@@ -3,6 +3,7 @@ import type { Api } from "../api/client"
 import type { CoolieEventLike } from "../api/sse"
 import type { Project, Workspace, Tab } from "@coolie/protocol"
 import type { DiffStat, ChangesReport, EngineInfo } from "./types"
+import { useUi } from "./ui"
 
 export interface PendingSend { id: number; wsId: string; text: string; mode: string; abort: AbortController }
 /** UI 警告面（prompt.delivery.degraded 等 server 侧降级信号 → toast/badge） */
@@ -90,6 +91,8 @@ export const useData = create<DataState>((set, get) => ({
         // F2：归档/删除 = workspace 从列表移除 → 主动回收该 ws 全部终端会话（N×tabs 的 xterm+WS 否则永久泄漏）。
         // engine 本体归 tmux（archive 侧另行 kill-session），这里只断 GUI 侧的活连接。
         if (e.workspaceId) disposeWsSessions(e.workspaceId)
+        // 删除时若删的正是当前选中 ws，清掉悬空选中态（归档仍留在列表可选，故只对 deleted 清）
+        if (e.type === "workspace.deleted" && e.workspaceId) useUi.getState().clearWsIfSelected(e.workspaceId)
       } else if (e.workspaceId) swallow(refreshTabs(e.workspaceId))
     } else if (e.workspaceId && (e.type.startsWith("tab.") || e.type.startsWith("engine.") || e.type.startsWith("composer."))) {
       swallow(refreshTabs(e.workspaceId))

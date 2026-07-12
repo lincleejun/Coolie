@@ -10,6 +10,8 @@ interface UiState {
   searchQuery: string
   composerFocusNonce: number       // 递增触发 composer focus（Cmd+L / 创建流）
   selectWs(id: string | null): void
+  /** 该 ws 被删除时的收尾：仅当它正是当前选中项才清空（否则无操作），避免悬空选中态 */
+  clearWsIfSelected(id: string): void
   selectTab(wsId: string, tabId: string): void
   setRightPanel(p: UiState["rightPanel"]): void
   setDispatchMode(on: boolean, projectId?: string | null): void
@@ -37,6 +39,11 @@ export const useUi = create<UiState>((set) => ({
     if (id) storage.setItem(LS_KEY, id); else storage.removeItem(LS_KEY)
     set({ selectedWs: id, dispatchMode: false })
   },
+  clearWsIfSelected: (id) => set((s) => {
+    if (s.selectedWs !== id) return s
+    storage.removeItem(LS_KEY)
+    return { selectedWs: null }
+  }),
   selectTab: (wsId, tabId) => set((s) => ({ selectedTabByWs: { ...s.selectedTabByWs, [wsId]: tabId } })),
   setRightPanel: (rightPanel) => set({ rightPanel }),
   setDispatchMode: (on, projectId = null) =>

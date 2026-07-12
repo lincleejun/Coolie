@@ -29,4 +29,17 @@ describe("makeDrafts", () => {
     d.save("X", "temp"); d.clear("X")
     expect(d.load("X")).toBe("")
   })
+  it("carry：dispatch 切项目时把已打的字搬到新 wsId（原键清空）", () => {
+    const d = makeDrafts(memStorage())
+    d.save("dispatch:A", "还没发完的任务描述")
+    d.carry("dispatch:A", "dispatch:B")
+    expect(d.load("dispatch:B")).toBe("还没发完的任务描述")
+    expect(d.load("dispatch:A")).toBe("")
+  })
+  it("carry：空草稿或同键 → 不动作（不覆盖目标已有草稿）", () => {
+    const d = makeDrafts(memStorage())
+    d.save("dispatch:B", "目标已有")
+    d.carry("dispatch:A", "dispatch:B") // A 空 → 不覆盖 B
+    expect(d.load("dispatch:B")).toBe("目标已有")
+  })
 })

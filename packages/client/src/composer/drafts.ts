@@ -12,4 +12,12 @@ export const makeDrafts = (storage: DraftStorage) => ({
     else storage.setItem(`coolie.draft.${wsId}`, text)
   },
   clear: (wsId: string): void => storage.removeItem(`coolie.draft.${wsId}`),
+  /** 把 from 的草稿搬到 to（dispatch 切项目时保住已打的字，避免 wsId 变更后草稿被丢）。空草稿不搬。 */
+  carry: (from: string, to: string): void => {
+    if (from === to) return
+    const t = storage.getItem(`coolie.draft.${from}`) ?? ""
+    if (t === "") return
+    storage.setItem(`coolie.draft.${to}`, t)
+    storage.removeItem(`coolie.draft.${from}`)
+  },
 })

@@ -9,11 +9,13 @@ export interface ComposerKeyEvent {
   key: string; metaKey: boolean; shiftKey: boolean; altKey: boolean; ctrlKey: boolean
 }
 
-export const planComposerKey = (e: ComposerKeyEvent, ctx: { engineWorking: boolean }): ComposerAction => {
+export const planComposerKey = (e: ComposerKeyEvent, ctx: { engineWorking: boolean; nativeQueue: boolean }): ComposerAction => {
   if (e.key === "Escape") return { kind: "blur" }
   if (e.key !== "Enter") return { kind: "none" }
   if (e.metaKey) return { kind: "interrupt-send" }
   if (e.shiftKey) return { kind: "newline" }
-  if (e.altKey) return { kind: "insert", skipStable: ctx.engineWorking }
-  return { kind: "send", skipStable: ctx.engineWorking }
+  // skipStable 只在 engine 忙 且 引擎具备 nativeQueue 能力时直投（spec §7.2）；否则仍走完整稳定检测
+  const skipStable = ctx.engineWorking && ctx.nativeQueue
+  if (e.altKey) return { kind: "insert", skipStable }
+  return { kind: "send", skipStable }
 }

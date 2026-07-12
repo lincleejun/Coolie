@@ -3,6 +3,9 @@ import { useData } from "../stores/data"
 import { useUi } from "../stores/ui"
 import { Composer } from "./Composer"
 import { deliverModelSwitch } from "./Composer"
+import { makeDrafts } from "./drafts"
+
+const drafts = makeDrafts(localStorage)
 
 export const DispatchPanel = () => {
   const projects = useData((s) => s.projects)
@@ -40,7 +43,11 @@ export const DispatchPanel = () => {
       </div>
       <div className="dispatch-row">
         <label>项目</label>
-        <select value={projectId ?? ""} onChange={(e) => useUi.getState().setDispatchMode(true, e.target.value)}>
+        <select value={projectId ?? ""} onChange={(e) => {
+          // Composer 把草稿键在 dispatch:<projectId> 上；切项目会换 wsId，先把已打的字搬过去再切，别丢
+          drafts.carry(`dispatch:${projectId ?? "none"}`, `dispatch:${e.target.value}`)
+          useUi.getState().setDispatchMode(true, e.target.value)
+        }}>
           {projects.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
         </select>
         {claude && (

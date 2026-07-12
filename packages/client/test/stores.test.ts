@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach } from "vitest"
 import { useData } from "../src/stores/data.js"
+import { useUi } from "../src/stores/ui.js"
 
 const fakeApi = () => {
   const calls: string[] = []
@@ -48,6 +49,18 @@ describe("useData.applyEvent", () => {
     // 常规 workspace.* 不回收（只有 archived/deleted 才断连）
     useData.getState().applyEvent({ seq: 5, workspaceId: "W", type: "workspace.updated", payload: {}, ts: 0 })
     expect(disposed).toEqual(["W"])
+  })
+  it("workspace.deleted → 若等于当前 selectedWs 则清空（data↔ui seam）", () => {
+    const api = fakeApi(); useData.getState().setApi(api)
+    useUi.getState().selectWs("W")
+    useData.getState().applyEvent({ seq: 7, workspaceId: "W", type: "workspace.deleted", payload: {}, ts: 0 })
+    expect(useUi.getState().selectedWs).toBeNull()
+  })
+  it("workspace.deleted → 删的不是当前选中项则 selectedWs 不动", () => {
+    const api = fakeApi(); useData.getState().setApi(api)
+    useUi.getState().selectWs("W")
+    useData.getState().applyEvent({ seq: 8, workspaceId: "OTHER", type: "workspace.deleted", payload: {}, ts: 0 })
+    expect(useUi.getState().selectedWs).toBe("W")
   })
   it("prompt.delivery.degraded → 浮出 UI 警告并带 code（F5：不静默丢）", () => {
     useData.getState().applyEvent({

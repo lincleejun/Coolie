@@ -113,11 +113,12 @@ export const Composer = ({ wsId, onSubmitOverride, placeholder }: ComposerProps)
       if (e.key === "Escape") { e.preventDefault(); useUi.getState().setDispatchMode(false) }
       return
     }
-    const action = planComposerKey(e, { engineWorking: engineWorking === true })
+    const nativeQueue = engine?.capabilities.nativeQueue === true
+    const action = planComposerKey(e, { engineWorking: engineWorking === true, nativeQueue })
     switch (action.kind) {
       case "newline": return // textarea 默认行为
       case "none": return
-      case "blur": e.preventDefault(); ta.current?.blur(); return // Esc 失焦回终端（双击 Esc 自然形成失焦→打断）
+      case "blur": e.preventDefault(); ta.current?.blur(); return // Esc 失焦回终端
       case "send": e.preventDefault(); void deliver("send", action.skipStable); return
       case "insert": e.preventDefault(); void deliver("insert", action.skipStable); return
       case "interrupt-send": e.preventDefault(); void deliver("interrupt-send", false); return
