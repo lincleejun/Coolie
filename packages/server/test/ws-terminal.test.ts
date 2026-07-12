@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll, afterAll } from "vitest"
+import { describe, it, expect, beforeAll, afterAll, vi } from "vitest"
 import * as http from "node:http"
 import { execFileSync } from "node:child_process"
 import * as fs from "node:fs"; import * as os from "node:os"; import * as path from "node:path"
@@ -7,6 +7,18 @@ import { Effect } from "effect"
 import { makeTmuxService } from "../src/tmux/service.js"
 import { attachTerminalWs } from "../src/http/ws.js"
 import { newToken } from "../src/http/app.js"
+
+// 注入点：默认委托真 pty；置入 fakePtyHolder.current 后该 conn 用 fake pty 捕获 write 入参。
+// 让「二进制输入原样透传」用例能字节级断言 ws.ts 交给 p.write 的内容，而其余用例仍跑真 tmux。
+const { fakePtyHolder } = vi.hoisted(() => ({ fakePtyHolder: { current: null as null | import("node-pty").IPty } }))
+vi.mock("../src/pty/attach.js", async (importOriginal) => {
+  const real = await importOriginal<typeof import("../src/pty/attach.js")>()
+  return {
+    ...real,
+    spawnTmuxAttach: (opts: Parameters<typeof real.spawnTmuxAttach>[0]) =>
+      fakePtyHolder.current ?? real.spawnTmuxAttach(opts),
+  }
+})
 
 const SOCK = `coolie-test-${process.pid}-${Math.random().toString(36).slice(2, 8)}`
 const svc = makeTmuxService(SOCK)
@@ -48,6 +60,26 @@ describe("WS terminal channel", () => {
     const out = await collectUntil(ws, (s) => s.includes("MARK-okay"))
     expect(out).toContain("MARK-okay")
     ws.close()
+  })
+
+  it("二进制输入原样透传（非 UTF8 字节不被 utf8 往返损坏）", async () => {
+    const written: Buffer[] = []
+    const fakePty = {
+      write: (d: string | Buffer) => { written.push(typeof d === "string" ? Buffer.from(d, "utf8") : Buffer.from(d)) },
+      onData: () => {}, onExit: () => {}, resize: () => {}, kill: () => {}, pause: () => {}, resume: () => {},
+    } as unknown as import("node-pty").IPty
+    fakePtyHolder.current = fakePty
+    try {
+      const ws = new WebSocket(`${base}?workspace=w1&window=0&cols=80&rows=24&token=${token}`)
+      await new Promise<void>((r) => ws.once("open", () => r()))
+      const raw = Buffer.from([0x1b, 0x5b, 0x41, 0xff, 0xfe]) // ESC [ A + 非法 utf8 尾字节
+      ws.send(raw, { binary: true })
+      await vi.waitFor(() => { expect(written.length).toBeGreaterThan(0) }, { timeout: 3000, interval: 20 })
+      expect(written[0]!.equals(raw)).toBe(true) // 字节级一致，绝不 replacement-char 化
+      ws.close()
+    } finally {
+      fakePtyHolder.current = null
+    }
   })
 
   it("resize control frame reaches tmux (window-size latest)", async () => {

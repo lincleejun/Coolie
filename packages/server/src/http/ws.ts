@@ -85,8 +85,9 @@ const handleConn = async (ws: WebSocket, url: URL, deps: TerminalWsDeps): Promis
   }
   ws.on("message", (data: Buffer, isBinary: boolean) => {
     if (isBinary) {
-      // 终端输入字节：原样透传（这就是终端本身，不做 prompt 消毒）
-      p.write(data.toString("utf8"))
+      // 终端输入字节：原样 Buffer 透传（这就是真实键击字节；绝不 utf8 往返——
+      // 方向键/Alt 组合/中文 IME 分段字节含非 UTF8 序列，toString("utf8") 会 replacement-char 化损坏。C1）
+      p.write(data)
       return
     }
     try {
