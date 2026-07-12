@@ -142,3 +142,30 @@ button { font: inherit; color: inherit; background: none; border: none; cursor: 
 .dispatch-err { color: var(--danger); font-size: 12px; }
 .offline-banner { flex: none; text-align: center; font-size: 12px; padding: 5px; background: rgba(224,175,104,0.15); color: var(--warn); border-bottom: 1px solid var(--warn); }
 .error-actions { display: flex; gap: 12px; align-items: center; justify-content: center; height: 100%; }
+
+/* === empty-state onboarding (B2, conductor 风格) === */
+.onboarding { display: flex; align-items: center; justify-content: center; height: 100%; padding: 32px; }
+.onboarding-card { width: 100%; max-width: 440px; display: flex; flex-direction: column; gap: 14px; text-align: center; }
+.onboarding-title { font-size: 20px; font-weight: 600; letter-spacing: 0.2px; }
+.onboarding-sub { font-size: 13px; color: var(--fg-dim); line-height: 1.5; }
+.onboarding-actions { display: flex; gap: 10px; margin-top: 6px; }
+.ob-action {
+  flex: 1; display: flex; flex-direction: column; align-items: flex-start; gap: 4px;
+  padding: 14px 16px; border: 1px solid var(--border); border-radius: 10px; background: var(--panel);
+  text-align: left; transition: border-color 0.12s, background 0.12s;
+}
+.ob-action:hover { background: rgba(255,255,255,0.07); border-color: rgba(255,255,255,0.16); }
+.ob-action.active { border-color: var(--accent); background: rgba(122,162,247,0.10); }
+.ob-action.wide { flex-direction: row; align-items: center; gap: 12px; }
+.ob-icon { font-size: 18px; }
+.ob-label { font-size: 13px; font-weight: 600; color: var(--fg); }
+.ob-hint { font-size: 11px; color: var(--fg-dim); }
+.ob-input-row { display: flex; gap: 8px; margin-top: 4px; }
+.ob-input {
+  flex: 1; background: #1a1a1e; border: 1px solid var(--border); border-radius: 8px;
+  padding: 8px 10px; color: var(--fg); outline: none; font-size: 13px;
+}
+.ob-input:focus { border-color: var(--accent); }
+.ob-err { color: var(--danger); font-size: 12px; text-align: left; white-space: pre-wrap; }
+.onboarding-foot { margin-top: 8px; font-size: 12px; }
+.side-onboard-hint { line-height: 1.5; padding: 12px 8px; }

@@ -15,6 +15,7 @@ import { CenterArea } from "./terminal/TabsBar"
 import { Composer } from "./composer/Composer"
 import { DispatchPanel, ErrorActions } from "./composer/Dispatch"
 import { RightPanel } from "./rightpanel/RightPanel"
+import { EmptyState } from "./chrome/EmptyState"
 
 export const App = () => {
   const [bootErr, setBootErr] = useState<string | null>(null)
@@ -94,7 +95,7 @@ export const App = () => {
               </>
             )
           ) : (
-            <div className="dim center-empty">选择或创建一个 workspace（⌘N）</div>
+            <EmptyState />
           )}
         </main>
         <aside className={`col-right ${rightPanel === "collapsed" ? "collapsed" : ""}`}>
