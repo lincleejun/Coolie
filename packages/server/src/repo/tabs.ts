@@ -18,6 +18,8 @@ const rowToTab = (r: any): Tab => {
   })
 }
 
+export type TabStatusSource = "hook" | "poller" | "wrapper" | "heal"
+
 export interface TabsRepoShape {
   readonly insert: (t: {
     workspaceId: string; kind: TabKind
@@ -26,7 +28,7 @@ export interface TabsRepoShape {
   readonly get: (id: string) => Effect.Effect<Tab, NotFoundError>
   readonly listByWorkspace: (workspaceId: string) => Effect.Effect<Tab[]>
   readonly findEngineTab: (workspaceId: string) => Effect.Effect<Tab | null>
-  readonly setStatus: (id: string, status: TabStatus, source: "hook" | "poller") => Effect.Effect<Tab, NotFoundError>
+  readonly setStatus: (id: string, status: TabStatus, source: TabStatusSource) => Effect.Effect<Tab, NotFoundError>
   readonly setTitle: (id: string, title: string) => Effect.Effect<void, NotFoundError>
   readonly touchHookAt: (id: string, ts: number) => Effect.Effect<void, NotFoundError>
   readonly listEngineTabs: () => Effect.Effect<Array<{ tab: Tab; workspacePath: string }>>

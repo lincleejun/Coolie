@@ -223,6 +223,28 @@ export const createApp = ({ runtime, token, onShutdown, onError, bus, sseHeartbe
             onError,
           )
         }
+        if (route === "POST /hooks/engine-exit") {
+          const wsId = url.searchParams.get("workspace")
+          if (!wsId) return err(res, 400, "Validation", "workspace query param required")
+          const body = await readJson(req)
+          if (!Number.isInteger(body.exitCode)) return err(res, 400, "Validation", "exitCode must be an integer")
+          return await runRoute(
+            res, runtime,
+            Effect.gen(function* () {
+              const tabs = yield* TabsRepo
+              const tab = yield* tabs.findEngineTab(wsId)
+              if (!tab) return { ok: true } // 已归档/删除的竞态回报：与 /hooks/claude 同款静默
+              yield* tabs.setStatus(tab.id, body.exitCode === 0 ? "idle" : "error", "wrapper")
+              yield* (yield* EventsRepo).append({
+                workspaceId: wsId, type: "engine.exited",
+                payload: { tabId: tab.id, sessionId: tab.engineSessionId, exitCode: body.exitCode },
+              })
+              return { ok: true }
+            }),
+            (r) => send(res, 200, r),
+            onError,
+          )
+        }
         const tabsList = url.pathname.match(/^\/workspaces\/([^/]+)\/tabs$/)
         if (req.method === "GET" && tabsList) {
           return await runRoute(
