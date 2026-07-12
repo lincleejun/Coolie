@@ -13,6 +13,7 @@ const coolie = (...args: string[]) =>
       ...process.env, COOLIE_HOME: home,
       COOLIE_TMUX_SOCKET: TMUX_SOCK, COOLIE_CLAUDE_CMD: "cat", COOLIE_DISABLE_HOOKS: "1",
       COOLIE_CLAUDE_HOME: path.join(home, "claude-home"),
+      COOLIE_CLAUDE_CONFIG: path.join(home, "claude.json"), // trust 种子绝不能写真实 ~/.claude.json
     },
     encoding: "utf8",
   })
