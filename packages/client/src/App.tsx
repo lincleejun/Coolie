@@ -10,6 +10,7 @@ import { Titlebar } from "./chrome/Titlebar"
 import { TmuxGuide } from "./chrome/TmuxGuide"
 import { Cheatsheet } from "./chrome/Cheatsheet"
 import { WarningToasts } from "./chrome/Toasts"
+import { Sidebar } from "./sidebar/Sidebar"
 
 export const App = () => {
   const [bootErr, setBootErr] = useState<string | null>(null)
@@ -65,7 +66,7 @@ export const App = () => {
     <div className="app-frame">
       <Titlebar />
       <div className="columns">
-        <aside className="col-left">{/* Task 9: <Sidebar/> */}</aside>
+        <aside className="col-left"><Sidebar /></aside>
         <main className="col-center">{/* Task 10/11/12: 终端 tabs + composer */}</main>
         <aside className={`col-right ${rightPanel === "collapsed" ? "collapsed" : ""}`}>{/* Task 14: <RightPanel/> */}</aside>
       </div>
