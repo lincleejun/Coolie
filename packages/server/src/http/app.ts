@@ -11,7 +11,7 @@ import { EventsRepo } from "../repo/events.js"
 import { WorkspacesRepo } from "../repo/workspaces.js"
 import { WorkspaceLifecycle } from "../workspace/lifecycle.js"
 import { TabsRepo } from "../repo/tabs.js"
-import { EngineRegistry } from "../engine/registry.js"
+import { EngineRegistry, engineHome } from "../engine/registry.js"
 import { ConflictError, NotFoundError } from "../repo/errors.js"
 import { tmuxSessionName } from "@coolie/protocol"
 import type { ComposerOps, InputMode } from "../tmux/ops.js"
@@ -42,6 +42,8 @@ export interface AppDeps {
   readonly sseHeartbeatMs?: number
   /** claude 转录根（标题派生用）；缺省跳过标题派生 */
   readonly claudeHome?: string
+  /** codex 转录根（标题派生用，per-engine）；缺省跳过 codex 标题派生 */
+  readonly codexHome?: string
   /** 只读 git 观察面（GUI）；未提供时相关路由 501 */
   readonly gitRead?: GitReadOps
   /** GET /config 下发的 client 引导信息 */
@@ -148,7 +150,7 @@ const intParam = (url: URL, name: string, dflt: number): number | null => {
   return Number.isSafeInteger(n) ? n : null
 }
 
-export const createApp = ({ runtime, token, onShutdown, onError, bus, sseHeartbeatMs, claudeHome, gitRead, config, clients, composerOps }: AppDeps) =>
+export const createApp = ({ runtime, token, onShutdown, onError, bus, sseHeartbeatMs, claudeHome, codexHome, gitRead, config, clients, composerOps }: AppDeps) =>
   (req: IncomingMessage, res: ServerResponse): void => {
     void (async () => {
       const url = new URL(req.url ?? "/", "http://local")
@@ -211,54 +213,6 @@ export const createApp = ({ runtime, token, onShutdown, onError, bus, sseHeartbe
             { runtime, bus, ...(sseHeartbeatMs !== undefined ? { heartbeatMs: sseHeartbeatMs } : {}) },
             { after, ...(ws ? { workspaceId: ws } : {}) })
         }
-        if (route === "POST /hooks/claude") {
-          const wsId = url.searchParams.get("workspace")
-          if (!wsId) return err(res, 400, "Validation", "workspace query param required")
-          const body = await readJson(req)
-          return await runRoute(
-            res, runtime,
-            Effect.gen(function* () {
-              const tabs = yield* TabsRepo
-              const registry = yield* EngineRegistry
-              const engine = registry.get("claude")
-              const tab = engine ? yield* tabs.findEngineTab(wsId) : null
-              if (!engine || !tab) return { ok: true } // hook 永远成功：无 tab（已归档/删除）静默吞掉
-              yield* tabs.touchHookAt(tab.id, Date.now())
-              // --resume 会 fork 新 session id：以 hook 上报为真源同步，否则 mtime 轮询/标题派生盯旧转录
-              const hookSid = typeof (body as any)?.session_id === "string" && (body as any).session_id !== ""
-                ? (body as any).session_id as string : null
-              const sid = hookSid ?? tab.engineSessionId
-              if (hookSid !== null && tab.engineSessionId !== null && hookSid !== tab.engineSessionId)
-                yield* tabs.setEngineSessionId(tab.id, hookSid)
-              const status = engine.statusFromHookEvent(body)
-              if (status !== null) yield* tabs.setStatus(tab.id, status, "hook")
-              const evtName = (body as any)?.hook_event_name
-              const evType =
-                evtName === "UserPromptSubmit" ? "engine.turn.started"
-                : evtName === "Stop" ? "engine.turn.finished"
-                : evtName === "Notification" ? "engine.notification"
-                : evtName === "SessionEnd" ? "engine.session.ended"
-                // SessionStart：Plan3 Task15——冷启动就绪信号，bootstrap 订阅 EventsBus 等它再投首条 prompt
-                : evtName === "SessionStart" ? "engine.session.started" : null
-              if (evType !== null)
-                yield* (yield* EventsRepo).append({ workspaceId: wsId, type: evType, payload: { tabId: tab.id, sessionId: sid } })
-              // historyReader 兜底：首个 turn 完成且尚无标题 → 从转录派生
-              if (evtName === "Stop" && tab.title === null && sid !== null && claudeHome !== undefined) {
-                const ws = yield* (yield* WorkspacesRepo).get(wsId).pipe(Effect.option)
-                if (Option.isSome(ws)) {
-                  const tp = engine.transcriptPath({ home: claudeHome, cwd: ws.value.path, sessionId: sid })
-                  const title = yield* Effect.sync(() => {
-                    try { return engine.deriveTitle(fs.readFileSync(tp, "utf8")) } catch { return null }
-                  })
-                  if (title !== null) yield* tabs.setTitle(tab.id, title)
-                }
-              }
-              return { ok: true }
-            }),
-            (r) => send(res, 200, r),
-            onError,
-          )
-        }
         if (route === "POST /hooks/engine-exit") {
           const wsId = url.searchParams.get("workspace")
           if (!wsId) return err(res, 400, "Validation", "workspace query param required")
@@ -275,6 +229,61 @@ export const createApp = ({ runtime, token, onShutdown, onError, bus, sseHeartbe
                 workspaceId: wsId, type: "engine.exited",
                 payload: { tabId: tab.id, sessionId: tab.engineSessionId, exitCode: body.exitCode },
               })
+              return { ok: true }
+            }),
+            (r) => send(res, 200, r),
+            onError,
+          )
+        }
+        // 注意：/hooks/engine-exit 的检查必须在本段之前（engine-exit 也匹配 [^/]+）
+        const hookRoute = url.pathname.match(/^\/hooks\/([^/]+)$/)
+        if (req.method === "POST" && hookRoute && hookRoute[1] !== "engine-exit") {
+          const engineId = hookRoute[1]!
+          const wsId = url.searchParams.get("workspace")
+          if (!wsId) return err(res, 400, "Validation", "workspace query param required")
+          const body = await readJson(req)
+          return await runRoute(
+            res, runtime,
+            Effect.gen(function* () {
+              const tabs = yield* TabsRepo
+              const registry = yield* EngineRegistry
+              const engine = registry.get(engineId)
+              const tab = engine ? yield* tabs.findEngineTab(wsId) : null
+              if (!engine || !tab) return { ok: true } // 未知引擎/无 tab：hook 永远成功，静默吞
+              yield* tabs.touchHookAt(tab.id, Date.now())
+              // --resume 会 fork 新 session id：以 hook 上报为真源同步，否则 mtime 轮询/标题派生盯旧转录
+              const hookSid = typeof (body as any)?.session_id === "string" && (body as any).session_id !== ""
+                ? (body as any).session_id as string : null
+              const sid = hookSid ?? tab.engineSessionId
+              // C4：stored 为 null 也回填（codex 服务端造 id：起始 null，首个 hook 带来真 id）
+              if (hookSid !== null && hookSid !== tab.engineSessionId)
+                yield* tabs.setEngineSessionId(tab.id, hookSid)
+              const status = engine.statusFromHookEvent(body)
+              if (status !== null) yield* tabs.setStatus(tab.id, status, "hook")
+              const evtName = (body as any)?.hook_event_name
+              const evType =
+                evtName === "UserPromptSubmit" ? "engine.turn.started"
+                : evtName === "Stop" ? "engine.turn.finished"
+                : evtName === "Notification" ? "engine.notification"
+                : evtName === "SessionEnd" ? "engine.session.ended"
+                // SessionStart：Plan3 Task15——冷启动就绪信号，bootstrap 订阅 EventsBus 等它再投首条 prompt
+                : evtName === "SessionStart" ? "engine.session.started" : null
+              if (evType !== null)
+                yield* (yield* EventsRepo).append({ workspaceId: wsId, type: evType, payload: { tabId: tab.id, sessionId: sid } })
+              // historyReader 兜底：首个 turn 完成且尚无标题 → 从 per-engine 转录派生
+              if (evtName === "Stop" && tab.title === null && sid !== null) {
+                const home = engineHome(engine.id, { claudeHome: claudeHome ?? "", codexHome: codexHome ?? "" })
+                if (home !== "") {
+                  const ws = yield* (yield* WorkspacesRepo).get(wsId).pipe(Effect.option)
+                  if (Option.isSome(ws)) {
+                    const tp = engine.transcriptPath({ home, cwd: ws.value.path, sessionId: sid })
+                    const title = yield* Effect.sync(() => {
+                      try { return engine.deriveTitle(fs.readFileSync(tp, "utf8")) } catch { return null }
+                    })
+                    if (title !== null) yield* tabs.setTitle(tab.id, title)
+                  }
+                }
+              }
               return { ok: true }
             }),
             (r) => send(res, 200, r),
@@ -537,9 +546,15 @@ export const createApp = ({ runtime, token, onShutdown, onError, bus, sseHeartbe
                 return yield* new ConflictError({ message: `workspace 非 active（当前 ${ws.status}）` })
               const tab = yield* (yield* TabsRepo).findEngineTab(ws.id)
               if (!tab) return yield* new NotFoundError({ message: "无 engine tab" })
-              return { ws, tab }
+              const engine = (yield* EngineRegistry).get(tab.engineId ?? "claude")
+              return { ws, tab, engine }
             }),
-            async ({ ws, tab }) => {
+            async ({ ws, tab, engine }) => {
+              // F6【Plan-1-only 降级守卫；Plan 2 队列落地时删除本 if 块——REMOVAL MARKER: replace with enqueue】：
+              // 非 nativeQueue 引擎（codex）忙时不接 send（Plan 1 无 server 端队列，Plan 2 才有）。
+              // 守卫只挡 mode:send；interrupt/interrupt-send/insert 放行。claude nativeQueue=true 恒放行（TUI 自排队）。
+              if (mode === "send" && tab.status === "working" && engine?.capabilities.nativeQueue === false)
+                return send(res, 409, { error: "EngineBusy", message: "engine 正忙且无原生队列，send 暂不支持（排队见 M2 Plan 2）" })
               try {
                 const target = `${tmuxSessionName(ws.id)}:${tab.tmuxWindow ?? 0}`
                 await composerOps.input(target, { text: body.text, mode, skipStable: body.skipStable === true })

@@ -5,21 +5,23 @@ import * as path from "node:path"
 // 用于门控首条 prompt 投递（bootstrap 等它，而非只信一次画面稳定就投）。
 export const HOOK_EVENTS = ["UserPromptSubmit", "Stop", "Notification", "SessionEnd", "SessionStart"] as const
 
-export const hookScriptPath = (home: string): string => path.join(home, "hooks", "claude-hook.sh")
+export const hookScriptPath = (home: string, engineId: string): string =>
+  path.join(home, "hooks", `${engineId}-hook.sh`)
 
 /** hook 转发脚本（kobe hook-cmd 三铁律：绝不拉起 server、失败静默、永远 exit 0）。
- * 每次启动重写：home 变化/脚本升级自动生效。token/port 运行时从 server.json 读，脚本本身不含密钥。 */
-export const ensureHookScript = (home: string): string => {
-  const p = hookScriptPath(home)
+ * 按引擎生成：写 hooks/<engineId>-hook.sh、POST /hooks/<engineId>。每次启动重写：home 变化/脚本升级
+ * 自动生效。token/port 运行时从 server.json 读，脚本本身不含密钥。 */
+export const ensureHookScript = (home: string, engineId: string): string => {
+  const p = hookScriptPath(home, engineId)
   fs.mkdirSync(path.dirname(p), { recursive: true })
   const script = `#!/bin/sh
-# Coolie claude hook forwarder（自动生成，勿手改）。
+# Coolie ${engineId} hook forwarder（自动生成，勿手改）。
 INFO="${home}/server.json"
 [ -f "$INFO" ] || exit 0
 PORT=$(sed -n 's/.*"port": *\\([0-9][0-9]*\\).*/\\1/p' "$INFO")
 TOKEN=$(sed -n 's/.*"token": *"\\([^"]*\\)".*/\\1/p' "$INFO")
 [ -n "$PORT" ] && [ -n "$TOKEN" ] || exit 0
-curl -s -m 2 -X POST "http://127.0.0.1:$PORT/hooks/claude?workspace=$COOLIE_WORKSPACE" \\
+curl -s -m 2 -X POST "http://127.0.0.1:$PORT/hooks/${engineId}?workspace=$COOLIE_WORKSPACE" \\
   -H "Authorization: Bearer $TOKEN" -H "content-type: application/json" \\
   --data-binary @- >/dev/null 2>&1
 exit 0

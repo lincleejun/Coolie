@@ -79,7 +79,7 @@ describe("protocol domain", () => {
   })
   it("ROUTES contains tabs/hooks/ws-terminal routes", () => {
     const paths = ROUTES.map(r => `${r.method} ${r.path}`)
-    for (const p of ["GET /workspaces/:id/tabs", "POST /hooks/claude", "GET /ws/terminal"])
+    for (const p of ["GET /workspaces/:id/tabs", "POST /hooks/:engine", "GET /ws/terminal"])
       expect(paths).toContain(p)
   })
 })

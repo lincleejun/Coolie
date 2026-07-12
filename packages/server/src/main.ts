@@ -79,7 +79,8 @@ const cmdStart = async (): Promise<void> => {
     Effect.runPromiseExit(Effect.provide(eff, runtimeCtx) as Effect.Effect<A, E, never>)
 
   const token = newToken()
-  ensureHookScript(cfg.home) // hook 转发脚本：每次启动重写（home/版本变更自动生效）
+  // hook 转发脚本：每次启动按引擎重写（home/版本变更自动生效）；bootstrap 建 workspace 时也会各自重写
+  for (const engineId of ["claude", "codex"]) ensureHookScript(cfg.home, engineId)
 
   // tmux 首启检测（设计文档 §十二）：不阻启动，warn 进日志；doctor 同口径
   const tmuxSvc = Context.get(runtimeCtx, TmuxService)
@@ -147,7 +148,7 @@ const cmdStart = async (): Promise<void> => {
   })
 
   const app = createApp({
-    runtime, token, bus, claudeHome: cfg.claudeHome, clients,
+    runtime, token, bus, claudeHome: cfg.claudeHome, codexHome: cfg.codexHome, clients,
     gitRead: realGitRead,
     config: { tmuxSocket: cfg.tmuxSocket },
     composerOps: makeComposerOps(tmuxSvc),

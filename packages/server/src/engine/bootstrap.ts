@@ -66,7 +66,7 @@ export const EngineBootstrapHookLive = Layer.effect(
         if (engine.capabilities.hooks && !hooksDisabled()) {
           yield* Effect.try({
             try: () => {
-              const scriptPath = ensureHookScript(cfg.home)
+              const scriptPath = ensureHookScript(cfg.home, engine.id)
               // per-engine hooks 产物：写进 worktree 的注入文件必须一并进 info/exclude，
               // 否则 isDirty 守卫误伤 archive/delete（M1 claude 手法，codex 同款——门 gate-review 绑定项）。
               if (engine.id === "codex") {

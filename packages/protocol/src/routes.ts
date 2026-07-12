@@ -13,7 +13,7 @@ export const ROUTES = [
   { method: "DELETE", path: "/workspaces/:id",           description: "删 worktree+记录，branch 保留 ?force=1" },
   { method: "GET",    path: "/events/stream",            description: "SSE：durable replay + live 推送 ?after=&workspace=&role=（role=gui 持有 server 生命周期 lease）" },
   { method: "GET",  path: "/workspaces/:id/tabs", description: "列出 workspace 的 tabs（GUI tab ↔ tmux window 映射）" },
-  { method: "POST", path: "/hooks/claude",        description: "claude hook 回调 ?workspace=（结构化 engine 状态唯一入口）" },
+  { method: "POST", path: "/hooks/:engine",       description: "engine hook 回调转发（claude/codex；?workspace= 必带）" },
   { method: "GET",  path: "/config",                        description: "client 引导信息：tmuxSocket + engines（能力位/模型列表）" },
   { method: "GET",  path: "/workspaces/:id/git/diffstat",   description: "vs baseRef 的 shortstat（左栏 +N−M 轮询）" },
   { method: "GET",  path: "/workspaces/:id/git/changes",    description: "四分区 numstat：against-base/committed/staged/unstaged + untracked" },

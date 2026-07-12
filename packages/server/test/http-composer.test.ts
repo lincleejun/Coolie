@@ -39,6 +39,13 @@ const createActiveWorkspaceWithEngineTab = ({ tmuxWindow }: { tmuxWindow: number
   insertTab(id, "engine", tmuxWindow)
   return { id }
 }
+// F6：seed 一个 engine tab 带 engineId + status（send-while-busy 守卫用）
+const insertEngineTab = (wsId: string, engineId: string, status: string, tmuxWindow: number): string => {
+  const tabId = "tab-" + Math.random().toString(36).slice(2, 10)
+  db.prepare(`INSERT INTO tabs (id, workspace_id, kind, engine_id, engine_session_id, tmux_window, title, status, data)
+    VALUES (?, ?, 'engine', ?, NULL, ?, NULL, ?, '{}')`).run(tabId, wsId, engineId, tmuxWindow, status)
+  return tabId
+}
 
 beforeEach(async () => {
   fakeOps.calls = []
@@ -106,6 +113,28 @@ describe("POST /workspaces/:id/input", () => {
   it("无 engine tab → 404", async () => {
     const id = insertWorkspace("active")
     expect((await post(`/workspaces/${id}/input`, { text: "hi", mode: "send" })).status).toBe(404)
+  })
+})
+
+describe("F6：send-while-busy 守卫（非 nativeQueue 引擎）", () => {
+  it("codex（nativeQueue=false）忙时 mode:send → 409 EngineBusy", async () => {
+    const id = insertWorkspace("active")
+    insertEngineTab(id, "codex", "working", 0)
+    const r = await post(`/workspaces/${id}/input`, { text: "hi", mode: "send" })
+    expect(r.status).toBe(409)
+    expect(r.body.error).toBe("EngineBusy") // 机器可读错误码
+  })
+  it("claude（nativeQueue=true）忙时 send → 不 409（原生 mid-turn 队列放行）", async () => {
+    const id = insertWorkspace("active")
+    insertEngineTab(id, "claude", "working", 0)
+    const r = await post(`/workspaces/${id}/input`, { text: "hi", mode: "send" })
+    expect(r.status).not.toBe(409)
+  })
+  it("codex 忙时 interrupt 仍放行（守卫只挡 send）", async () => {
+    const id = insertWorkspace("active")
+    insertEngineTab(id, "codex", "working", 0)
+    const r = await post(`/workspaces/${id}/input`, { text: "", mode: "interrupt" })
+    expect(r.status).not.toBe(409)
   })
 })
 

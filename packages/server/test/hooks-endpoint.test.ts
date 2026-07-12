@@ -22,8 +22,8 @@ describe("hook script + settings injection（纯 fs）", () => {
   })
 
   it("ensureHookScript writes an executable sh forwarder that always exits 0", () => {
-    const p = ensureHookScript(home)
-    expect(p).toBe(hookScriptPath(home))
+    const p = ensureHookScript(home, "claude")
+    expect(p).toBe(hookScriptPath(home, "claude"))
     const st = fs.statSync(p)
     expect(st.mode & 0o111).not.toBe(0)
     const body = fs.readFileSync(p, "utf8")
@@ -32,8 +32,17 @@ describe("hook script + settings injection（纯 fs）", () => {
     expect(body).toContain(`${home}/server.json`)
   })
 
+  it("ensureHookScript 按引擎产脚本、POST 到 /hooks/<engine>", () => {
+    const cp = ensureHookScript(home, "codex")
+    expect(cp).toContain("codex-hook.sh")
+    expect(cp).toBe(hookScriptPath(home, "codex"))
+    const body = fs.readFileSync(cp, "utf8")
+    expect(body).toContain("/hooks/codex?workspace=")
+    expect(body.trim().endsWith("exit 0")).toBe(true) // 三铁律：永远 exit 0
+  })
+
   it("injectClaudeHooks is idempotent and preserves foreign hooks", () => {
-    const script = ensureHookScript(home)
+    const script = ensureHookScript(home, "claude")
     const file = path.join(worktree, ".claude", "settings.local.json")
     fs.mkdirSync(path.dirname(file), { recursive: true })
     fs.writeFileSync(file, JSON.stringify({ hooks: { Stop: [{ hooks: [{ type: "command", command: "my-own-hook" }] }] }, other: 1 }))
@@ -128,6 +137,21 @@ describe("POST /hooks/claude endpoint", () => {
   it("no token → 401", async () => {
     const r = await fetch(`${base}/hooks/claude?workspace=w1`, { method: "POST", body: "{}" })
     expect(r.status).toBe(401)
+  })
+
+  it("POST /hooks/codex 命中 codex 引擎并置状态 awaiting-input", async () => {
+    db.prepare(`INSERT INTO workspaces (id, project_id, name, path, branch, base_branch, base_ref, status, pinned, created_at, archived_at, data)
+      VALUES ('w2','p1','cod',?,'coolie/b','main','r','active',0,1,NULL,'{}')`).run(wsPath + "-codex")
+    db.prepare(`INSERT INTO tabs (id, workspace_id, kind, engine_id, engine_session_id, tmux_window, title, status, data)
+      VALUES ('t-codex','w2','engine','codex',NULL,0,NULL,'idle','{}')`).run()
+    const r = await fetch(`${base}/hooks/codex?workspace=w2`, {
+      method: "POST",
+      headers: { "content-type": "application/json", Authorization: `Bearer ${token}` },
+      body: JSON.stringify({ hook_event_name: "Stop", session_id: "sid-1" }),
+    })
+    expect(r.status).toBe(200)
+    const row = db.prepare("SELECT * FROM tabs WHERE id = 't-codex'").get() as any
+    expect(row.status).toBe("awaiting-input")
   })
 
   it("GET /workspaces/:id/tabs lists tabs", async () => {
