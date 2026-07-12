@@ -7,7 +7,7 @@ import { ProjectsRepo } from "../repo/projects.js"
 import { EngineRegistry } from "./registry.js"
 import { CoolieConfig } from "../config.js"
 import { deliverPrompt } from "../tmux/delivery.js"
-import { portEnv } from "../workspace/ports.js"
+import { startEngineSession } from "./session.js"
 import { injectInfoExclude } from "../workspace/include.js"
 import { ensureHookScript, injectClaudeHooks, hooksDisabled } from "./claude/hooks.js"
 import { EventsBus, EVENT_CHANNEL } from "../events/bus.js"
@@ -98,10 +98,8 @@ export const EngineBootstrapHookLive = Layer.effect(
           bus.value.on(EVENT_CHANNEL, onEvent)
         }
 
-        const command = engine.launchCommand({ sessionId })
-        yield* tmux.newSession({
-          name: session, cwd: ws.path, windowName: "engine", command,
-          env: { COOLIE_ROOT: project.repoRoot, COOLIE_WORKSPACE: ws.id, ...portEnv(ws.portBase) },
+        const { engineCommand } = yield* startEngineSession(tmux, {
+          ws, repoRoot: project.repoRoot, engine, sessionId, resume: false, home: cfg.home,
         }).pipe(Effect.mapError((e) => new HookError({ message: `tmux session 创建失败：${e.message}` })))
         yield* events.append({ workspaceId: ws.id, type: "workspace.tmux.created", payload: { sessionName: session } })
 
@@ -110,7 +108,7 @@ export const EngineBootstrapHookLive = Layer.effect(
         })
         yield* events.append({
           workspaceId: ws.id, type: "engine.started",
-          payload: { tabId: tab.id, engineId: engine.id, sessionId, command },
+          payload: { tabId: tab.id, engineId: engine.id, sessionId, command: engineCommand, wrapped: true },
         })
 
         if (wantsPrompt) {

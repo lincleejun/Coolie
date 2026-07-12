@@ -7,7 +7,7 @@ import { tmuxSessionName } from "@coolie/protocol"
 import { CoolieConfig, CoolieConfigLive } from "./config.js"
 import { DbLive } from "./db/sqlite.js"
 import { ProjectsRepoLive } from "./repo/projects.js"
-import { EventsRepoLive } from "./repo/events.js"
+import { EventsRepo, EventsRepoLive } from "./repo/events.js"
 import { WorkspacesRepo, WorkspacesRepoLive } from "./repo/workspaces.js"
 import { TabsRepo, TabsRepoLive } from "./repo/tabs.js"
 import { EventsBus, EventsBusLive } from "./events/bus.js"
@@ -18,12 +18,14 @@ import { makeSetupRunnerLive } from "./workspace/setup.js"
 import { TmuxService, TmuxServiceLive } from "./tmux/service.js"
 import { EngineRegistry, EngineRegistryLive } from "./engine/registry.js"
 import { EngineBootstrapHookLive } from "./engine/bootstrap.js"
+import { SessionEnsurerLive } from "./workspace/heal.js"
 import { ensureHookScript } from "./engine/claude/hooks.js"
 import { startTranscriptPoller } from "./engine/monitor.js"
 import { attachTerminalWs } from "./http/ws.js"
 import { createApp, newToken } from "./http/app.js"
 import type { AppServices } from "./http/app.js"
-import { readServerInfo, writeServerInfo, probeAlive } from "./daemon/info.js"
+import { readServerInfo, claimServerInfo, probeAlive } from "./daemon/info.js"
+import { makeClientRegistry } from "./daemon/clients.js"
 import { rotateLogIfNeeded } from "./log/rotate.js"
 import { createLogger, installCrashNet } from "./log/logger.js"
 
@@ -58,7 +60,7 @@ const cmdStart = async (): Promise<void> => {
 
   const scope = Effect.runSync(Scope.make())
   const appLayer = WorkspaceLifecycleLive.pipe(
-    Layer.provideMerge(EngineBootstrapHookLive),
+    Layer.provideMerge(Layer.mergeAll(EngineBootstrapHookLive, SessionEnsurerLive)),
     Layer.provideMerge(Layer.mergeAll(
       GitServiceLive,
       makeSetupRunnerLive((chunk) => logger.info(`setup: ${chunk.trimEnd()}`)),
@@ -104,20 +106,50 @@ const cmdStart = async (): Promise<void> => {
     : () => {}
 
   const sockPath = path.join(cfg.home, "coolie.sock")
-  const shutdown = async () => {
+
+  // ---- Plan 4：幂等 + awaited close 的 shutdown ----
+  let shuttingDown = false
+  const closeHttp = (s: http.Server): Promise<void> =>
+    new Promise((resolve) => {
+      s.close(() => resolve())            // 未 listen 的 server：回调带 err 也会触发 → 照样 resolve
+      s.closeAllConnections()             // SSE/WS 长连接不断掉，close 永不完成（Node ≥18.2）
+    })
+  const shutdown = async (): Promise<void> => {
+    if (shuttingDown) return              // POST /shutdown、SIGTERM、idle-exit 可能并发到达
+    shuttingDown = true
     logger.info("shutdown")
     stopPoller()
+    clients.dispose()
     fs.rmSync(cfg.serverInfoPath, { force: true })
-    server.close()
-    unixServer.close()
+    await Promise.race([
+      Promise.all([closeHttp(server), closeHttp(unixServer)]),
+      new Promise((r) => setTimeout(r, 2000)), // 兜底：close 卡住也要退
+    ])
     fs.rmSync(sockPath, { force: true })
-    await Effect.runPromise(Scope.close(scope, Exit.void)) // scope 关闭 → control client dispose；tmux server/session 不动
+    await Effect.runPromise(Scope.close(scope, Exit.void)) // control client dispose；tmux server/session 不动
     await Promise.race([logger.flush(), new Promise((r) => setTimeout(r, 2000))])
     process.exit(0)
   }
 
+  // refcount 惰性退出（设计文档 §2.1）：COOLIE_LINGER_MS 只在此边缘读取——
+  // 不进 CoolieConfig（5 个测试 fixture 注入完整 config shape，加必填字段会全体破坏）
+  const lingerRaw = Number(process.env.COOLIE_LINGER_MS ?? "")
+  const lingerMs = Number.isFinite(lingerRaw) && lingerRaw > 0 ? lingerRaw : 60_000
+  const clients = makeClientRegistry({
+    graceMs: lingerMs,
+    onIdleExpired: () => {
+      logger.info(`refcount 惰性退出：最后一个 gui 持有者断开已超 ${lingerMs}ms`)
+      void (async () => {
+        await runtime(Effect.gen(function* () {
+          yield* (yield* EventsRepo).append({ workspaceId: null, type: "daemon.idle.exit", payload: { graceMs: lingerMs } })
+        }))
+        await shutdown() // 与 POST /shutdown 同一条路：engine 归 tmux，session 分毫不动
+      })()
+    },
+  })
+
   const app = createApp({
-    runtime, token, bus, claudeHome: cfg.claudeHome,
+    runtime, token, bus, claudeHome: cfg.claudeHome, clients,
     gitRead: realGitRead,
     config: { tmuxSocket: cfg.tmuxSocket },
     onShutdown: () => void shutdown(),
@@ -127,7 +159,7 @@ const cmdStart = async (): Promise<void> => {
 
   // WS 终端通道（挂 TCP server；GUI/浏览器从 TCP 连）
   attachTerminalWs(server, {
-    token, tmuxSocket: cfg.tmuxSocket,
+    token, tmuxSocket: cfg.tmuxSocket, clients,
     resolveSession: async (wsId) => {
       const exit = await runtime(Effect.gen(function* () { return yield* (yield* WorkspacesRepo).get(wsId) }))
       return Exit.match(exit, {
@@ -138,16 +170,25 @@ const cmdStart = async (): Promise<void> => {
     log: (m) => logger.warn(m),
   })
 
-  // unix socket 监听（设计文档 §2.1）：同一 app、同一 token；先清陈旧 sock
+  // ---- Plan 4：先 TCP listen，claim 赢了才碰 unix socket ----
+  // 旧顺序（先 rm sock 再 listen sock 再 TCP）下，两个竞态 start 会互删对方的 sock。
   fs.mkdirSync(cfg.home, { recursive: true })
-  fs.rmSync(sockPath, { force: true })
   const unixServer = http.createServer(app)
-  unixServer.listen(sockPath, () => logger.info(`listening on unix socket ${sockPath}`))
 
   server.listen(0, "127.0.0.1", () => {
-    const port = (server.address() as { port: number }).port
-    writeServerInfo(cfg.serverInfoPath, { port, token, pid: process.pid, sock: sockPath })
-    logger.info(`coolie-server listening on 127.0.0.1:${port}`)
+    void (async () => {
+      const port = (server.address() as { port: number }).port
+      const won = await claimServerInfo(cfg.serverInfoPath, { port, token, pid: process.pid, sock: sockPath })
+      if (!won) {
+        logger.warn("单实例竞态落败：另一个 coolie-server 已注册 server.json，本进程退出（不碰对方的 sock）")
+        server.close(); server.closeAllConnections()
+        await Promise.race([logger.flush(), new Promise((r) => setTimeout(r, 1000))])
+        process.exit(1)
+      }
+      fs.rmSync(sockPath, { force: true }) // 赢家清陈旧 sock
+      unixServer.listen(sockPath, () => logger.info(`listening on unix socket ${sockPath}`))
+      logger.info(`coolie-server listening on 127.0.0.1:${port}`)
+    })()
   })
   process.on("SIGINT", () => void shutdown())
   process.on("SIGTERM", () => void shutdown())

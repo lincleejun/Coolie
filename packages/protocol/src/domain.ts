@@ -68,3 +68,36 @@ export const CoolieEvent = Schema.Struct({
 })
 export type CoolieEvent = typeof CoolieEvent.Type
 export const decodeCoolieEvent = Schema.decodeUnknownSync(CoolieEvent)
+
+/** role 化 client 注册（设计文档 §2.1）：gui 持有 server 生命周期 lease，terminal pane / cli 一次性命令不持有。 */
+export const ClientRole = Schema.Literal("gui", "terminal", "cli")
+export type ClientRole = typeof ClientRole.Type
+
+export class ClientInfo extends Schema.Class<ClientInfo>("ClientInfo")({
+  id: Schema.String,
+  role: ClientRole,
+  label: Schema.NullOr(Schema.String),
+  connectedAt: Schema.Number,
+}) {}
+
+export const ClientsStatus = Schema.Struct({
+  clients: Schema.Array(ClientInfo),
+  guiHolders: Schema.Number,
+  lingerMs: Schema.Number,
+  idleExitArmed: Schema.Boolean,
+})
+export type ClientsStatus = typeof ClientsStatus.Type
+export const decodeClientsStatus = Schema.decodeUnknownSync(ClientsStatus)
+
+/** ensure-or-heal / resume 的统一结果（设计文档 §十）。 */
+export const HealAction = Schema.Literal("none", "recreated", "respawned")
+export type HealAction = typeof HealAction.Type
+export const HealOutcome = Schema.Struct({
+  action: HealAction,
+  resumed: Schema.Boolean,
+  sessionName: Schema.String,
+  tabId: Schema.NullOr(Schema.String),
+  sessionId: Schema.NullOr(Schema.String),
+})
+export type HealOutcome = typeof HealOutcome.Type
+export const decodeHealOutcome = Schema.decodeUnknownSync(HealOutcome)

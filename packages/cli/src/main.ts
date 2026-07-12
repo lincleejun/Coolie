@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { Command } from "commander"
-import { ROUTES, decodeProject, decodeWorkspace, decodeCoolieEvent, tmuxSessionName } from "@coolie/protocol"
+import { ROUTES, decodeProject, decodeWorkspace, decodeCoolieEvent, decodeHealOutcome, tmuxSessionName } from "@coolie/protocol"
 import { readServerInfo, probeAlive } from "@coolie/server"
 import * as path from "node:path"
 import * as fs from "node:fs"
@@ -83,13 +83,18 @@ program.command("delete <wsId>")
 const tmuxSocketName = () => process.env.COOLIE_TMUX_SOCKET ?? "coolie"
 
 program.command("enter <wsId>")
-  .description("attach 进 workspace 的 tmux session（Ctrl-b d 返回）")
-  .action((id: string) => {
+  .description("attach 进 workspace 的 tmux session（丢失自动重建；Ctrl-b d 返回）")
+  .action(async (id: string) => {
     const sock = tmuxSocketName()
     const session = tmuxSessionName(id)
     const has = spawnSync("tmux", ["-L", sock, "has-session", "-t", `=${session}`], { stdio: "ignore" })
-    if (has.status !== 0)
-      fail(`tmux session ${session} 不存在（workspace 可能已归档/尚未创建，或 session 被外力清理；M1 不自动重建——Plan 4 ensure-or-heal）`)
+    if (has.status !== 0) {
+      // ensure-or-heal（设计文档 §十）：session 丢失 → 经 server 重建（--resume 复活），失败才报错
+      try {
+        const out = decodeHealOutcome(await api("POST", `/workspaces/${id}/ensure`, {}))
+        console.error(`[coolie] session 已重建（resumed=${out.resumed}）`)
+      } catch (e) { fail(e) }
+    }
     const r = spawnSync("tmux", ["-L", sock, "attach", "-t", `=${session}`], { stdio: "inherit" })
     process.exit(r.status ?? 0)
   })
@@ -98,6 +103,18 @@ program.command("open <wsId>")
   .description("打印 iTerm2 逃生舱命令（GUI 的 Open in iTerm2 按钮复用此命令）")
   .action((id: string) => {
     console.log(`tmux -L ${tmuxSocketName()} attach -t ${tmuxSessionName(id)}`)
+  })
+
+program.command("resume <wsId>")
+  .description("engine 退出后原地重启（--resume 续会话；GUI Resume 按钮同款 API）")
+  .action(async (id: string) => {
+    try {
+      const tabs: any[] = await api("GET", `/workspaces/${id}/tabs`)
+      const engineTab = tabs.find((t) => t.kind === "engine")
+      if (!engineTab) return fail(`workspace ${id} 没有 engine tab`)
+      const out = decodeHealOutcome(await api("POST", `/workspaces/${id}/tabs/${engineTab.id}/resume`, {}))
+      console.log(`resumed ${id} (action=${out.action} resumed=${out.resumed} session=${out.sessionId})`)
+    } catch (e) { fail(e) }
   })
 
 const server = program.command("server")
@@ -214,8 +231,20 @@ program.command("doctor").action(async () => {
   const dbPath = path.join(h, "coolie.db")
   if (!fs.existsSync(dbPath)) check("warn", "db", "尚无数据库")
   else {
-    try { new Database(dbPath, { readonly: true }).close(); check("ok", "db", dbPath) }
-    catch (e) { check("fail", "db", `无法打开：${String(e)}`) }
+    try {
+      const d = new Database(dbPath, { readonly: true })
+      check("ok", "db", dbPath)
+      // stuck-creating（ledger carry-over）：create 是同步流水线，creating + 无活 server = server 崩溃残留。
+      // doctor 只读纪律：只报告，绝不改库、绝不杀进程。
+      try {
+        const STUCK_MS = 10 * 60_000
+        const rows = d.prepare("SELECT id, created_at AS createdAt FROM workspaces WHERE status = 'creating'").all() as any[]
+        const stuck = rows.filter((r) => Date.now() - r.createdAt > STUCK_MS)
+        if (stuck.length > 0)
+          check("warn", "workspaces", `${stuck.length} 个卡在 creating 超过 10 分钟（server 崩溃残留？）：${stuck.map((r) => r.id).join(",")}——用 coolie 的 retry 或 delete 处理`)
+      } catch { /* workspaces 表还没建（新库）：跳过 */ }
+      d.close()
+    } catch (e) { check("fail", "db", `无法打开：${String(e)}`) }
   }
 
   const info = readServerInfo(path.join(h, "server.json"))
@@ -224,7 +253,15 @@ program.command("doctor").action(async () => {
     const alive = await probeAlive(info)
     let pidAlive = false
     try { process.kill(info.pid, 0); pidAlive = true } catch { /* dead */ }
-    if (alive) check("ok", "server", `running pid=${info.pid} port=${info.port}`)
+    if (alive) {
+      check("ok", "server", `running pid=${info.pid} port=${info.port}`)
+      try {
+        const cs: any = await (await fetch(`http://127.0.0.1:${info.port}/clients`, {
+          headers: { Authorization: `Bearer ${info.token}` }, signal: AbortSignal.timeout(1000),
+        })).json()
+        check("ok", "clients", `gui=${cs.guiHolders} total=${cs.clients.length} linger=${cs.lingerMs}ms armed=${cs.idleExitArmed}`)
+      } catch { check("warn", "clients", "无法读取 /clients") }
+    }
     else check(pidAlive ? "fail" : "warn", "server", pidAlive ? "pid 活着但 /health 不通" : "server.json 陈旧（进程已死）")
   }
 

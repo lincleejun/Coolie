@@ -44,7 +44,7 @@ export const injectClaudeHooks = (opts: {
   try { settings = JSON.parse(fs.readFileSync(file, "utf8")) } catch { /* 无文件/坏 JSON → 重建 */ }
   if (typeof settings !== "object" || settings === null || Array.isArray(settings)) settings = {}
   if (typeof settings.hooks !== "object" || settings.hooks === null) settings.hooks = {}
-  const command = `COOLIE_WORKSPACE=${opts.workspaceId} sh ${opts.scriptPath}`
+  const command = `COOLIE_WORKSPACE=${opts.workspaceId} sh "${opts.scriptPath}"`
   for (const evt of HOOK_EVENTS) {
     const entries: any[] = Array.isArray(settings.hooks[evt]) ? settings.hooks[evt] : []
     const kept = entries.filter((e) => !JSON.stringify(e).includes(opts.scriptPath))

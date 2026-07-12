@@ -4,6 +4,8 @@ import * as fs from "node:fs"
 import * as path from "node:path"
 import { Effect, Exit, Cause, Option } from "effect"
 import type { ApiErrorBody } from "@coolie/protocol"
+import type { ClientRegistry } from "../daemon/clients.js"
+import type { ClientRole } from "@coolie/protocol"
 import { ProjectsRepo } from "../repo/projects.js"
 import { EventsRepo } from "../repo/events.js"
 import { WorkspacesRepo } from "../repo/workspaces.js"
@@ -14,6 +16,7 @@ import { ConflictError } from "../repo/errors.js"
 import type { GitReadOps } from "../git/inspect.js"
 import { scanSlashCommands } from "../engine/claude/commands.js"
 import { claudeModels } from "../engine/claude/adapter.js"
+import { SessionEnsurer } from "../workspace/heal.js"
 import { tokenEquals } from "./token.js"
 import { handleEventsStream } from "./sse.js"
 export { newToken } from "./token.js"
@@ -24,7 +27,7 @@ export { newToken } from "./token.js"
 // on it is not a reliable way to recover the original TaggedError. Running via
 // `Effect.runPromiseExit` and unwrapping with `Exit.match` + `Cause.failureOption`
 // (mirrors the pattern already used in test/projects-repo.test.ts) is robust.
-export type AppServices = ProjectsRepo | EventsRepo | WorkspacesRepo | WorkspaceLifecycle | TabsRepo | EngineRegistry
+export type AppServices = ProjectsRepo | EventsRepo | WorkspacesRepo | WorkspaceLifecycle | TabsRepo | EngineRegistry | SessionEnsurer
 export type Runtime = <A, E>(eff: Effect.Effect<A, E, AppServices>) => Promise<Exit.Exit<A, E>>
 export interface AppDeps {
   readonly runtime: Runtime
@@ -42,6 +45,8 @@ export interface AppDeps {
   readonly gitRead?: GitReadOps
   /** GET /config 下发的 client 引导信息 */
   readonly config?: { readonly tmuxSocket: string }
+  /** role 化 refcount（Plan 4）；未提供时 /clients 500、SSE role 参数忽略（测试友好） */
+  readonly clients?: ClientRegistry
 }
 
 const send = (res: ServerResponse, status: number, body?: unknown) => {
@@ -140,7 +145,7 @@ const intParam = (url: URL, name: string, dflt: number): number | null => {
   return Number.isSafeInteger(n) ? n : null
 }
 
-export const createApp = ({ runtime, token, onShutdown, onError, bus, sseHeartbeatMs, claudeHome, gitRead, config }: AppDeps) =>
+export const createApp = ({ runtime, token, onShutdown, onError, bus, sseHeartbeatMs, claudeHome, gitRead, config, clients }: AppDeps) =>
   (req: IncomingMessage, res: ServerResponse): void => {
     void (async () => {
       const url = new URL(req.url ?? "/", "http://local")
@@ -177,10 +182,27 @@ export const createApp = ({ runtime, token, onShutdown, onError, bus, sseHeartbe
           try { onShutdown() } catch { /* swallow: response already sent */ }
           return
         }
+        if (route === "GET /clients") {
+          if (!clients) return err(res, 500, "Internal", "client registry unavailable")
+          return send(res, 200, {
+            clients: clients.list(),
+            guiHolders: clients.guiCount(),
+            lingerMs: clients.graceMs,
+            idleExitArmed: clients.idleExitArmed(),
+          })
+        }
         if (route === "GET /events/stream") {
           if (!bus) return err(res, 500, "Internal", "event bus unavailable")
           const after = intParam(url, "after", 0)
           if (after === null) return err(res, 400, "Validation", "after must be a non-negative integer")
+          const roleRaw = url.searchParams.get("role")
+          if (roleRaw !== null && !["gui", "terminal", "cli"].includes(roleRaw))
+            return err(res, 400, "Validation", "role must be gui|terminal|cli")
+          if (clients && roleRaw !== null) {
+            // lease 与连接同生共死：GUI 崩溃 = 连接断 = 自动释放（绝不做显式 unregister API）
+            const lease = clients.register(roleRaw as ClientRole, url.searchParams.get("label") ?? undefined)
+            req.on("close", () => clients.release(lease.id))
+          }
           const ws = url.searchParams.get("workspace")
           return await handleEventsStream(req, res,
             { runtime, bus, ...(sseHeartbeatMs !== undefined ? { heartbeatMs: sseHeartbeatMs } : {}) },
@@ -199,6 +221,12 @@ export const createApp = ({ runtime, token, onShutdown, onError, bus, sseHeartbe
               const tab = engine ? yield* tabs.findEngineTab(wsId) : null
               if (!engine || !tab) return { ok: true } // hook 永远成功：无 tab（已归档/删除）静默吞掉
               yield* tabs.touchHookAt(tab.id, Date.now())
+              // --resume 会 fork 新 session id：以 hook 上报为真源同步，否则 mtime 轮询/标题派生盯旧转录
+              const hookSid = typeof (body as any)?.session_id === "string" && (body as any).session_id !== ""
+                ? (body as any).session_id as string : null
+              const sid = hookSid ?? tab.engineSessionId
+              if (hookSid !== null && tab.engineSessionId !== null && hookSid !== tab.engineSessionId)
+                yield* tabs.setEngineSessionId(tab.id, hookSid)
               const status = engine.statusFromHookEvent(body)
               if (status !== null) yield* tabs.setStatus(tab.id, status, "hook")
               const evtName = (body as any)?.hook_event_name
@@ -210,18 +238,40 @@ export const createApp = ({ runtime, token, onShutdown, onError, bus, sseHeartbe
                 // SessionStart：Plan3 Task15——冷启动就绪信号，bootstrap 订阅 EventsBus 等它再投首条 prompt
                 : evtName === "SessionStart" ? "engine.session.started" : null
               if (evType !== null)
-                yield* (yield* EventsRepo).append({ workspaceId: wsId, type: evType, payload: { tabId: tab.id, sessionId: tab.engineSessionId } })
+                yield* (yield* EventsRepo).append({ workspaceId: wsId, type: evType, payload: { tabId: tab.id, sessionId: sid } })
               // historyReader 兜底：首个 turn 完成且尚无标题 → 从转录派生
-              if (evtName === "Stop" && tab.title === null && tab.engineSessionId !== null && claudeHome !== undefined) {
+              if (evtName === "Stop" && tab.title === null && sid !== null && claudeHome !== undefined) {
                 const ws = yield* (yield* WorkspacesRepo).get(wsId).pipe(Effect.option)
                 if (Option.isSome(ws)) {
-                  const tp = engine.transcriptPath({ home: claudeHome, cwd: ws.value.path, sessionId: tab.engineSessionId })
+                  const tp = engine.transcriptPath({ home: claudeHome, cwd: ws.value.path, sessionId: sid })
                   const title = yield* Effect.sync(() => {
                     try { return engine.deriveTitle(fs.readFileSync(tp, "utf8")) } catch { return null }
                   })
                   if (title !== null) yield* tabs.setTitle(tab.id, title)
                 }
               }
+              return { ok: true }
+            }),
+            (r) => send(res, 200, r),
+            onError,
+          )
+        }
+        if (route === "POST /hooks/engine-exit") {
+          const wsId = url.searchParams.get("workspace")
+          if (!wsId) return err(res, 400, "Validation", "workspace query param required")
+          const body = await readJson(req)
+          if (!Number.isInteger(body.exitCode)) return err(res, 400, "Validation", "exitCode must be an integer")
+          return await runRoute(
+            res, runtime,
+            Effect.gen(function* () {
+              const tabs = yield* TabsRepo
+              const tab = yield* tabs.findEngineTab(wsId)
+              if (!tab) return { ok: true } // 已归档/删除的竞态回报：与 /hooks/claude 同款静默
+              yield* tabs.setStatus(tab.id, body.exitCode === 0 ? "idle" : "error", "wrapper")
+              yield* (yield* EventsRepo).append({
+                workspaceId: wsId, type: "engine.exited",
+                payload: { tabId: tab.id, sessionId: tab.engineSessionId, exitCode: body.exitCode },
+              })
               return { ok: true }
             }),
             (r) => send(res, 200, r),
@@ -332,6 +382,24 @@ export const createApp = ({ runtime, token, onShutdown, onError, bus, sseHeartbe
               return yield* lc.retry(id)
             }),
             (ws) => send(res, 200, ws),
+            onError,
+          )
+        }
+        const wsEnsure = url.pathname.match(/^\/workspaces\/([^/]+)\/ensure$/)
+        if (req.method === "POST" && wsEnsure) {
+          return await runRoute(
+            res, runtime,
+            Effect.gen(function* () { return yield* (yield* SessionEnsurer).ensure(wsEnsure[1]!) }),
+            (out) => send(res, 200, out),
+            onError,
+          )
+        }
+        const tabResume = url.pathname.match(/^\/workspaces\/([^/]+)\/tabs\/([^/]+)\/resume$/)
+        if (req.method === "POST" && tabResume) {
+          return await runRoute(
+            res, runtime,
+            Effect.gen(function* () { return yield* (yield* SessionEnsurer).resumeTab(tabResume[1]!, tabResume[2]!) }),
+            (out) => send(res, 200, out),
             onError,
           )
         }

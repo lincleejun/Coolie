@@ -102,8 +102,57 @@ describe("lifecycle × tmux × engine bootstrap", () => {
     }), layer) as Effect.Effect<any, never, never>)
     expect(archived.status).toBe("archived")
     expect(await Effect.runPromise(tmux.hasSession(session))).toBe(false)
-    expect(db.prepare("SELECT COUNT(*) c FROM tabs WHERE workspace_id = ?").get(ws.id)).toEqual({ c: 0 })
+    // Plan 4 行为变更：archive 保留 tabs 行——engineSessionId 是 unarchive 后 --resume 复活的钥匙
+    expect(db.prepare("SELECT COUNT(*) c FROM tabs WHERE workspace_id = ?").get(ws.id)).toEqual({ c: 1 })
+    expect((db.prepare("SELECT engine_session_id s FROM tabs WHERE workspace_id = ?").get(ws.id) as any).s).toBe("sess-fixed-1")
     expect(eventTypes()).toContain("workspace.tmux.killed")
+  })
+
+  it("delete 仍删 tabs 行（与 archive 保留分野：engineSessionId 复活钥匙只在 delete 时丢弃）", async () => {
+    const layer = buildLayer([fakeClaude])
+    const ws = await Effect.runPromise(Effect.provide(Effect.gen(function* () {
+      const projects = yield* ProjectsRepo
+      const lc = yield* WorkspaceLifecycle
+      const list = yield* projects.list()
+      return yield* lc.create({ projectId: list[0]!.id, name: "delete-tabs" })
+    }), layer) as Effect.Effect<any, never, never>)
+    // create 落一行 engine tab
+    expect(db.prepare("SELECT COUNT(*) c FROM tabs WHERE workspace_id = ?").get(ws.id)).toEqual({ c: 1 })
+    await Effect.runPromise(Effect.provide(Effect.gen(function* () {
+      yield* (yield* WorkspaceLifecycle).delete(ws.id, { force: true })
+    }), layer) as Effect.Effect<any, never, never>)
+    // delete 清空 tabs 行 + 拆 session（archive 保留 tabs、delete 才删——teardownRuntime reason 分野）
+    expect(db.prepare("SELECT COUNT(*) c FROM tabs WHERE workspace_id = ?").get(ws.id)).toEqual({ c: 0 })
+    expect(await Effect.runPromise(tmux.hasSession(sessionNameFor(ws.id)))).toBe(false)
+  })
+
+  it("keep-alive：杀掉 engine（cat）后 pane 落回 shell，session/window/pane 不塌", async () => {
+    const layer = buildLayer([fakeClaude])
+    const ws = await Effect.runPromise(Effect.provide(Effect.gen(function* () {
+      const projects = yield* ProjectsRepo
+      const lc = yield* WorkspaceLifecycle
+      const list = yield* projects.list()
+      return yield* lc.create({ projectId: list[0]!.id, name: "keepalive-one" })
+    }), layer) as Effect.Effect<any, never, never>)
+    const session = sessionNameFor(ws.id)
+    const panePid = execFileSync("tmux", ["-L", SOCK, "list-panes", "-t", `=${session}:0`, "-F", "#{pane_pid}"])
+      .toString().trim() // = 包装脚本的 /bin/sh
+    // cat 是包装 sh 的子进程；等它出现再杀（构成「杀 pane 内进程」的验收）
+    let catPid = ""
+    await waitFor(async () => {
+      try { catPid = execFileSync("pgrep", ["-P", panePid]).toString().trim().split("\n")[0] ?? ""; return catPid !== "" }
+      catch { return false }
+    })
+    process.kill(Number(catPid), "SIGKILL")
+    await waitFor(async () => (await cap(`${session}:0`)).includes("engine exited"))
+    expect(await Effect.runPromise(tmux.hasSession(session))).toBe(true)
+    // exec 落回 shell：pane pid 不变 = 布局与 pane 完整保留
+    const panePid2 = execFileSync("tmux", ["-L", SOCK, "list-panes", "-t", `=${session}:0`, "-F", "#{pane_pid}"]).toString().trim()
+    expect(panePid2).toBe(panePid)
+    // 清场
+    await Effect.runPromise(Effect.provide(Effect.gen(function* () {
+      yield* (yield* WorkspaceLifecycle).delete(ws.id, { force: true })
+    }), layer) as Effect.Effect<any, never, never>)
   })
 
   it("bootstrap 失败（registry 缺 claude）→ status=error，无孤儿 session/tab", async () => {
@@ -123,10 +172,15 @@ describe("lifecycle × tmux × engine bootstrap", () => {
   })
 
   it("bootstrap 中途失败（session/tab 已建，投递 prompt 时死 pane）→ tapError 拆干净 + lifecycle 回滚", async () => {
-    // launchCommand 跑一个立即退出的 command：pane 死 → session（唯一 window）随之消失，
-    // deliverPrompt 里 waitStable 的 capturePane 会因 session 不存在直接报 TmuxError，
+    // 包装后 engine 秒退不再塌 session（keep-alive exec 回 shell），旧「死 pane」注入失效。
+    // 改用「画面永不稳定」（死循环打印）让 deliverPrompt 的 waitStable 用尽 attempts 报 TmuxError，
     // 从而在 tabs.insert 之后触发失败，练到 bootstrap.ts 的 tapError 清理路径（不是空 registry 那条早退路径）。
-    const deadPaneClaude: Engine = { ...fakeClaude, launchCommand: () => ["sh", "-c", "exit 0"] }
+    const deadPaneClaude: Engine = {
+      ...fakeClaude,
+      // 包装后秒退不再塌 session；改用「画面永不稳定」让 waitStable 用尽 attempts 报 TmuxError，
+      // 同样练到 tabs.insert 之后的 tapError 清理路径。运行时长 ≈ waitStable 预算（默认 24×250ms）。
+      launchCommand: () => ["sh", "-c", "while true; do date +%s%N; sleep 0.05; done"],
+    }
     const layer = buildLayer([deadPaneClaude])
     const exit = await Effect.runPromiseExit(Effect.provide(Effect.gen(function* () {
       const projects = yield* ProjectsRepo

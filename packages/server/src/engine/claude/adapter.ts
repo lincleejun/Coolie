@@ -22,12 +22,12 @@ export const claudeEngine: Engine = {
   capabilities: { nativeQueue: true, midSessionModelSwitch: true, resume: true, hooks: true, effort: false },
   terminalTitle: "engine-owned",
   newSessionId: () => randomUUID(),
-  launchCommand: ({ sessionId, model }) => {
+  launchCommand: ({ sessionId, model, resume }) => {
     // 用户/测试覆盖 seam（kobe engineCommand.<vendor> 同款）：原样使用，绝不追加 flag
     const override = (process.env.COOLIE_CLAUDE_CMD ?? "").trim()
     if (override !== "") return override.split(/\s+/)
     const bin = discoverClaudeBinary() ?? "claude"
-    const args = [bin, "--session-id", sessionId]
+    const args = resume === true ? [bin, ...resumeArgs(sessionId)] : [bin, "--session-id", sessionId]
     if (model) args.push("--model", model)
     return args // effort：claude 无此参数（capabilities.effort=false，Noop 降级）
   },

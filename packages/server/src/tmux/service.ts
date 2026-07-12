@@ -25,6 +25,11 @@ export interface TmuxServiceShape {
     readonly session: string; readonly name: string; readonly cwd: string
     readonly command?: readonly string[]
   }) => Effect.Effect<number, TmuxError>
+  /** -k 原地替换 window 进程（Resume 语义）：布局/窗口序号零变动；session env 自动继承 */
+  readonly respawnWindow: (opts: {
+    readonly session: string; readonly window: number; readonly cwd: string
+    readonly command: readonly string[]
+  }) => Effect.Effect<void, TmuxError>
   /** 幂等：session 不存在视为成功（tmux 已达目标状态） */
   readonly killSession: (name: string) => Effect.Effect<void, TmuxError>
   /** 无 server 时返回 []（不视为错误） */
@@ -85,6 +90,10 @@ export const makeTmuxService = (socket: string, ctl?: ControlClient): TmuxServic
       ["new-window", "-t", `=${session}:`, "-n", name, "-c", cwd, "-P", "-F", "#{window_index}",
         ...(command && command.length > 0 ? [shellQuote(command)] : [])],
     ).pipe(Effect.map((out) => Number(out.trim()))),
+  respawnWindow: ({ session, window, cwd, command }) =>
+    runTmux(socket, "respawn-window",
+      ["respawn-window", "-k", "-c", cwd, "-t", `=${session}:${window}`, shellQuote(command)],
+    ).pipe(Effect.asVoid),
   killSession: (name) =>
     runTmux(socket, "kill-session", ["kill-session", "-t", `=${name}`]).pipe(
       Effect.asVoid,

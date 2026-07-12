@@ -11,7 +11,7 @@ export const ROUTES = [
   { method: "POST",   path: "/workspaces/:id/unarchive", description: "从保留的 branch 重建 worktree" },
   { method: "POST",   path: "/workspaces/:id/retry",     description: "error 状态重跑创建流水线" },
   { method: "DELETE", path: "/workspaces/:id",           description: "删 worktree+记录，branch 保留 ?force=1" },
-  { method: "GET",    path: "/events/stream",            description: "SSE：durable replay + live 推送 ?after=&workspace=" },
+  { method: "GET",    path: "/events/stream",            description: "SSE：durable replay + live 推送 ?after=&workspace=&role=（role=gui 持有 server 生命周期 lease）" },
   { method: "GET",  path: "/workspaces/:id/tabs", description: "列出 workspace 的 tabs（GUI tab ↔ tmux window 映射）" },
   { method: "POST", path: "/hooks/claude",        description: "claude hook 回调 ?workspace=（结构化 engine 状态唯一入口）" },
   { method: "GET",  path: "/config",                        description: "client 引导信息：tmuxSocket + engines（能力位/模型列表）" },
@@ -20,4 +20,8 @@ export const ROUTES = [
   { method: "GET",  path: "/workspaces/:id/files",          description: "worktree 文件列表（@文件选择器/Files 树）" },
   { method: "GET",  path: "/workspaces/:id/commands",       description: "slash 命令扫描：repo .claude/commands + ~/.claude/commands" },
   { method: "GET",  path: "/ws/terminal",         description: "WS 终端通道 ?workspace=&window=&cols=&rows=&token=（二进制帧+JSON 控制帧）" },
+  { method: "GET",  path: "/clients",                        description: "当前连接客户端（role/持有状态）与惰性退出状态" },
+  { method: "POST", path: "/hooks/engine-exit",              description: "keep-alive 包装回报 engine 退出 ?workspace= {exitCode}" },
+  { method: "POST", path: "/workspaces/:id/ensure",          description: "ensure-or-heal：tmux session 丢失则重建（engine --resume 复活）" },
+  { method: "POST", path: "/workspaces/:id/tabs/:tabId/resume", description: "engine 退出后原地重启（--resume 优先；session 丢失自动转 heal）" },
 ] as const satisfies ReadonlyArray<{ method: "GET" | "POST" | "DELETE"; path: string; description: string }>
