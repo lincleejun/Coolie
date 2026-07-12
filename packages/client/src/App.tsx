@@ -11,6 +11,7 @@ import { TmuxGuide } from "./chrome/TmuxGuide"
 import { Cheatsheet } from "./chrome/Cheatsheet"
 import { WarningToasts } from "./chrome/Toasts"
 import { Sidebar } from "./sidebar/Sidebar"
+import { CenterArea } from "./terminal/TabsBar"
 
 export const App = () => {
   const [bootErr, setBootErr] = useState<string | null>(null)
@@ -51,6 +52,7 @@ export const App = () => {
   }, [])
 
   const rightPanel = useUi((s) => s.rightPanel)
+  const selectedWs = useUi((s) => s.selectedWs)
   if (bootErr)
     return (
       <div className="app-frame">
@@ -67,7 +69,9 @@ export const App = () => {
       <Titlebar />
       <div className="columns">
         <aside className="col-left"><Sidebar /></aside>
-        <main className="col-center">{/* Task 10/11/12: 终端 tabs + composer */}</main>
+        <main className="col-center">
+          {selectedWs ? <CenterArea wsId={selectedWs} /> : <div className="dim center-empty">选择或创建一个 workspace（⌘N）</div>}
+        </main>
         <aside className={`col-right ${rightPanel === "collapsed" ? "collapsed" : ""}`}>{/* Task 14: <RightPanel/> */}</aside>
       </div>
       <TmuxGuide />
