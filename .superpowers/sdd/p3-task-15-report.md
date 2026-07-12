@@ -302,3 +302,18 @@ git commit -m "docs: README Plan 3 (tmux/engine/WS/unix socket) + manual claude 
 修复前该场景 SessionStart 永不触发（对话框阻塞）→ 90s 死等 + 降级吞字；修复后 create 全程 <2s 返回。`prompt.delivery.degraded` 全库计数 0。
 
 冒烟后清场：jq 摘除 3 条 `/private/tmp/coolie-smoke-*` 信任条目（2 条我方 seed 的 worktree + 1 条 claude 自记的 repo root），`projects` 键集与冒烟前快照逐一相同（残余 diff 仅 claude 自身的 tengu_* feature-flag 缓存刷新与运行计数器，与 seeding 无关）；smoke server/tmux/claude 进程全灭，临时目录删除，真实 `tmux -L coolie` 无 server 未受扰。
+
+### 修补（FIXER follow-up）：e2e 泄漏真实 ~/.claude.json
+
+验收 agent 发现：`bun run test` 会把 folder-trust 条目写进 **真实** `~/.claude.json`。根因：e2e 只设了 `COOLIE_CLAUDE_HOME` 没设 `COOLIE_CLAUDE_CONFIG`，`prepareWorkspace` → `seedFolderTrust` 落回默认 `~/.claude.json`。
+
+**RED 证据（受控一次性运行）**：快照 cp `~/.claude.json`（sha256 `8e255d22…`）→ 单跑修复前 `packages/cli/test/workspace-e2e.test.ts` → 语义 diff 显示 `projects` 新增 2 个临时 worktree 键（`…/japan-daisetsuzan`、`…/prompted-ws`，均 `hasTrustDialogAccepted: true`）→ cp 快照原样恢复，sha256 复核一致（顺带丢弃的仅本机 claude 会话并发写的元数据，与泄漏无关）。
+
+**修复**：给所有起真实 server / 走真实 claude adapter lifecycle 的 e2e env 注入 `COOLIE_CLAUDE_CONFIG=<临时 home>/claude.json`：
+- `packages/cli/test/workspace-e2e.test.ts`（实际泄漏者：create 走 bootstrap）——并加守卫断言：create 后临时 claude.json 里 `projects[realpath(wsPath)].hasTrustDialogAccepted === true`，证明种子落在 override 路径；
+- `packages/server/test/daemon.test.ts`（实际泄漏者：survival 测试经 HTTP 建 workspace；`startServer` 处同样注入作防御）；
+- `packages/cli/test/cli-e2e.test.ts`（防御性：起真实 server 但当前不建 workspace）。
+
+审计其余测试：`bootstrap-prompt-gate` / `lifecycle-tmux` 用无 `prepareWorkspace` 的假引擎、`engine-trust` 显式传临时路径、`monitor`/`engine-claude` 不调 `prepareWorkspace`、`export-doctor` daemon-free —— 均无泄漏。
+
+**GREEN**：修复后单跑 workspace-e2e，真实文件字节级不变（`cmp` 通过）；全量 `bun run test` **34 files / 245 passed**、`typecheck` 退出 0，套件前后真实 `~/.claude.json` diff 为空（sha256 `d04b3d5d…` 前后一致）。
