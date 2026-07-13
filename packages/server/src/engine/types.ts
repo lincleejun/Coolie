@@ -34,6 +34,9 @@ export interface Engine {
     readonly sessionId: string; readonly model?: string; readonly effort?: string
     /** true = 复活既有会话（claude: --resume <sessionId>）；缺省/false = 新会话（--session-id） */
     readonly resume?: boolean
+    /** hooks-off lane 的 per-session notify 注入上下文；其他引擎可忽略。 */
+    readonly workspaceId?: string
+    readonly home?: string
   }) => string[]
   /** hook 事件 → tab 状态；未知事件返回 null（turnDetector 主路径） */
   readonly statusFromHookEvent: (evt: unknown) => TabStatus | null

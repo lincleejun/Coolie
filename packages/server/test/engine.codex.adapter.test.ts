@@ -1,8 +1,27 @@
-import { describe, it, expect } from "vitest"
+import { afterEach, beforeEach, describe, it, expect } from "vitest"
+import * as fs from "node:fs"
+import * as os from "node:os"
+import * as path from "node:path"
 import { codexEngine } from "../src/engine/codex/adapter.js"
 import { EngineRegistryLive } from "../src/engine/registry.js"
 import { Effect } from "effect"
 import { EngineRegistry } from "../src/engine/registry.js"
+
+let testHome = ""
+
+beforeEach(() => {
+  testHome = fs.mkdtempSync(path.join(os.tmpdir(), "coolie-codex-adapter-"))
+  process.env.COOLIE_CODEX_HOME = path.join(testHome, "codex-home")
+  process.env.COOLIE_CODEX_CONFIG = path.join(testHome, "config.toml")
+  process.env.COOLIE_CODEX_HOOKS = "0"
+})
+
+afterEach(() => {
+  delete process.env.COOLIE_CODEX_HOME
+  delete process.env.COOLIE_CODEX_CONFIG
+  delete process.env.COOLIE_CODEX_HOOKS
+  fs.rmSync(testHome, { recursive: true, force: true })
+})
 
 describe("codexEngine", () => {
   it("能力位与 claude 分流：nativeQueue=false、effort=true、serverGeneratedId=true、hooks=false（0.139 无-hooks 通路）", () => {
@@ -25,6 +44,13 @@ describe("codexEngine", () => {
     const res = codexEngine.launchCommand({ sessionId: "SID", resume: true })
     expect(res.join(" ")).toContain("resume SID")
     expect(res).not.toContain("--session-id")
+  })
+  it("notify lane 仅在 fresh session 注入 per-session notify 配置", () => {
+    const opts = { sessionId: "", workspaceId: "ws-1", home: "/tmp/coolie home" }
+    const fresh = codexEngine.launchCommand(opts)
+    expect(fresh.join(" ")).toContain('notify=["/tmp/coolie home/hooks/codex-notify.sh","ws-1"]')
+    const resumed = codexEngine.launchCommand({ ...opts, sessionId: "SID", resume: true })
+    expect(resumed.join(" ")).not.toContain("notify=[")
   })
   it("COOLIE_CODEX_CMD 覆写 seam 原样使用", () => {
     const prev = process.env.COOLIE_CODEX_CMD

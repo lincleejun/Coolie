@@ -7,14 +7,17 @@ import { runMigrations } from "../src/db/migrations.js"
 import { WorkspacesRepoLive } from "../src/repo/workspaces.js"
 import { EventsRepoLive } from "../src/repo/events.js"
 import { TabsRepoLive } from "../src/repo/tabs.js"
+import { QueueRepoLive } from "../src/repo/queue.js"
 import { EngineRegistryLive } from "../src/engine/registry.js"
 import { createApp, newToken } from "../src/http/app.js"
+import { createWorkspaceSerial } from "../src/engine/queue-drain.js"
 
 let server: http.Server, base: string, token: string, db: Database.Database
+let inputGate: Promise<void> | null
 
 const fakeOps = {
   calls: [] as any[],
-  input: async (target: string, o: any) => { fakeOps.calls.push(["input", target, o]) },
+  input: async (target: string, o: any) => { fakeOps.calls.push(["input", target, o]); await inputGate },
   newShellWindow: async (session: string) => { fakeOps.calls.push(["newWindow", session]); return 3 },
   killWindow: async (session: string, idx: number) => { fakeOps.calls.push(["killWindow", session, idx]) },
 }
@@ -49,8 +52,9 @@ const insertEngineTab = (wsId: string, engineId: string, status: string, tmuxWin
 
 beforeEach(async () => {
   fakeOps.calls = []
+  inputGate = null
   db = new Database(":memory:"); runMigrations(db)
-  const layer = Layer.mergeAll(WorkspacesRepoLive, TabsRepoLive, EventsRepoLive, EngineRegistryLive)
+  const layer = Layer.mergeAll(WorkspacesRepoLive, TabsRepoLive, EventsRepoLive, QueueRepoLive, EngineRegistryLive)
     .pipe(Layer.provide(Layer.succeed(Db, db)))
   token = newToken()
   const app = createApp({
@@ -58,6 +62,7 @@ beforeEach(async () => {
     token,
     onShutdown: () => {},
     composerOps: fakeOps,
+    workspaceSerial: createWorkspaceSerial(),
   })
   server = http.createServer(app)
   await new Promise<void>((r) => server.listen(0, "127.0.0.1", r))
@@ -116,25 +121,88 @@ describe("POST /workspaces/:id/input", () => {
   })
 })
 
-describe("F6：send-while-busy 守卫（非 nativeQueue 引擎）", () => {
-  it("codex（nativeQueue=false）忙时 mode:send → 409 EngineBusy", async () => {
+describe("server prompt queue（非 nativeQueue 引擎）", () => {
+  it("codex 忙时 send → 202 入队；队列非空时 idle send 继续排队", async () => {
     const id = insertWorkspace("active")
-    insertEngineTab(id, "codex", "working", 0)
-    const r = await post(`/workspaces/${id}/input`, { text: "hi", mode: "send" })
-    expect(r.status).toBe(409)
-    expect(r.body.error).toBe("EngineBusy") // 机器可读错误码
+    const tabId = insertEngineTab(id, "codex", "working", 0)
+    const first = await post(`/workspaces/${id}/input`, { text: "一", mode: "send" })
+    expect(first).toMatchObject({ status: 202, body: { queued: true, position: 1 } })
+    db.prepare("UPDATE tabs SET status = 'awaiting-input' WHERE id = ?").run(tabId)
+    const second = await post(`/workspaces/${id}/input`, { text: "二", mode: "send" })
+    expect(second).toMatchObject({ status: 202, body: { queued: true, position: 2 } })
+    expect(fakeOps.calls).toHaveLength(0)
   })
-  it("claude（nativeQueue=true）忙时 send → 不 409（原生 mid-turn 队列放行）", async () => {
+  it("claude（nativeQueue=true）忙时 send → 直投", async () => {
     const id = insertWorkspace("active")
     insertEngineTab(id, "claude", "working", 0)
     const r = await post(`/workspaces/${id}/input`, { text: "hi", mode: "send" })
-    expect(r.status).not.toBe(409)
+    expect(r.status).toBe(200)
   })
   it("codex 忙时 interrupt 仍放行（守卫只挡 send）", async () => {
     const id = insertWorkspace("active")
     insertEngineTab(id, "codex", "working", 0)
     const r = await post(`/workspaces/${id}/input`, { text: "", mode: "interrupt" })
-    expect(r.status).not.toBe(409)
+    expect(r.status).toBe(200)
+  })
+  it("codex working 时裸 interrupt 乐观收敛为 awaiting-input，source=interrupt", async () => {
+    const id = insertWorkspace("active")
+    const tabId = insertEngineTab(id, "codex", "working", 0)
+    expect((await post(`/workspaces/${id}/input`, { text: "", mode: "interrupt" })).status).toBe(200)
+    const tab = db.prepare("SELECT status, data FROM tabs WHERE id = ?").get(tabId) as any
+    expect(tab.status).toBe("awaiting-input")
+    expect(JSON.parse(tab.data).lastHookAt).toEqual(expect.any(Number))
+    const events = await req("GET", `/events?workspace=${id}`)
+    expect(events.body.filter((e: any) => e.type === "tab.status.changed").at(-1)?.payload)
+      .toMatchObject({ tabId, status: "awaiting-input", source: "interrupt" })
+  })
+  it("codex working 时 interrupt-send 保持 working", async () => {
+    const id = insertWorkspace("active")
+    const tabId = insertEngineTab(id, "codex", "working", 0)
+    expect((await post(`/workspaces/${id}/input`, { text: "继续", mode: "interrupt-send" })).status).toBe(200)
+    expect((db.prepare("SELECT status FROM tabs WHERE id = ?").get(tabId) as any).status).toBe("working")
+  })
+
+  it("serializes concurrent sends per workspace and queues the second behind the first", async () => {
+    const id = insertWorkspace("active")
+    insertEngineTab(id, "codex", "awaiting-input", 0)
+    let open!: () => void
+    inputGate = new Promise<void>((resolve) => { open = resolve })
+    const first = post(`/workspaces/${id}/input`, { text: "一", mode: "send" })
+    await new Promise((resolve) => setTimeout(resolve, 10))
+    const second = post(`/workspaces/${id}/input`, { text: "二", mode: "send" })
+    await new Promise((resolve) => setTimeout(resolve, 10))
+    expect(fakeOps.calls).toHaveLength(1)
+    open()
+    expect((await first).status).toBe(200)
+    expect(await second).toMatchObject({ status: 202, body: { queued: true, position: 1 } })
+    expect(fakeOps.calls).toHaveLength(1)
+  })
+  it("claude working 时 interrupt 不伪造收敛，留给 hooks", async () => {
+    const id = insertWorkspace("active")
+    const tabId = insertEngineTab(id, "claude", "working", 0)
+    expect((await post(`/workspaces/${id}/input`, { text: "", mode: "interrupt" })).status).toBe(200)
+    expect((db.prepare("SELECT status FROM tabs WHERE id = ?").get(tabId) as any).status).toBe("working")
+  })
+
+  it("GET lists FIFO positions; DELETE withdraws only matching workspace prompt", async () => {
+    const id = insertWorkspace("active")
+    insertEngineTab(id, "codex", "working", 0)
+    const first = await post(`/workspaces/${id}/input`, { text: "一", mode: "send" })
+    await post(`/workspaces/${id}/input`, { text: "二", mode: "send" })
+    const listed = await req("GET", `/workspaces/${id}/queue`)
+    expect(listed.body.queue.map((q: any) => [q.position, q.text])).toEqual([[1, "一"], [2, "二"]])
+    expect((await del(`/workspaces/${id}/queue/${first.body.id}`)).status).toBe(200)
+    expect((await del(`/workspaces/${id}/queue/${first.body.id}`)).status).toBe(404)
+    expect((await del(`/workspaces/${id}/queue/nope`)).status).toBe(400)
+  })
+
+  it("DELETE returns conflict once a prompt is inflight", async () => {
+    const id = insertWorkspace("active")
+    const tabId = insertEngineTab(id, "codex", "working", 0)
+    const queued = await post(`/workspaces/${id}/input`, { text: "一", mode: "send" })
+    db.prepare("UPDATE prompt_queue SET state = 'inflight' WHERE id = ?").run(queued.body.id)
+    db.prepare("UPDATE tabs SET status = 'awaiting-input' WHERE id = ?").run(tabId)
+    expect((await del(`/workspaces/${id}/queue/${queued.body.id}`)).status).toBe(409)
   })
 })
 

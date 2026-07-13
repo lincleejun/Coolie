@@ -2,18 +2,22 @@ import type { Tab, TabStatus } from "@coolie/protocol"
 import type { Engine } from "./types.js"
 
 export const HOOK_AUTHORITY_MS = 10 * 60_000
+/** notify/interrupt 是无 hooks 引擎的乐观信号，只短暂防抖；随后 mtime 恢复最终裁决权。 */
+export const NOTIFY_AUTHORITY_MS = 5_000
 export const ACTIVE_THRESHOLD_MS = 3_000
 export const IDLE_THRESHOLD_MS = 30_000
 
 /** 纯仲裁（agent-deck sessionstatus 收敛教训：推导逻辑只此一处）：
- * hooks 近期有信号 → 让位；否则用转录 mtime 推断 working/awaiting-input。 */
+ * 权威信号近期出现 → 让位；否则用转录 mtime 推断 working/awaiting-input。 */
 export const decideStatusFromMtime = (i: {
   readonly nowMs: number
   readonly mtimeMs: number | null
   readonly lastHookAtMs: number | null
   readonly current: TabStatus
+  readonly hookAuthorityMs?: number
 }): TabStatus | null => {
-  if (i.lastHookAtMs !== null && i.nowMs - i.lastHookAtMs < HOOK_AUTHORITY_MS) return null
+  const authorityMs = i.hookAuthorityMs ?? HOOK_AUTHORITY_MS
+  if (i.lastHookAtMs !== null && i.nowMs - i.lastHookAtMs < authorityMs) return null
   if (i.mtimeMs === null) return null
   const age = i.nowMs - i.mtimeMs
   if (age <= ACTIVE_THRESHOLD_MS) return i.current === "working" ? null : "working"
@@ -44,6 +48,7 @@ export const pollOnce = async (deps: TranscriptPollerDeps): Promise<void> => {
     const p = engine.transcriptPath({ home, cwd: workspacePath, sessionId: tab.engineSessionId })
     const next = decideStatusFromMtime({
       nowMs: now, mtimeMs: deps.statMtimeMs(p), lastHookAtMs: tab.lastHookAt, current: tab.status,
+      hookAuthorityMs: engine.capabilities.hooks ? HOOK_AUTHORITY_MS : NOTIFY_AUTHORITY_MS,
     })
     if (next !== null) await deps.setStatus(tab.id, next)
   }

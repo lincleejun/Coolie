@@ -8,12 +8,13 @@ import { CoolieConfig } from "../src/config.js"
 import { ProjectsRepo, ProjectsRepoLive } from "../src/repo/projects.js"
 import { EventsRepo, EventsRepoLive } from "../src/repo/events.js"
 import { WorkspacesRepo, WorkspacesRepoLive } from "../src/repo/workspaces.js"
+import { QueueRepo, QueueRepoLive } from "../src/repo/queue.js"
 import { GitService } from "../src/git/service.js"
 import { SetupRunner, type SetupRunnerShape } from "../src/workspace/setup.js"
 import { WorkspaceLifecycle, WorkspaceLifecycleLive, PostCreateHooksEmpty } from "../src/workspace/lifecycle.js"
 import { makeFakeGit } from "./helpers/fake-git.js"
 
-type AnyServices = WorkspaceLifecycle | WorkspacesRepo | ProjectsRepo | EventsRepo
+type AnyServices = WorkspaceLifecycle | WorkspacesRepo | ProjectsRepo | EventsRepo | QueueRepo
 
 const makeEnv = () => {
   const db = new Database(":memory:"); runMigrations(db)
@@ -30,7 +31,7 @@ const makeEnv = () => {
       Layer.succeed(SetupRunner, setup),
       PostCreateHooksEmpty,
     )),
-    Layer.provideMerge(Layer.mergeAll(ProjectsRepoLive, EventsRepoLive, WorkspacesRepoLive)),
+    Layer.provideMerge(Layer.mergeAll(ProjectsRepoLive, EventsRepoLive, WorkspacesRepoLive, QueueRepoLive)),
     Layer.provideMerge(Layer.succeed(Db, db)),
     Layer.provideMerge(Layer.succeed(CoolieConfig, cfg)),
   )
@@ -60,6 +61,16 @@ const eventTypes = (env: ReturnType<typeof makeEnv>) =>
   }))
 
 describe("archive", () => {
+  it("keeps queued prompts on archive", async () => {
+    const env = makeEnv()
+    const ws = await setupActive(env)
+    await ok(env, Effect.gen(function* () {
+      yield* (yield* QueueRepo).enqueue({ workspaceId: ws.id, tabId: "t1", text: "稍后继续" })
+      yield* (yield* WorkspaceLifecycle).archive(ws.id)
+    }))
+    const queued = await ok(env, Effect.gen(function* () { return yield* (yield* QueueRepo).listQueued(ws.id) }))
+    expect(queued.map((item) => item.text)).toEqual(["稍后继续"])
+  })
   it("clean worktree: removes worktree (non-force), keeps branch, sets archived_at", async () => {
     const env = makeEnv()
     const ws = await setupActive(env)
@@ -96,6 +107,18 @@ describe("archive", () => {
       return yield* (yield* WorkspaceLifecycle).archive(ws.id)
     }))
     expect(failTag(again)).toBe("ConflictError")
+  })
+})
+
+describe("delete queue cleanup", () => {
+  it("clears queued prompts before deleting workspace", async () => {
+    const env = makeEnv()
+    const ws = await setupActive(env)
+    await ok(env, Effect.gen(function* () {
+      yield* (yield* QueueRepo).enqueue({ workspaceId: ws.id, tabId: "t1", text: "不要投了" })
+      yield* (yield* WorkspaceLifecycle).delete(ws.id)
+    }))
+    expect(await ok(env, Effect.gen(function* () { return yield* (yield* QueueRepo).listQueued(ws.id) }))).toEqual([])
   })
 })
 

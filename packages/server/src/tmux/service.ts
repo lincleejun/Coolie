@@ -113,10 +113,14 @@ export const makeTmuxService = (socket: string, ctl?: ControlClient): TmuxServic
       Effect.catchAll((e) => e.exitCode !== null ? Effect.succeed([] as string[]) : Effect.fail(e)),
     ),
   listWindows: (session) =>
-    runTmux(socket, "list-windows", ["list-windows", "-t", `=${session}`, "-F", "#{window_index}\t#{window_name}"]).pipe(
+    // tmux 3.6 sanitizes literal control characters in format output (a tab becomes "_"),
+    // so use the first ASCII space as the delimiter; window names may still contain spaces.
+    runTmux(socket, "list-windows", ["list-windows", "-t", `=${session}`, "-F", "#{window_index} #{window_name}"]).pipe(
       Effect.map((out) => out.split("\n").filter((s) => s !== "").map((l) => {
-        const [i, ...rest] = l.split("\t")
-        return { index: Number(i), name: rest.join("\t") }
+        const separator = l.indexOf(" ")
+        return separator === -1
+          ? { index: Number(l), name: "" }
+          : { index: Number(l.slice(0, separator)), name: l.slice(separator + 1) }
       })),
     ),
   listClients: () =>

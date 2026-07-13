@@ -5,7 +5,9 @@ import { startEventStream } from "./api/sse"
 import { startGuiLease } from "./api/lease"
 import { useData } from "./stores/data"
 import { useUi } from "./stores/ui"
+import { useAttention } from "./stores/attention"
 import { useGlobalHotkeys } from "./hotkeys/useGlobalHotkeys"
+import { requestNotifyPermission, setBadge } from "./chrome/notify"
 import { Titlebar } from "./chrome/Titlebar"
 import { TmuxGuide } from "./chrome/TmuxGuide"
 import { Cheatsheet } from "./chrome/Cheatsheet"
@@ -21,6 +23,10 @@ export const App = () => {
   const [bootErr, setBootErr] = useState<string | null>(null)
   const started = useRef(false)
   useGlobalHotkeys()
+
+  useEffect(() => {
+    requestNotifyPermission()
+  }, [])
 
   useEffect(() => {
     if (started.current) return // StrictMode 双跑防抖
@@ -58,8 +64,30 @@ export const App = () => {
   const rightPanel = useUi((s) => s.rightPanel)
   const selectedWs = useUi((s) => s.selectedWs)
   const dispatchMode = useUi((s) => s.dispatchMode)
+  const needsYou = useAttention((s) => s.needsYou)
   const status = useData((s) => s.status)
   const selWs = useData((s) => s.workspaces.find((w) => w.id === selectedWs))
+
+  useEffect(() => {
+    const clearSelectedAttention = (): void => {
+      if (!selectedWs) return
+      useAttention.getState().clear(selectedWs)
+      setBadge(useAttention.getState().count())
+    }
+    clearSelectedAttention()
+    if (typeof window === "undefined") return
+    window.addEventListener("focus", clearSelectedAttention)
+    return () => window.removeEventListener("focus", clearSelectedAttention)
+  }, [selectedWs])
+
+  const selectAttentionWorkspace = (): void => {
+    const wsId = needsYou.values().next().value
+    if (typeof wsId !== "string") return
+    useUi.getState().selectWs(wsId)
+    useAttention.getState().clear(wsId)
+    setBadge(useAttention.getState().count())
+  }
+
   if (bootErr)
     return (
       <div className="app-frame">
@@ -74,6 +102,11 @@ export const App = () => {
   return (
     <div className="app-frame">
       <Titlebar />
+      {needsYou.size > 0 && (
+        <button className="attention-banner" onClick={selectAttentionWorkspace}>
+          ⚠ {needsYou.size} 个 workspace 需要你
+        </button>
+      )}
       <div className="columns">
         <aside className="col-left"><Sidebar /></aside>
         <main className="col-center">

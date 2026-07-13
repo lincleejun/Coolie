@@ -4,10 +4,13 @@ import type { CoolieEventLike } from "../api/sse"
 import type { Project, Workspace, Tab } from "@coolie/protocol"
 import type { DiffStat, ChangesReport, EngineInfo } from "./types"
 import { useUi } from "./ui"
+import { useAttention } from "./attention"
+import { notifyTurnComplete, setBadge } from "../chrome/notify"
 
 export interface PendingSend { id: number; wsId: string; text: string; mode: string; abort: AbortController }
 /** UI 警告面（prompt.delivery.degraded 等 server 侧降级信号 → toast/badge） */
 export interface Warning { id: number; code: string; message: string }
+export interface QueuedPrompt { id: number; text: string; position: number }
 
 interface DataState {
   status: "connecting" | "online" | "offline"
@@ -18,6 +21,7 @@ interface DataState {
   diffstatByWs: Record<string, DiffStat>
   changesByWs: Record<string, ChangesReport>
   pendingSends: PendingSend[]
+  queuedByWs: Record<string, QueuedPrompt[]>
   warnings: Warning[]
   setApi(api: Api): void
   getApi(): Api | null
@@ -31,6 +35,8 @@ interface DataState {
   refreshTabs(wsId: string): Promise<void>
   refreshDiffstat(wsId: string): Promise<void>
   refreshChanges(wsId: string): Promise<void>
+  refreshQueue(wsId: string): Promise<void>
+  withdrawQueued(wsId: string, id: number): Promise<void>
   applyEvent(e: CoolieEventLike): void
   sendInput(wsId: string, req: { text: string; mode: string; skipStable: boolean }): Promise<void>
   /** 生命周期动作（D2）：包已有 REST 端点。列表由 workspace.* SSE 事件重拉，故这里不手动刷新。
@@ -54,6 +60,7 @@ export const useData = create<DataState>((set, get) => ({
   config: null,
   projects: [], workspaces: [], tabsByWs: {}, diffstatByWs: {}, changesByWs: {},
   pendingSends: [],
+  queuedByWs: {},
   warnings: [],
   setApi: (a) => { api = a },
   getApi: () => api,
@@ -87,8 +94,20 @@ export const useData = create<DataState>((set, get) => ({
     const c = await api.req("GET", `/workspaces/${wsId}/git/changes`)
     set((s) => ({ changesByWs: { ...s.changesByWs, [wsId]: c } }))
   },
+  refreshQueue: async (wsId) => {
+    if (!api) return
+    try {
+      const response = await api.req("GET", `/workspaces/${wsId}/queue`)
+      set((state) => ({ queuedByWs: { ...state.queuedByWs, [wsId]: response.queue } }))
+    } catch { /* transient/non-active workspace: retain last known queue until the next event */ }
+  },
+  withdrawQueued: async (wsId, id) => {
+    if (!api) return
+    try { await api.req("DELETE", `/workspaces/${wsId}/queue/${id}`) } catch { /* drain may have won the race */ }
+    await get().refreshQueue(wsId)
+  },
   applyEvent: (e) => {
-    const { refreshWorkspaces, refreshTabs, refreshProjects, refreshDiffstat, pushWarning } = get()
+    const { refreshWorkspaces, refreshTabs, refreshProjects, refreshDiffstat, refreshQueue, pushWarning } = get()
     if (e.type.startsWith("project.")) swallow(refreshProjects())
     else if (e.type.startsWith("workspace.")) {
       swallow(refreshWorkspaces())
@@ -102,11 +121,25 @@ export const useData = create<DataState>((set, get) => ({
     } else if (e.workspaceId && (e.type.startsWith("tab.") || e.type.startsWith("engine.") || e.type.startsWith("composer."))) {
       swallow(refreshTabs(e.workspaceId))
       if (e.type === "engine.turn.finished") swallow(refreshDiffstat(e.workspaceId)) // turn 结束大概率有新 diff
+      if (e.type === "tab.status.changed" && (e.payload as { status?: unknown } | null)?.status === "awaiting-input") {
+        const wsId = e.workspaceId
+        const selectedWs = useUi.getState().selectedWs
+        const unattended = typeof document !== "undefined" &&
+          (document.hidden || (typeof document.hasFocus === "function" && !document.hasFocus()))
+        if (wsId !== selectedWs || unattended) {
+          useAttention.getState().raise(wsId)
+          const workspace = get().workspaces.find((item) => item.id === wsId)
+          notifyTurnComplete(workspace?.name ?? wsId, wsId)
+          setBadge(useAttention.getState().count())
+        }
+      }
     } else if (e.type.startsWith("prompt.")) {
       // F5：prompt.* 家族（landed commit eb2932e）——至少把投递降级信号浮到 UI，别静默丢。
       if (e.type === "prompt.delivery.degraded") {
         const p = (e.payload ?? {}) as { code?: string; reason?: string }
         pushWarning(p.code ?? "prompt.delivery.degraded", p.reason ?? "投递降级：prompt 可能未完整送达 engine")
+      } else if (e.workspaceId && ["prompt.queued", "prompt.delivered", "prompt.withdrawn"].includes(e.type)) {
+        swallow(refreshQueue(e.workspaceId))
       }
     }
   },
@@ -126,6 +159,7 @@ export const useData = create<DataState>((set, get) => ({
         const j: any = await r.json().catch(() => ({}))
         throw new Error(j.message ?? `input failed ${r.status}`)
       }
+      // 202 is a successful durable enqueue. prompt.queued SSE is the sole queue-state refresh path.
     } finally {
       set((s) => ({ pendingSends: s.pendingSends.filter((p) => p.id !== id) }))
     }

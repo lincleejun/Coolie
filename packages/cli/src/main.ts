@@ -1,7 +1,13 @@
 #!/usr/bin/env node
 import { Command } from "commander"
 import { ROUTES, decodeProject, decodeWorkspace, decodeCoolieEvent, decodeHealOutcome, tmuxSessionName } from "@coolie/protocol"
-import { readServerInfo, probeAlive } from "@coolie/server"
+import {
+  SUN_PATH_MAX,
+  probeAlive,
+  readServerInfo,
+  sockPathByteLength,
+  sockPathWarning,
+} from "@coolie/server"
 import * as path from "node:path"
 import * as fs from "node:fs"
 import { spawnSync } from "node:child_process"
@@ -34,7 +40,12 @@ program.command("create")
   .option("--slug <slug>", "branch 语义名（branch = coolie/<slug>；缺省用目录名）")
   .option("--name <name>", "指定目录名（缺省从 national-parks 名池取）")
   .option("--prompt <text>", "workspace 就绪后投递给 engine 的首条 prompt")
-  .action(async (arg: string, opts: { slug?: string; name?: string; prompt?: string }) => {
+  .option("--engine <id>", "coding engine（如 claude/codex）", "claude")
+  .option("--model <model>", "创建时使用的模型")
+  .option("--effort <effort>", "reasoning effort（如 low/medium/high/xhigh）")
+  .action(async (arg: string, opts: {
+    slug?: string; name?: string; prompt?: string; engine: string; model?: string; effort?: string
+  }) => {
     try {
       let projectId = arg
       if (fs.existsSync(arg)) {
@@ -49,6 +60,9 @@ program.command("create")
         ...(opts.slug ? { branchSlug: opts.slug } : {}),
         ...(opts.name ? { name: opts.name } : {}),
         ...(opts.prompt ? { initialPrompt: opts.prompt } : {}),
+        engineId: opts.engine,
+        ...(opts.model ? { model: opts.model } : {}),
+        ...(opts.effort ? { effort: opts.effort } : {}),
       }))
       console.log(`created ${ws.name} (${ws.id}) branch=${ws.branch} path=${ws.path}`)
     } catch (e) { fail(e) }
@@ -267,6 +281,13 @@ program.command("doctor").action(async () => {
 
   const logPath = path.join(h, "logs", "server.log")
   check("ok", "log", fs.existsSync(logPath) ? `${logPath}（${fs.statSync(logPath).size} bytes）` : "尚无日志")
+
+  const sockPath = path.join(h, "coolie.sock")
+  const sockWarn = sockPathWarning(sockPath)
+  if (sockWarn) check("warn", "socket", sockWarn)
+  else if (Number.isFinite(SUN_PATH_MAX))
+    check("ok", "socket", `${sockPathByteLength(sockPath)}/${SUN_PATH_MAX} 字节`)
+  else check("ok", "socket", `${sockPathByteLength(sockPath)} 字节（当前平台不套用 Darwin/Linux 上限）`)
 
   for (const bin of ["git", "tmux", "claude"] as const) {
     const found = spawnSync("which", [bin], { encoding: "utf8" })

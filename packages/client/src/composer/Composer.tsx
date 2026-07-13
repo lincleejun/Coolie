@@ -2,28 +2,30 @@ import { useEffect, useRef, useState } from "react"
 import { useData } from "../stores/data"
 import { useUi } from "../stores/ui"
 import { planComposerKey } from "./send"
-import { makeDrafts } from "./drafts"
+import { makeDrafts, type DraftStorage } from "./drafts"
 import { fuzzyFilter, detectToken, type TokenHit } from "./fuzzy"
 import { Picker } from "./Picker"
 import type { SlashCommand } from "../stores/types"
 
-const drafts = makeDrafts(localStorage)
+const draftStorage: DraftStorage =
+  typeof localStorage !== "undefined"
+    ? localStorage
+    : { getItem: () => null, setItem: () => {}, removeItem: () => {} }
+const drafts = makeDrafts(draftStorage)
 
 /** /model 投递：会话中切模型 = 翻译成 slash 命令（capabilities.midSessionModelSwitch 控制可用性） */
 export const deliverModelSwitch = (wsId: string, model: string, engineWorking: boolean): Promise<void> =>
   useData.getState().sendInput(wsId, { text: `/model ${model}`, mode: "send", skipStable: engineWorking })
 
 const QueueIndicator = ({ wsId }: { wsId: string }) => {
-  // 选择器必须返回稳定引用：`.filter` 每次渲染都造新数组 → useSyncExternalStore 判定快照恒变 →
-  // 无限重渲染（Maximum update depth exceeded）→ 整个 App 崩成白屏。取原数组、在渲染体里过滤。
-  const pending = useData((s) => s.pendingSends).filter((p) => p.wsId === wsId)
-  if (pending.length === 0) return null
+  const queued = useData((s) => s.queuedByWs[wsId])
+  if (!queued || queued.length === 0) return null
   return (
     <div className="queue-ind">
-      ⏳ {pending.length} 条投递中
-      {pending.map((p) => (
-        <button key={p.id} className="queue-cancel" title={`撤回：${p.text.slice(0, 40)}`}
-          onClick={() => useData.getState().cancelSend(p.id)}>×</button>
+      ⏳ {queued.length} 条排队中
+      {queued.map((prompt) => (
+        <button key={prompt.id} className="queue-cancel" title={`撤回：${prompt.text.slice(0, 40)}`}
+          onClick={() => void useData.getState().withdrawQueued(wsId, prompt.id)}>×</button>
       ))}
     </div>
   )
@@ -53,6 +55,7 @@ export const Composer = ({ wsId, onSubmitOverride, placeholder }: ComposerProps)
 
   // @ 首次触发时懒加载文件/命令列表（workspace 切换时失效）
   useEffect(() => { setFiles([]); setCommands([]); setToken(null) }, [wsId])
+  useEffect(() => { void useData.getState().refreshQueue(wsId) }, [wsId])
   const ensureLists = (kind: "file" | "command"): void => {
     const api = useData.getState().getApi()
     if (!api) return

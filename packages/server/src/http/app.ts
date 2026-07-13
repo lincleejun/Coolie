@@ -11,11 +11,13 @@ import { EventsRepo } from "../repo/events.js"
 import { WorkspacesRepo } from "../repo/workspaces.js"
 import { WorkspaceLifecycle } from "../workspace/lifecycle.js"
 import { TabsRepo } from "../repo/tabs.js"
+import { QueueRepo } from "../repo/queue.js"
 import { EngineRegistry, engineHome } from "../engine/registry.js"
 import { ConflictError, NotFoundError } from "../repo/errors.js"
 import { tmuxSessionName } from "@coolie/protocol"
 import type { ComposerOps, InputMode } from "../tmux/ops.js"
 import type { GitReadOps } from "../git/inspect.js"
+import type { WorkspaceSerial } from "../engine/queue-drain.js"
 import { scanSlashCommands } from "../engine/claude/commands.js"
 import { SessionEnsurer } from "../workspace/heal.js"
 import { tokenEquals } from "./token.js"
@@ -28,7 +30,7 @@ export { newToken } from "./token.js"
 // on it is not a reliable way to recover the original TaggedError. Running via
 // `Effect.runPromiseExit` and unwrapping with `Exit.match` + `Cause.failureOption`
 // (mirrors the pattern already used in test/projects-repo.test.ts) is robust.
-export type AppServices = ProjectsRepo | EventsRepo | WorkspacesRepo | WorkspaceLifecycle | TabsRepo | EngineRegistry | SessionEnsurer
+export type AppServices = ProjectsRepo | EventsRepo | WorkspacesRepo | WorkspaceLifecycle | TabsRepo | QueueRepo | EngineRegistry | SessionEnsurer
 export type Runtime = <A, E>(eff: Effect.Effect<A, E, AppServices>) => Promise<Exit.Exit<A, E>>
 export interface AppDeps {
   readonly runtime: Runtime
@@ -55,6 +57,8 @@ export interface AppDeps {
   readonly clients?: ClientRegistry
   /** composer 投递 / shell tab 动作（tmux 门面）；未提供时相关路由 501 */
   readonly composerOps?: ComposerOps
+  /** Serializes queue decisions and delivery for one workspace without blocking others. */
+  readonly workspaceSerial?: WorkspaceSerial
 }
 
 const send = (res: ServerResponse, status: number, body?: unknown) => {
@@ -161,7 +165,7 @@ export const deriveRepoName = (url: string): string | null => {
   return name === "" || name === "." || name === ".." ? null : name
 }
 
-export const createApp = ({ runtime, token, onShutdown, onError, bus, sseHeartbeatMs, claudeHome, codexHome, gitRead, config, clients, composerOps, cloneRepo }: AppDeps) =>
+export const createApp = ({ runtime, token, onShutdown, onError, bus, sseHeartbeatMs, claudeHome, codexHome, gitRead, config, clients, composerOps, workspaceSerial, cloneRepo }: AppDeps) =>
 
   (req: IncomingMessage, res: ServerResponse): void => {
     void (async () => {
@@ -279,23 +283,63 @@ export const createApp = ({ runtime, token, onShutdown, onError, bus, sseHeartbe
                 : evtName === "SessionStart" ? "engine.session.started" : null
               if (evType !== null)
                 yield* (yield* EventsRepo).append({ workspaceId: wsId, type: evType, payload: { tabId: tab.id, sessionId: sid } })
-              // historyReader 兜底：首个 turn 完成且尚无标题 → 从 per-engine 转录派生
+              // 首个 turn 完成且尚无标题：hook stdin 的 transcript_path 是最精确真源；
+              // 旧 hook payload 没带路径时保留按 engine/session 反推的兼容路径。
               if (evtName === "Stop" && tab.title === null && sid !== null) {
-                const home = engineHome(engine.id, { claudeHome: claudeHome ?? "", codexHome: codexHome ?? "" })
-                if (home !== "") {
-                  const ws = yield* (yield* WorkspacesRepo).get(wsId).pipe(Effect.option)
-                  if (Option.isSome(ws)) {
-                    const tp = engine.transcriptPath({ home, cwd: ws.value.path, sessionId: sid })
-                    const title = yield* Effect.sync(() => {
-                      try { return engine.deriveTitle(fs.readFileSync(tp, "utf8")) } catch { return null }
-                    })
-                    if (title !== null) yield* tabs.setTitle(tab.id, title)
+                const hookTranscriptPath =
+                  typeof (body as any)?.transcript_path === "string" && (body as any).transcript_path !== ""
+                    ? (body as any).transcript_path as string
+                    : null
+                let transcriptPath = hookTranscriptPath
+                if (transcriptPath === null) {
+                  const home = engineHome(engine.id, { claudeHome: claudeHome ?? "", codexHome: codexHome ?? "" })
+                  if (home !== "") {
+                    const ws = yield* (yield* WorkspacesRepo).get(wsId).pipe(Effect.option)
+                    if (Option.isSome(ws))
+                      transcriptPath = engine.transcriptPath({ home, cwd: ws.value.path, sessionId: sid })
                   }
+                }
+                if (transcriptPath !== null) {
+                  const exactPath = transcriptPath
+                  const title = yield* Effect.sync(() => {
+                    try { return engine.deriveTitle(fs.readFileSync(exactPath, "utf8")) } catch { return null }
+                  })
+                  if (title !== null) yield* tabs.setTitle(tab.id, title)
                 }
               }
               return { ok: true }
             }),
             (r) => send(res, 200, r),
+            onError,
+          )
+        }
+        const notifyRoute = url.pathname.match(/^\/notify\/([^/]+)$/)
+        if (req.method === "POST" && notifyRoute) {
+          const engineId = notifyRoute[1]!
+          const wsId = url.searchParams.get("workspace")
+          if (!wsId) return err(res, 400, "Validation", "workspace query param required")
+          const body = await readJson(req)
+          // Codex may add other notify events over time; this endpoint is only a turn-complete edge.
+          if ((body as any)?.type !== "agent-turn-complete") return send(res, 200, { ok: true })
+          return await runRoute(
+            res, runtime,
+            Effect.gen(function* () {
+              const registry = yield* EngineRegistry
+              const engine = registry.get(engineId)
+              const tabs = yield* TabsRepo
+              const tab = engine ? yield* tabs.findEngineTab(wsId) : null
+              if (!engine || !tab) return { ok: true }
+              // Notify gets the short authority window and remains distinguishable from native hooks.
+              yield* tabs.touchHookAt(tab.id, Date.now())
+              yield* tabs.setStatus(tab.id, "awaiting-input", "notify")
+              yield* (yield* EventsRepo).append({
+                workspaceId: wsId,
+                type: "engine.turn.finished",
+                payload: { tabId: tab.id, sessionId: tab.engineSessionId, source: "notify" },
+              })
+              return { ok: true }
+            }),
+            (result) => send(res, 200, result),
             onError,
           )
         }
@@ -404,6 +448,10 @@ export const createApp = ({ runtime, token, onShutdown, onError, bus, sseHeartbe
             return err(res, 400, "Validation", "initialPrompt must be a string")
           if (body.engineId !== undefined && typeof body.engineId !== "string")
             return err(res, 400, "Validation", "engineId must be a string")
+          if (body.model !== undefined && typeof body.model !== "string")
+            return err(res, 400, "Validation", "model must be a string")
+          if (body.effort !== undefined && typeof body.effort !== "string")
+            return err(res, 400, "Validation", "effort must be a string")
           return await runRoute(
             res, runtime,
             Effect.gen(function* () {
@@ -413,6 +461,8 @@ export const createApp = ({ runtime, token, onShutdown, onError, bus, sseHeartbe
                 ...(body.name ? { name: body.name } : {}),
                 ...(typeof body.initialPrompt === "string" && body.initialPrompt !== "" ? { initialPrompt: body.initialPrompt } : {}),
                 ...(body.engineId ? { engineId: body.engineId } : {}),
+                ...(body.model ? { model: body.model } : {}),
+                ...(body.effort ? { effort: body.effort } : {}),
               })
             }),
             (ws) => send(res, 201, ws),
@@ -565,6 +615,42 @@ export const createApp = ({ runtime, token, onShutdown, onError, bus, sseHeartbe
             onError,
           )
         }
+        const queueList = url.pathname.match(/^\/workspaces\/([^/]+)\/queue$/)
+        if (req.method === "GET" && queueList) {
+          return await runRoute(
+            res, runtime,
+            Effect.gen(function* () {
+              const items = yield* (yield* QueueRepo).listQueued(queueList[1]!)
+              return {
+                queue: items.map((item, index) => ({
+                  id: item.id, text: item.text, mode: item.mode, createdAt: item.createdAt, position: index + 1,
+                })),
+              }
+            }),
+            (body) => send(res, 200, body),
+            onError,
+          )
+        }
+        const queueDelete = url.pathname.match(/^\/workspaces\/([^/]+)\/queue\/([^/]+)$/)
+        if (req.method === "DELETE" && queueDelete) {
+          const queueId = Number(queueDelete[2])
+          if (!Number.isSafeInteger(queueId) || queueId <= 0)
+            return err(res, 400, "Validation", "queueId 必须是正整数")
+          return await runRoute(
+            res, runtime,
+            Effect.gen(function* () {
+              const queue = yield* QueueRepo
+              const result = yield* queue.withdraw(queueId, queueDelete[1]!)
+              if (result.status === "missing")
+                return yield* new NotFoundError({ message: "队列条目不存在（已投递或已撤回）" })
+              if (result.status === "inflight")
+                return yield* new ConflictError({ message: "队列条目正在投递，已不可撤回" })
+              return { withdrawn: true }
+            }),
+            (body) => send(res, 200, body),
+            onError,
+          )
+        }
         const inputRoute = url.pathname.match(/^\/workspaces\/([^/]+)\/input$/)
         if (req.method === "POST" && inputRoute) {
           if (!composerOps) return err(res, 501, "Internal", "composerOps unavailable")
@@ -575,7 +661,7 @@ export const createApp = ({ runtime, token, onShutdown, onError, bus, sseHeartbe
           if (typeof body.text !== "string") return err(res, 400, "Validation", "text 必须是 string")
           if (mode !== "interrupt" && body.text.trim() === "")
             return err(res, 400, "Validation", "非 interrupt 模式 text 不能为空")
-          return await runRoute(
+          const handleInput = () => runRoute(
             res, runtime,
             Effect.gen(function* () {
               const ws = yield* (yield* WorkspacesRepo).get(inputRoute[1]!)
@@ -584,17 +670,42 @@ export const createApp = ({ runtime, token, onShutdown, onError, bus, sseHeartbe
               const tab = yield* (yield* TabsRepo).findEngineTab(ws.id)
               if (!tab) return yield* new NotFoundError({ message: "无 engine tab" })
               const engine = (yield* EngineRegistry).get(tab.engineId ?? "claude")
-              return { ws, tab, engine }
+              const queuedCount = (yield* (yield* QueueRepo).listQueued(ws.id)).length
+              return { ws, tab, engine, queuedCount }
             }),
-            async ({ ws, tab, engine }) => {
-              // F6【Plan-1-only 降级守卫；Plan 2 队列落地时删除本 if 块——REMOVAL MARKER: replace with enqueue】：
-              // 非 nativeQueue 引擎（codex）忙时不接 send（Plan 1 无 server 端队列，Plan 2 才有）。
-              // 守卫只挡 mode:send；interrupt/interrupt-send/insert 放行。claude nativeQueue=true 恒放行（TUI 自排队）。
-              if (mode === "send" && tab.status === "working" && engine?.capabilities.nativeQueue === false)
-                return send(res, 409, { error: "EngineBusy", message: "engine 正忙且无原生队列，send 暂不支持（排队见 M2 Plan 2）" })
+            async ({ ws, tab, engine, queuedCount }) => {
+              const shouldQueue = mode === "send" && engine?.capabilities.nativeQueue === false &&
+                (tab.status === "working" || queuedCount > 0)
+              if (shouldQueue) {
+                const exit = await runtime(Effect.gen(function* () {
+                  return yield* (yield* QueueRepo).enqueue({ workspaceId: ws.id, tabId: tab.id, text: body.text })
+                }))
+                return Exit.match(exit, {
+                  onSuccess: (queued) => send(res, 202, { queued: true, id: queued.id, position: queued.position }),
+                  onFailure: (cause) => {
+                    const mapped = errorFromCause(cause, onError)
+                    send(res, mapped.status, mapped.body)
+                  },
+                })
+              }
               try {
                 const target = `${tmuxSessionName(ws.id)}:${tab.tmuxWindow ?? 0}`
                 await composerOps.input(target, { text: body.text, mode, skipStable: body.skipStable === true })
+                // 无原生队列引擎的裸 Esc 没有可靠回调：先反映打断意图。lastHookAt 只给 monitor
+                // 5 秒防抖窗；若引擎仍在输出，fresh mtime 随后会纠回 working。
+                if (mode === "interrupt" && engine?.capabilities.nativeQueue === false && tab.status === "working") {
+                  await runtime(Effect.gen(function* () {
+                    const tabs = yield* TabsRepo
+                    yield* tabs.touchHookAt(tab.id, Date.now())
+                    yield* tabs.setStatus(tab.id, "awaiting-input", "interrupt")
+                  }))
+                }
+                if (engine?.capabilities.nativeQueue === false &&
+                    (mode === "interrupt-send" || mode === "send")) {
+                  await runtime(Effect.gen(function* () {
+                    yield* (yield* TabsRepo).setStatus(tab.id, "working", "composer")
+                  }))
+                }
                 await runtime(Effect.gen(function* () {
                   yield* (yield* EventsRepo).append({
                     workspaceId: ws.id, type: "composer.delivered",
@@ -608,6 +719,9 @@ export const createApp = ({ runtime, token, onShutdown, onError, bus, sseHeartbe
             },
             onError,
           )
+          return await (workspaceSerial
+            ? workspaceSerial.run(inputRoute[1]!, handleInput)
+            : handleInput())
         }
         return err(res, 404, "NotFound", `no route: ${route}`)
       } catch (e: any) {

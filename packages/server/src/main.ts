@@ -3,7 +3,7 @@ import * as http from "node:http"
 import * as fs from "node:fs"
 import * as path from "node:path"
 import { execFile } from "node:child_process"
-import { Context, Effect, Layer, Exit, Scope } from "effect"
+import { Context, Effect, Layer, Exit, Option, Scope } from "effect"
 import { tmuxSessionName } from "@coolie/protocol"
 import { CoolieConfig, CoolieConfigLive } from "./config.js"
 import { DbLive } from "./db/sqlite.js"
@@ -11,6 +11,7 @@ import { ProjectsRepoLive } from "./repo/projects.js"
 import { EventsRepo, EventsRepoLive } from "./repo/events.js"
 import { WorkspacesRepo, WorkspacesRepoLive } from "./repo/workspaces.js"
 import { TabsRepo, TabsRepoLive } from "./repo/tabs.js"
+import { QueueRepo, QueueRepoLive } from "./repo/queue.js"
 import { EventsBus, EventsBusLive } from "./events/bus.js"
 import { WorkspaceLifecycleLive } from "./workspace/lifecycle.js"
 import { GitServiceLive } from "./git/service.js"
@@ -23,10 +24,12 @@ import { EngineBootstrapHookLive } from "./engine/bootstrap.js"
 import { SessionEnsurerLive } from "./workspace/heal.js"
 import { ensureHookScript } from "./engine/claude/hooks.js"
 import { startTranscriptPoller } from "./engine/monitor.js"
+import { createWorkspaceSerial, resumeQueuedWorkspaces, startQueueDrainer, type DrainDeps } from "./engine/queue-drain.js"
 import { attachTerminalWs } from "./http/ws.js"
 import { createApp, newToken } from "./http/app.js"
 import type { AppServices } from "./http/app.js"
 import { readServerInfo, claimServerInfo, probeAlive } from "./daemon/info.js"
+import { assertSockPathFits } from "./daemon/socket.js"
 import { makeClientRegistry } from "./daemon/clients.js"
 import { rotateLogIfNeeded } from "./log/rotate.js"
 import { createLogger, installCrashNet } from "./log/logger.js"
@@ -69,7 +72,7 @@ const cmdStart = async (): Promise<void> => {
       TmuxServiceLive,
       EngineRegistryLive,
     )),
-    Layer.provideMerge(Layer.mergeAll(ProjectsRepoLive, EventsRepoLive, WorkspacesRepoLive, TabsRepoLive)),
+    Layer.provideMerge(Layer.mergeAll(ProjectsRepoLive, EventsRepoLive, WorkspacesRepoLive, TabsRepoLive, QueueRepoLive)),
     Layer.provideMerge(EventsBusLive), // Plan 2 的 dead export 转正：单一构造点
     Layer.provideMerge(DbLive),
     Layer.provideMerge(CoolieConfigLive),
@@ -85,6 +88,7 @@ const cmdStart = async (): Promise<void> => {
 
   // tmux 首启检测（设计文档 §十二）：不阻启动，warn 进日志；doctor 同口径
   const tmuxSvc = Context.get(runtimeCtx, TmuxService)
+  const composerOps = makeComposerOps(tmuxSvc)
   void Effect.runPromise(tmuxSvc.version()).then(
     (v) => logger.info(`tmux ok: ${v}`),
     (e) => logger.warn(`tmux 不可用：${String(e)}（brew install tmux；coolie doctor 检查）`),
@@ -104,8 +108,50 @@ const cmdStart = async (): Promise<void> => {
     resolveEngine: (engineId) => registry.get(engineId ?? "claude"),
     homeFor: (engineId) => engineHome(engineId, cfg),
   })
+  const workspaceSerial = createWorkspaceSerial()
+  const drainDeps: DrainDeps = {
+    resolveEngineTab: async (workspaceId) => {
+      const exit = await runtime(Effect.gen(function* () {
+        const workspace = yield* (yield* WorkspacesRepo).get(workspaceId).pipe(Effect.option)
+        if (Option.isNone(workspace)) return null
+        const tab = yield* (yield* TabsRepo).findEngineTab(workspaceId)
+        if (!tab) return null
+        const engine = (yield* EngineRegistry).get(tab.engineId ?? "claude")
+        return {
+          tab,
+          wsActive: workspace.value.status === "active",
+          nativeQueue: engine?.capabilities.nativeQueue === true,
+        }
+      }))
+      return Exit.isSuccess(exit) ? exit.value : null
+    },
+    claimNext: async (workspaceId) => {
+      const exit = await runtime(Effect.gen(function* () {
+        return yield* (yield* QueueRepo).claimNext(workspaceId)
+      }))
+      return Exit.isSuccess(exit) ? exit.value : null
+    },
+    release: async (queueId) => {
+      await runtime(Effect.gen(function* () { yield* (yield* QueueRepo).release(queueId) }))
+    },
+    deliver: (target, text) => composerOps.input(target, { text, mode: "send", skipStable: false }),
+    markWorking: async (tabId) => {
+      await runtime(Effect.gen(function* () {
+        yield* (yield* TabsRepo).setStatus(tabId, "working", "queue")
+      }))
+    },
+    onDelivered: async (queueId) => {
+      await runtime(Effect.gen(function* () { yield* (yield* QueueRepo).delivered(queueId) }))
+    },
+    onFailed: async (_workspaceId, queueId, error) => {
+      await runtime(Effect.gen(function* () {
+        yield* (yield* QueueRepo).release(queueId, error instanceof Error ? error.message : String(error))
+      }))
+    },
+  }
+  let stopDrainer = (): void => {}
 
-  const sockPath = path.join(cfg.home, "coolie.sock")
+  const sockPath = cfg.sockPath
 
   // ---- Plan 4：幂等 + awaited close 的 shutdown ----
   let shuttingDown = false
@@ -119,6 +165,7 @@ const cmdStart = async (): Promise<void> => {
     shuttingDown = true
     logger.info("shutdown")
     stopPoller()
+    stopDrainer()
     clients.dispose()
     fs.rmSync(cfg.serverInfoPath, { force: true })
     await Promise.race([
@@ -162,7 +209,8 @@ const cmdStart = async (): Promise<void> => {
     runtime, token, bus, claudeHome: cfg.claudeHome, codexHome: cfg.codexHome, clients,
     gitRead: realGitRead,
     config: { tmuxSocket: cfg.tmuxSocket, reposRoot },
-    composerOps: makeComposerOps(tmuxSvc),
+    composerOps,
+    workspaceSerial,
     cloneRepo,
     onShutdown: () => void shutdown(),
     onError: (e) => logger.error("http 500", e),
@@ -185,6 +233,7 @@ const cmdStart = async (): Promise<void> => {
   // ---- Plan 4：先 TCP listen，claim 赢了才碰 unix socket ----
   // 旧顺序（先 rm sock 再 listen sock 再 TCP）下，两个竞态 start 会互删对方的 sock。
   fs.mkdirSync(cfg.home, { recursive: true })
+  assertSockPathFits(sockPath)
   const unixServer = http.createServer(app)
 
   server.listen(0, "127.0.0.1", () => {
@@ -197,6 +246,17 @@ const cmdStart = async (): Promise<void> => {
         await Promise.race([logger.flush(), new Promise((r) => setTimeout(r, 1000))])
         process.exit(1)
       }
+      stopDrainer = startQueueDrainer(bus, drainDeps, workspaceSerial)
+      void resumeQueuedWorkspaces(workspaceSerial, drainDeps, {
+        recoverInflight: async () => {
+          const exit = await runtime(Effect.gen(function* () { return yield* (yield* QueueRepo).recoverInflight() }))
+          return Exit.isSuccess(exit) ? exit.value : 0
+        },
+        listWorkspaceIds: async () => {
+          const exit = await runtime(Effect.gen(function* () { return yield* (yield* QueueRepo).listWorkspaceIds() }))
+          return Exit.isSuccess(exit) ? exit.value : []
+        },
+      })
       fs.rmSync(sockPath, { force: true }) // 赢家清陈旧 sock
       unixServer.listen(sockPath, () => logger.info(`listening on unix socket ${sockPath}`))
       logger.info(`coolie-server listening on 127.0.0.1:${port}`)

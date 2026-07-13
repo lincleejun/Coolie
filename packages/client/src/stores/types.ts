@@ -10,4 +10,5 @@ export interface EngineInfo {
   id: string; displayName: string
   capabilities: { nativeQueue: boolean; midSessionModelSwitch: boolean; resume: boolean; hooks: boolean; effort: boolean }
   models: string[]
+  efforts?: readonly string[]
 }

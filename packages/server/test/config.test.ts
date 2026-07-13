@@ -21,6 +21,7 @@ describe("CoolieConfig", () => {
     expect(c.home).toBe("/tmp/coolie-test-home")
     expect(c.dbPath).toBe("/tmp/coolie-test-home/coolie.db")
     expect(c.serverInfoPath).toBe("/tmp/coolie-test-home/server.json")
+    expect(c.sockPath).toBe("/tmp/coolie-test-home/coolie.sock")
   })
   it("defaults under homedir", () => {
     const c = load()

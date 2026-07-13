@@ -2,6 +2,7 @@ import { useEffect, useState } from "react"
 import type { Workspace, Tab } from "@coolie/protocol"
 import { useData } from "../stores/data"
 import { useUi } from "../stores/ui"
+import { useAttention } from "../stores/attention"
 import { ApiError } from "../api/client"
 import { orderedActiveWs } from "../hotkeys/useGlobalHotkeys"
 
@@ -59,6 +60,7 @@ const WsRowMenu = ({ ws, onClose }: { ws: Workspace; onClose: () => void }) => {
 
 const WsRow = ({ ws }: { ws: Workspace }) => {
   const selected = useUi((s) => s.selectedWs === ws.id)
+  const raised = useAttention((s) => s.isRaised(ws.id))
   const tabs = useData((s) => s.tabsByWs[ws.id])
   const badge = wsBadge(ws, tabs)
   const [menuOpen, setMenuOpen] = useState(false)
@@ -76,6 +78,7 @@ const WsRow = ({ ws }: { ws: Workspace }) => {
       onContextMenu={(e) => { e.preventDefault(); setMenuOpen(true) }}
     >
       <span className={`badge ${badge.cls}`} title={badge.title}>{badge.glyph}</span>
+      {raised && <span className="attn-dot" title="需要你" aria-label="需要你">!</span>}
       <span className="ws-name">{ws.pinned ? "📌 " : ""}{ws.name}</span>
       <span className="ws-branch" title={ws.branch}>⑂{ws.branch.replace(/^coolie\//, "")}</span>
       {ws.status === "active" && <DiffCount wsId={ws.id} />}

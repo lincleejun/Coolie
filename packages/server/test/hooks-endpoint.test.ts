@@ -116,6 +116,21 @@ describe("POST /hooks/claude endpoint", () => {
     expect(eventTypes()).toContain("tab.title.changed")
   })
 
+  it("Stop 标题派生优先使用 hook stdin 的 transcript_path", async () => {
+    const transcriptPath = path.join(claudeHome, "elsewhere", "hook-provided.jsonl")
+    fs.mkdirSync(path.dirname(transcriptPath), { recursive: true })
+    fs.writeFileSync(transcriptPath,
+      JSON.stringify({ type: "user", message: { role: "user", content: "Fix login from hook path" } }) + "\n")
+
+    await post("?workspace=w1", {
+      hook_event_name: "Stop",
+      session_id: SESSION_ID,
+      transcript_path: transcriptPath,
+    })
+
+    expect(tabRow().title).toBe("Fix login from hook path")
+  })
+
   it("hook 报来新 session_id（--resume fork）→ engineSessionId 同步 + tab.session.changed", async () => {
     const NEW_ID = "99999999-8888-4777-a666-555555555555"
     await post("?workspace=w1", { hook_event_name: "UserPromptSubmit", session_id: NEW_ID })

@@ -1,7 +1,9 @@
 import { Effect, Layer, Option, Deferred } from "effect"
+import * as fs from "node:fs"
 import { PostCreateHooks, HookError, type PostCreateHook } from "../workspace/lifecycle.js"
 import { TmuxService } from "../tmux/service.js"
 import { TabsRepo } from "../repo/tabs.js"
+import { WorkspacesRepo } from "../repo/workspaces.js"
 import { EventsRepo } from "../repo/events.js"
 import { ProjectsRepo } from "../repo/projects.js"
 import { EngineRegistry } from "./registry.js"
@@ -11,6 +13,7 @@ import { startEngineSession } from "./session.js"
 import { injectInfoExclude } from "../workspace/include.js"
 import { ensureHookScript, injectClaudeHooks, hooksDisabled } from "./claude/hooks.js"
 import { injectCodexHooks } from "./codex/hooks.js"
+import { ensureNotifyScript } from "./codex/notify.js"
 import { engineHome } from "./registry.js"
 import { scanNewestRollout, startRolloutBackfillWatcher, realRolloutFs } from "./codex/rollout.js"
 import { EventsBus, EVENT_CHANNEL } from "../events/bus.js"
@@ -47,6 +50,7 @@ export const EngineBootstrapHookLive = Layer.effect(
     const events = yield* EventsRepo
     const registry = yield* EngineRegistry
     const projects = yield* ProjectsRepo
+    const workspaces = yield* WorkspacesRepo
     const cfg = yield* CoolieConfig
     // EventsBus 可选依赖（同 EventsRepoLive 的既有模式）：生产 main.ts 已提供；
     // 假 engine/裸测试没提供时 gateOnHooks 直接判 false，走强化 waitStable 兜底，行为不变。
@@ -102,10 +106,13 @@ export const EngineBootstrapHookLive = Layer.effect(
         }
 
         const wantsPrompt = ctx.initialPrompt !== undefined && ctx.initialPrompt.trim() !== ""
-        const gateOnHooks = wantsPrompt && engine.capabilities.hooks && !hooksDisabled() && Option.isSome(bus)
+        // Codex SessionStart is structurally tied to its first turn, so server-generated-id engines
+        // cannot use it as a pre-prompt readiness gate. Their first prompt keeps the stable-pane path.
+        const gateOnHooks = wantsPrompt && engine.capabilities.hooks && !hooksDisabled()
+          && Option.isSome(bus) && engine.serverGeneratedId !== true
         // codex 无-hooks 通路（RE-SMOKE 反转）：投递**不**等 rollout（TUI 懒落盘 = 门控死锁），照常走强化
-        // waitStable；id 回填交给投递外的后台 watcher（下方布防）。能力驱动：未来 codex≥0.144 验证 hooks 后
-        // capabilities.hooks 转 true → gateOnHooks 接管就绪 + /hooks/codex 回填 id，watcher 因 id 非 null 自停。
+        // waitStable；id 回填交给投递外的后台 watcher（下方布防）。codex hooks lane 不布 watcher，
+        // 仍走 waitStable 投首条 prompt，首 turn 的 hook 再经 /hooks/codex 回填 id。
         const armRolloutWatcher = engine.serverGeneratedId === true && !(engine.capabilities.hooks && !hooksDisabled())
 
         // 必须在起 tmux session 之前订阅：claude 冷启动可能在几百 ms 内就打 SessionStart，
@@ -122,8 +129,13 @@ export const EngineBootstrapHookLive = Layer.effect(
 
         // rollout watcher 的下界：只认「起 session 之后」创建的 rollout（排除旧会话/别 tab 的残留，防误回填旧 id）。
         const rolloutSinceMs = Date.now()
+        // Codex hooks-off lane uses per-session `notify`; hooks-capable versions use the injected hook file above.
+        if (engine.id === "codex" && !engine.capabilities.hooks && !hooksDisabled())
+          yield* Effect.sync(() => ensureNotifyScript(cfg.home, engine.id))
         const { engineCommand } = yield* startEngineSession(tmux, {
           ws, repoRoot: project.repoRoot, engine, sessionId, resume: false, home: cfg.home,
+          ...(ctx.model !== undefined ? { model: ctx.model } : {}),
+          ...(ctx.effort !== undefined ? { effort: ctx.effort } : {}),
         }).pipe(Effect.mapError((e) => new HookError({ message: `tmux session 创建失败：${e.message}` })))
         yield* events.append({ workspaceId: ws.id, type: "workspace.tmux.created", payload: { sessionName: session } })
 
@@ -148,14 +160,30 @@ export const EngineBootstrapHookLive = Layer.effect(
             startRolloutBackfillWatcher(
               {
                 scan: () => scanNewestRollout(realRolloutFs, { home, cwd: ws.path, sinceMs: rolloutSinceMs }),
-                shouldContinue: () => Effect.runPromise(tabs.get(tab.id).pipe(Effect.option))
-                  .then((t) => Option.isSome(t) && t.value.engineSessionId === null),
+                shouldContinue: () => Effect.runPromise(Effect.gen(function* () {
+                  const currentTab = yield* tabs.get(tab.id).pipe(Effect.option)
+                  if (Option.isNone(currentTab) || currentTab.value.engineSessionId !== null) return false
+                  const currentWorkspace = yield* workspaces.get(ws.id).pipe(Effect.option)
+                  // The watcher is armed inside the create hook, before lifecycle flips creating→active.
+                  // Keep that short bootstrap phase alive, but stop on archive/error/deletion.
+                  return Option.isSome(currentWorkspace)
+                    && (currentWorkspace.value.status === "creating" || currentWorkspace.value.status === "active")
+                }).pipe(Effect.catchAll(() => Effect.succeed(false)))),
                 onFound: (hit) => Effect.runPromise(Effect.gen(function* () {
                   yield* tabs.setEngineSessionId(tab.id, hit.sessionId)
                   yield* events.append({
                     workspaceId: ws.id, type: "engine.session.started",
                     payload: { tabId: tab.id, sessionId: hit.sessionId },
                   })
+                  // Hooks-off Codex never reaches the Stop title lane. The rollout hit already gives
+                  // the exact transcript, so derive once during id backfill without overwriting a title.
+                  const currentTab = yield* tabs.get(tab.id).pipe(Effect.option)
+                  if (Option.isSome(currentTab) && currentTab.value.title === null) {
+                    const title = yield* Effect.sync(() => {
+                      try { return engine.deriveTitle(fs.readFileSync(hit.path, "utf8")) } catch { return null }
+                    })
+                    if (title !== null) yield* tabs.setTitle(tab.id, title)
+                  }
                 })),
               },
               { intervalMs: ROLLOUT_BACKFILL_INTERVAL_MS, maxMs },

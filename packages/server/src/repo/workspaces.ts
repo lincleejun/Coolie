@@ -33,8 +33,12 @@ export interface WorkspacesRepoShape {
   readonly setBaseRef: (id: string, baseRef: string) => Effect.Effect<void, NotFoundError>
   readonly setLastError: (id: string, err: { tag: string; message: string }) => Effect.Effect<void, NotFoundError>
   /** create 存下首条 prompt+引擎（C2）：error 后 retry 从 data.createCtx 回填 PostCreateContext 补投 */
-  readonly setCreateCtx: (id: string, ctx: { initialPrompt?: string; engineId?: string }) => Effect.Effect<void, NotFoundError>
-  readonly getCreateCtx: (id: string) => Effect.Effect<{ initialPrompt?: string; engineId?: string }, NotFoundError>
+  readonly setCreateCtx: (id: string, ctx: {
+    initialPrompt?: string; engineId?: string; model?: string; effort?: string
+  }) => Effect.Effect<void, NotFoundError>
+  readonly getCreateCtx: (id: string) => Effect.Effect<{
+    initialPrompt?: string; engineId?: string; model?: string; effort?: string
+  }, NotFoundError>
   readonly usedPortBases: () => Effect.Effect<number[]>
   readonly remove: (id: string) => Effect.Effect<void, NotFoundError>
 }
@@ -100,6 +104,8 @@ export const WorkspacesRepoLive = Layer.effect(
         data.createCtx = {
           ...(ctx.initialPrompt !== undefined ? { initialPrompt: ctx.initialPrompt } : {}),
           ...(ctx.engineId !== undefined ? { engineId: ctx.engineId } : {}),
+          ...(ctx.model !== undefined ? { model: ctx.model } : {}),
+          ...(ctx.effort !== undefined ? { effort: ctx.effort } : {}),
         }
         db.prepare("UPDATE workspaces SET data = ? WHERE id = ?").run(JSON.stringify(data), id)
       }),
@@ -107,10 +113,14 @@ export const WorkspacesRepoLive = Layer.effect(
         const r = yield* mustGetRow(id)
         let data: any = {}
         try { data = r.data ? JSON.parse(r.data) : {} } catch { /* 坏 JSON 视为无 ctx */ }
-        const c = (data.createCtx ?? {}) as { initialPrompt?: unknown; engineId?: unknown }
+        const c = (data.createCtx ?? {}) as {
+          initialPrompt?: unknown; engineId?: unknown; model?: unknown; effort?: unknown
+        }
         return {
           ...(typeof c.initialPrompt === "string" ? { initialPrompt: c.initialPrompt } : {}),
           ...(typeof c.engineId === "string" ? { engineId: c.engineId } : {}),
+          ...(typeof c.model === "string" ? { model: c.model } : {}),
+          ...(typeof c.effort === "string" ? { effort: c.effort } : {}),
         }
       }),
       usedPortBases: () => Effect.sync(() =>

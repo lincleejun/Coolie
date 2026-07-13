@@ -37,6 +37,30 @@ const MIGRATIONS: Migration[] = [
       `)
     },
   },
+  {
+    id: "m0003-prompt-queue",
+    up: (db) => {
+      db.exec(`
+        CREATE TABLE prompt_queue (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          workspace_id TEXT NOT NULL REFERENCES workspaces(id),
+          tab_id TEXT NOT NULL,
+          text TEXT NOT NULL,
+          mode TEXT NOT NULL,
+          state TEXT NOT NULL DEFAULT 'queued' CHECK (state IN ('queued', 'inflight')),
+          created_at INTEGER NOT NULL);
+        CREATE INDEX idx_queue_ws_id ON prompt_queue(workspace_id, id);
+      `)
+    },
+  },
+  {
+    id: "m0004-prompt-queue-state",
+    up: (db) => {
+      const columns = db.prepare("PRAGMA table_info(prompt_queue)").all() as Array<{ name: string }>
+      if (!columns.some((column) => column.name === "state"))
+        db.exec("ALTER TABLE prompt_queue ADD COLUMN state TEXT NOT NULL DEFAULT 'queued' CHECK (state IN ('queued', 'inflight'))")
+    },
+  },
 ]
 
 export const runMigrations = (db: Database.Database): void => {

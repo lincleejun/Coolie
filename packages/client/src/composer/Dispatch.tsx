@@ -2,31 +2,56 @@ import { useState } from "react"
 import { useData } from "../stores/data"
 import { useUi } from "../stores/ui"
 import { Composer } from "./Composer"
-import { deliverModelSwitch } from "./Composer"
-import { makeDrafts } from "./drafts"
+import { makeDrafts, type DraftStorage } from "./drafts"
 
-const drafts = makeDrafts(localStorage)
+const draftStorage: DraftStorage =
+  typeof localStorage !== "undefined"
+    ? localStorage
+    : { getItem: () => null, setItem: () => {}, removeItem: () => {} }
+const drafts = makeDrafts(draftStorage)
+
+export interface CreateBodyInput {
+  projectId: string
+  engineId: string
+  prompt: string
+  model: string
+  effort: string
+}
+
+export const buildCreateBody = (i: CreateBodyInput): Record<string, string> => ({
+  projectId: i.projectId,
+  engineId: i.engineId,
+  initialPrompt: i.prompt,
+  ...(i.model !== "default" ? { model: i.model } : {}),
+  ...(i.effort !== "default" ? { effort: i.effort } : {}),
+})
 
 export const DispatchPanel = () => {
   const projects = useData((s) => s.projects)
   const engines = useData((s) => s.config?.engines ?? [])
-  const claude = engines[0]
   const projectId = useUi((s) => s.dispatchProjectId) ?? projects[0]?.id ?? null
+  const [engineId, setEngineId] = useState(engines[0]?.id ?? "claude")
+  const engine = engines.find((candidate) => candidate.id === engineId) ?? engines[0]
   const [model, setModel] = useState("default")
+  const [effort, setEffort] = useState("default")
   const [creating, setCreating] = useState(false)
   const [err, setErr] = useState<string | null>(null)
 
   const submit = (prompt: string): void => {
     const api = useData.getState().getApi()
-    if (!api || !projectId || creating) return
+    if (!api || !projectId || !engine || creating) return
     setCreating(true); setErr(null)
     void (async () => {
       try {
         // 同步流水线：fetch 会等到 active/error 才返回（server 行为，可长达数十秒）
-        const ws = await api.req("POST", "/workspaces", { projectId, initialPrompt: prompt })
+        const ws = await api.req("POST", "/workspaces", buildCreateBody({
+          projectId,
+          engineId: engine.id,
+          prompt,
+          model,
+          effort,
+        }))
         useUi.getState().selectWs(ws.id)
-        if (model !== "default" && claude?.capabilities.midSessionModelSwitch)
-          void deliverModelSwitch(ws.id, model, true).catch(() => {})
       } catch (e: any) {
         setErr(e?.message ?? String(e)) // status=error 的半成品会出现在左栏（! 徽标）供 Retry
       } finally {
@@ -50,11 +75,30 @@ export const DispatchPanel = () => {
         }}>
           {projects.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
         </select>
-        {claude && (
+        <label>引擎</label>
+        <select value={engine?.id ?? ""} onChange={(e) => {
+          setEngineId(e.target.value)
+          setModel("default")
+          setEffort("default")
+        }}>
+          {engines.map((candidate) =>
+            <option key={candidate.id} value={candidate.id}>{candidate.displayName}</option>)}
+        </select>
+        {engine && engine.models.length > 0 && (
           <>
             <label>模型</label>
             <select value={model} onChange={(e) => setModel(e.target.value)}>
-              {claude.models.map((m) => <option key={m} value={m}>{claude.displayName}·{m}</option>)}
+              <option value="default">默认</option>
+              {engine.models.map((m) => <option key={m} value={m}>{engine.displayName}·{m}</option>)}
+            </select>
+          </>
+        )}
+        {engine?.capabilities.effort && engine.efforts && engine.efforts.length > 0 && (
+          <>
+            <label>effort</label>
+            <select value={effort} onChange={(e) => setEffort(e.target.value)}>
+              <option value="default">默认</option>
+              {engine.efforts.map((value) => <option key={value} value={value}>{value}</option>)}
             </select>
           </>
         )}

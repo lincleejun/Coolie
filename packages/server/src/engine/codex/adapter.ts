@@ -6,7 +6,7 @@ import { codexTranscriptPath, codexDeriveTitle } from "./transcript.js"
 import { seedCodexTrust, defaultCodexConfigPath } from "./trust.js"
 
 /** codex 二进制多路径发现（opcode 路线，同 claude binary.ts）。 */
-const discoverCodexBinary = (): string | null => {
+export const discoverCodexBinary = (): string | null => {
   const candidates = [
     process.env.COOLIE_CODEX_BIN,
     "/opt/homebrew/bin/codex",
@@ -40,13 +40,11 @@ export const codexEngine: Engine = {
   displayName: "Codex",
   // hooks:false —— codex 0.139.0 实测 hooks 四断点（task-12-report §3）：features.hooks 默认关、项目级
   // .codex/hooks.json 不被发现、--dangerously-bypass-hook-trust 不激活未信任 hooks、SessionStart 推迟到
-  // 首个 turn。故 codex 走无-hooks 通路（RE-SMOKE 反转版）：投递不等任何就绪信号——照常强化 waitStable
+  // 首个 turn。此常量记录旧版基线；registry 在启动时对 >=0.144 打 hooks 能力补丁。旧版无-hooks 通路：
+  // 投递不等任何就绪信号——照常强化 waitStable
   // （TUI ~2s 稳定、composer 实测不吞字），id 回填由 bootstrap 布防的后台 rollout watcher 完成（TUI 的
-  // rollout 首 turn 才懒落盘，做投递前门控 = 死锁——真机 RE-SMOKE 实测，勿回退）；状态由 mtime 轮询
-  // 独家负责（monitor，lastHookAt 恒 null → mtime 恒当值）。
-  // 【hooks 重启检查】codex≥0.144 一旦实测确认「项目级 .codex/hooks.json 被发现 + features.hooks 默认开 +
-  // SessionStart 首启即触发」，把此位改回 true 即可：bootstrap gateOnHooks 自动接管就绪、watcher 不再布防
-  // （能力驱动），/hooks/codex 端点 + injectCodexHooks + statusFromHookEvent 已就绪，无需改调用点。
+  // rollout 首 turn 才懒落盘，做投递前门控 = 死锁——真机 RE-SMOKE 实测，勿回退）；turn-complete 优先
+  // 由 per-session notify 即时回报，mtime 轮询保留为最终安全网。
   capabilities: { nativeQueue: false, midSessionModelSwitch: true, resume: true, hooks: false, effort: true },
   terminalTitle: "engine-owned", // codex OSC0 标题可配（codex.md §8）
   serverGeneratedId: true,       // 服务端造 id：bootstrap 起始存 null，rollout 文件出现后回填真 id
@@ -54,12 +52,16 @@ export const codexEngine: Engine = {
   efforts: codexEfforts,
   // 占位 id：codex 不支持预指定 session id，此值永不传给 codex（serverGeneratedId 分流后 bootstrap 都不会用它）。
   newSessionId: () => randomUUID(),
-  launchCommand: ({ sessionId, model, effort, resume }) => {
+  launchCommand: ({ sessionId, model, effort, resume, workspaceId, home }) => {
     const override = (process.env.COOLIE_CODEX_CMD ?? "").trim()
     if (override !== "") return override.split(/\s+/)
     const bin = discoverCodexBinary() ?? "codex"
     const args = resume === true ? [bin, "resume", sessionId] : [bin]
     args.push("-c", 'tui.terminal_title=["activity","thread-title"]')
+    if (resume !== true && workspaceId && home) {
+      const script = `${home}/hooks/codex-notify.sh`
+      args.push("-c", `notify=[${JSON.stringify(script)},${JSON.stringify(workspaceId)}]`)
+    }
     if (model) args.push("--model", model)
     if (effort) args.push("-c", `model_reasoning_effort=${effort}`)
     // 保留此 flag（0.139.0 实测：只抑制 hook trust review 对话框，不激活未信任 hooks——见 task-12-report §3

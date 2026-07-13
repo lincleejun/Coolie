@@ -6,6 +6,8 @@ export interface CoolieConfigShape {
   readonly home: string
   readonly dbPath: string
   readonly serverInfoPath: string
+  /** daemon 与 client 共用的 AF_UNIX socket 路径。 */
+  readonly sockPath: string
   readonly workspacesRoot: string
   /** tmux 专属 socket 名（tmux -L <socket>）；测试注入 coolie-test-* 隔离 */
   readonly tmuxSocket: string
@@ -40,6 +42,7 @@ export const CoolieConfigLive = Layer.sync(CoolieConfig, () => {
     home,
     dbPath: path.join(home, "coolie.db"),
     serverInfoPath: path.join(home, "server.json"),
+    sockPath: path.join(home, "coolie.sock"),
     workspacesRoot: process.env.COOLIE_WORKSPACES_ROOT ?? path.join(os.homedir(), "coolie", "workspaces"),
     tmuxSocket: process.env.COOLIE_TMUX_SOCKET ?? "coolie",
     claudeHome: process.env.COOLIE_CLAUDE_HOME ?? path.join(os.homedir(), ".claude"),

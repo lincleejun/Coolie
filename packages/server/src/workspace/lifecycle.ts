@@ -14,11 +14,17 @@ import { allocatePortBase, portEnv } from "./ports.js"
 import { injectInfoExclude, readWorktreeIncludePatterns, copyIncludedFiles } from "./include.js"
 import { TmuxService } from "../tmux/service.js"
 import { TabsRepo } from "../repo/tabs.js"
+import { QueueRepo } from "../repo/queue.js"
 import { SessionEnsurer } from "./heal.js"
 
 /** Plan 3 插拔点落地：tmux session / engine 启动 / 首条 prompt 投递以 hook 形式挂进 create 流水线末尾。 */
 export class HookError extends Data.TaggedError("HookError")<{ readonly message: string }> {}
-export interface PostCreateContext { readonly initialPrompt?: string; readonly engineId?: string }
+export interface PostCreateContext {
+  readonly initialPrompt?: string
+  readonly engineId?: string
+  readonly model?: string
+  readonly effort?: string
+}
 export type PostCreateHook = (ws: Workspace, ctx: PostCreateContext) => Effect.Effect<void, HookError>
 export class PostCreateHooks extends Context.Tag("PostCreateHooks")<PostCreateHooks, ReadonlyArray<PostCreateHook>>() {}
 export const PostCreateHooksEmpty = Layer.succeed(PostCreateHooks, [])
@@ -29,6 +35,7 @@ export type LifecycleError = NotFoundError | ConflictError | GitError
 export interface WorkspaceLifecycleShape {
   readonly create: (opts: {
     projectId: string; branchSlug?: string; name?: string; initialPrompt?: string; engineId?: string
+    model?: string; effort?: string
   }) => Effect.Effect<Workspace, CreateError>
   readonly retry: (id: string) => Effect.Effect<Workspace, CreateError>
   readonly archive: (id: string, opts?: { force?: boolean }) => Effect.Effect<Workspace, LifecycleError>
@@ -50,6 +57,7 @@ export const WorkspaceLifecycleLive = Layer.effect(
     // 运行时拆除依赖：可选注入（生产 main.ts 提供；单测不提供时 teardown 自动 no-op）
     const tmuxOpt = yield* Effect.serviceOption(TmuxService)
     const tabsOpt = yield* Effect.serviceOption(TabsRepo)
+    const queueOpt = yield* Effect.serviceOption(QueueRepo)
     const ensurerOpt = yield* Effect.serviceOption(SessionEnsurer)
 
     const emit = (workspaceId: string | null, type: string, payload: unknown) =>
@@ -65,6 +73,7 @@ export const WorkspaceLifecycleLive = Layer.effect(
           yield* emit(ws.id, "workspace.tmux.killed", { sessionName: tmuxSessionName(ws.id), reason }).pipe(Effect.ignore)
         }
         if (reason === "delete" && Option.isSome(tabsOpt)) yield* tabsOpt.value.removeByWorkspace(ws.id).pipe(Effect.ignore)
+        if (reason === "delete" && Option.isSome(queueOpt)) yield* queueOpt.value.clearWorkspace(ws.id).pipe(Effect.ignore)
       })
 
     /**
@@ -170,11 +179,15 @@ export const WorkspaceLifecycleLive = Layer.effect(
         yield* repo.setCreateCtx(ws.id, {
           ...(opts.initialPrompt !== undefined ? { initialPrompt: opts.initialPrompt } : {}),
           ...(opts.engineId !== undefined ? { engineId: opts.engineId } : {}),
+          ...(opts.model !== undefined ? { model: opts.model } : {}),
+          ...(opts.effort !== undefined ? { effort: opts.effort } : {}),
         })
         yield* emit(ws.id, "workspace.creating", { id: ws.id, projectId: project.id, name, branch, path: wsPath, portBase })
         return yield* provision(ws, project.repoRoot, {
           ...(opts.initialPrompt !== undefined ? { initialPrompt: opts.initialPrompt } : {}),
           ...(opts.engineId !== undefined ? { engineId: opts.engineId } : {}),
+          ...(opts.model !== undefined ? { model: opts.model } : {}),
+          ...(opts.effort !== undefined ? { effort: opts.effort } : {}),
         }).pipe(
           Effect.catchAll((e) => rollbackToError(ws, project.repoRoot, e)),
         )

@@ -2,7 +2,15 @@ import { describe, it, expect } from "vitest"
 import * as fs from "node:fs"
 import * as os from "node:os"
 import * as path from "node:path"
-import { pollOnce, type TranscriptPollerDeps, ACTIVE_THRESHOLD_MS, IDLE_THRESHOLD_MS } from "../src/engine/monitor.js"
+import {
+  ACTIVE_THRESHOLD_MS,
+  HOOK_AUTHORITY_MS,
+  IDLE_THRESHOLD_MS,
+  NOTIFY_AUTHORITY_MS,
+  decideStatusFromMtime,
+  pollOnce,
+  type TranscriptPollerDeps,
+} from "../src/engine/monitor.js"
 import type { Engine } from "../src/engine/types.js"
 import type { Tab } from "@coolie/protocol"
 import { codexEngine } from "../src/engine/codex/adapter.js"
@@ -80,5 +88,72 @@ describe("codex 无-hooks 通路：id 回填后 mtime 轮询独家驱动状态�
     expect(set).toContainEqual(["t-cx", "awaiting-input"])
 
     fs.rmSync(home, { recursive: true, force: true })
+  })
+})
+
+describe("H1：mtime 授权窗按引擎 hooks 能力门控", () => {
+  const now = 10_000_000
+
+  it("短窗内让位，短窗后 fresh mtime 可纠回 working", () => {
+    expect(decideStatusFromMtime({
+      nowMs: now,
+      mtimeMs: now - 1_000,
+      lastHookAtMs: now - 2_000,
+      current: "awaiting-input",
+      hookAuthorityMs: NOTIFY_AUTHORITY_MS,
+    })).toBeNull()
+    expect(decideStatusFromMtime({
+      nowMs: now,
+      mtimeMs: now - 1_000,
+      lastHookAtMs: now - NOTIFY_AUTHORITY_MS - 1,
+      current: "awaiting-input",
+      hookAuthorityMs: NOTIFY_AUTHORITY_MS,
+    })).toBe("working")
+  })
+
+  it("短窗后 30s 静默安全网照常接管", () => {
+    expect(decideStatusFromMtime({
+      nowMs: now,
+      mtimeMs: now - IDLE_THRESHOLD_MS - 1,
+      lastHookAtMs: now - NOTIFY_AUTHORITY_MS - 1,
+      current: "working",
+      hookAuthorityMs: NOTIFY_AUTHORITY_MS,
+    })).toBe("awaiting-input")
+  })
+
+  it("缺省仍用 10 分钟 hook 权威窗", () => {
+    expect(decideStatusFromMtime({
+      nowMs: now,
+      mtimeMs: now - IDLE_THRESHOLD_MS - 1,
+      lastHookAtMs: now - 6_000,
+      current: "working",
+    })).toBeNull()
+    expect(HOOK_AUTHORITY_MS).toBe(10 * 60_000)
+  })
+
+  it("pollOnce 仅给无 hooks 引擎使用 5 秒短窗", async () => {
+    const updates: Array<[string, string]> = []
+    const hooked = fakeEngine("claude")
+    const unhooked = {
+      ...fakeEngine("codex"),
+      capabilities: { ...fakeEngine("codex").capabilities, hooks: false },
+    }
+    const tab = (id: string, engineId: string) => ({
+      ...mkTab(id, engineId, "sid"),
+      status: "awaiting-input",
+      lastHookAt: now - NOTIFY_AUTHORITY_MS - 1,
+    } as Tab)
+    await pollOnce({
+      listEngineTabs: async () => [
+        { tab: tab("hooked", "claude"), workspacePath: "/w/c" },
+        { tab: tab("unhooked", "codex"), workspacePath: "/w/x" },
+      ],
+      statMtimeMs: () => now - 1_000,
+      setStatus: async (id, status) => { updates.push([id, status]) },
+      resolveEngine: (id) => id === "claude" ? hooked : unhooked,
+      homeFor: () => "/home",
+      now: () => now,
+    })
+    expect(updates).toEqual([["unhooked", "working"]])
   })
 })

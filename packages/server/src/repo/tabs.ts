@@ -18,7 +18,7 @@ const rowToTab = (r: any): Tab => {
   })
 }
 
-export type TabStatusSource = "hook" | "poller" | "wrapper" | "heal"
+export type TabStatusSource = "hook" | "notify" | "interrupt" | "poller" | "wrapper" | "heal" | "composer" | "queue"
 
 export interface TabsRepoShape {
   readonly insert: (t: {

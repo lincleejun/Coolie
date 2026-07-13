@@ -3,6 +3,7 @@ import { execFileSync } from "node:child_process"
 import * as fs from "node:fs"; import * as os from "node:os"; import * as path from "node:path"
 import Database from "better-sqlite3"
 import { runMigrations } from "../../server/src/db/migrations.js"
+import { SUN_PATH_MAX } from "../../server/src/daemon/socket.js"
 import { toCsv, toTable } from "../src/export-format.js"
 
 const TSX = path.resolve(__dirname, "../../../node_modules/.bin/tsx")
@@ -79,9 +80,20 @@ describe("coolie doctor", () => {
   it("prints read-only checks and mentions tmux/git", () => {
     const out = coolie("doctor")
     expect(out).toMatch(/\b(ok|warn|fail)\tdb\t/)
+    expect(out).toMatch(/\b(ok|warn)\tsocket\t/)
     expect(out).toContain("tmux")
     expect(out).toContain("git")
     expect(fs.existsSync(path.join(home, "server.json"))).toBe(false) // doctor 不拉起 server
+  })
+  it("COOLIE_HOME 令 socket 路径达到软阈值时给出 warn", () => {
+    if (!Number.isFinite(SUN_PATH_MAX)) return
+    const prefix = path.join(os.tmpdir(), "coolie-doctor-")
+    const h = prefix + "x".repeat(Math.max(1, Math.floor(SUN_PATH_MAX * 0.9) - prefix.length))
+    const out = execFileSync(TSX, [CLI, "doctor"], {
+      env: { ...process.env, COOLIE_HOME: h },
+      encoding: "utf8",
+    })
+    expect(out.split("\n").find((line) => line.includes("\tsocket\t"))).toContain("warn")
   })
 })
 

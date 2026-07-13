@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeAll, afterAll } from "vitest"
 import { execFileSync, spawnSync } from "node:child_process"
 import * as fs from "node:fs"; import * as os from "node:os"; import * as path from "node:path"
+import Database from "better-sqlite3"
 
 const TSX = path.resolve(__dirname, "../../../node_modules/.bin/tsx")
 const CLI = path.resolve(__dirname, "../src/main.ts")
@@ -14,6 +15,9 @@ const coolie = (...args: string[]) =>
       COOLIE_TMUX_SOCKET: TMUX_SOCK, COOLIE_CLAUDE_CMD: "cat", COOLIE_DISABLE_HOOKS: "1",
       COOLIE_CLAUDE_HOME: path.join(home, "claude-home"),
       COOLIE_CLAUDE_CONFIG: path.join(home, "claude.json"), // trust 种子绝不能写真实 ~/.claude.json
+      COOLIE_CODEX_CMD: "cat",
+      COOLIE_CODEX_HOME: path.join(home, "codex-home"),
+      COOLIE_CODEX_CONFIG: path.join(home, "codex-config.toml"),
     },
     encoding: "utf8",
   })
@@ -76,6 +80,25 @@ describe("coolie CLI e2e", () => {
     const out = coolie("events", "tail", "--after", "0")
     expect(out).toContain("project.added")
     expect(out).toMatch(/^\d+\t\d{4}-\d{2}-\d{2}T/m) // seq \t ISO 时间戳开头
+  })
+  it("create accepts engine, model and effort flags", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "coolie-cli-engine-"))
+    execFileSync("git", ["init", "-b", "main"], { cwd: dir })
+    execFileSync("git", ["-c", "user.email=t@t", "-c", "user.name=t", "commit", "--allow-empty", "-m", "init"], { cwd: dir })
+    const created = coolie(
+      "create", dir, "--name", "codex-options",
+      "--engine", "codex", "--model", "gpt-5", "--effort", "high",
+    )
+    const id = /\(([^)]+)\)/.exec(created)![1]!
+    const db = new Database(path.join(home, "coolie.db"), { readonly: true })
+    const row = db.prepare("SELECT data FROM workspaces WHERE id = ?").get(id) as { data: string }
+    expect(JSON.parse(row.data).createCtx).toEqual({
+      engineId: "codex",
+      model: "gpt-5",
+      effort: "high",
+    })
+    db.close()
+    coolie("delete", id, "--force")
   })
   it("resume：session 被外力清理 → 经 ensure 重建（enter 的 heal 同一条 server 路径）", () => {
     execFileSync("git", ["-c", "user.email=t@t", "-c", "user.name=t", "commit", "--allow-empty", "-m", "init"], { cwd: repo })

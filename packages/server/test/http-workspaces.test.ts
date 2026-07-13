@@ -11,7 +11,7 @@ import { EventsRepoLive } from "../src/repo/events.js"
 import { WorkspacesRepoLive } from "../src/repo/workspaces.js"
 import { GitService } from "../src/git/service.js"
 import { SetupRunner, SetupScriptError, type SetupRunnerShape } from "../src/workspace/setup.js"
-import { WorkspaceLifecycleLive, PostCreateHooksEmpty } from "../src/workspace/lifecycle.js"
+import { WorkspaceLifecycleLive, PostCreateHooks } from "../src/workspace/lifecycle.js"
 import { createApp, newToken } from "../src/http/app.js"
 import { makeFakeGit } from "./helpers/fake-git.js"
 
@@ -19,6 +19,7 @@ let server: http.Server, base: string, token: string
 let fake: ReturnType<typeof makeFakeGit>
 let setupFails = false
 let repoRoot: string
+let seenCreateCtx: Array<{ initialPrompt?: string; engineId?: string; model?: string; effort?: string }>
 
 beforeEach(async () => {
   const db = new Database(":memory:"); runMigrations(db)
@@ -29,6 +30,7 @@ beforeEach(async () => {
   const cfg = { home, dbPath: ":memory:", serverInfoPath: path.join(home, "server.json"), workspacesRoot: wsRoot }
   fake = makeFakeGit()
   setupFails = false
+  seenCreateCtx = []
   const setup: SetupRunnerShape = {
     run: () => setupFails
       ? Effect.fail(new SetupScriptError({ script: "fake.sh", exitCode: 1, message: "setup 退出码 1", outputTail: "boom" }))
@@ -38,7 +40,9 @@ beforeEach(async () => {
     Layer.provideMerge(Layer.mergeAll(
       Layer.succeed(GitService, fake.git),
       Layer.succeed(SetupRunner, setup),
-      PostCreateHooksEmpty,
+      Layer.succeed(PostCreateHooks, [
+        (_ws, ctx) => Effect.sync(() => { seenCreateCtx.push({ ...ctx }) }),
+      ]),
     )),
     Layer.provideMerge(Layer.mergeAll(ProjectsRepoLive, EventsRepoLive, WorkspacesRepoLive)),
     Layer.provideMerge(Layer.succeed(Db, db)),
@@ -136,6 +140,47 @@ describe("workspace HTTP API", () => {
   })
   it("POST /workspaces rejects non-string initialPrompt", async () => {
     const r = await req("/workspaces", { method: "POST", body: JSON.stringify({ projectId: "p", initialPrompt: 42 }) })
+    expect(r.status).toBe(400)
+  })
+  it("create/retry 保留 engine、model 与 effort", async () => {
+    const pid = await addProject()
+    const created = await createWs(pid, {
+      name: "engine-options",
+      initialPrompt: "ship it",
+      engineId: "codex",
+      model: "gpt-5",
+      effort: "high",
+    })
+    expect(created.status).toBe(201)
+    expect(seenCreateCtx).toEqual([{
+      initialPrompt: "ship it",
+      engineId: "codex",
+      model: "gpt-5",
+      effort: "high",
+    }])
+
+    fs.mkdirSync(path.join(repoRoot, ".coolie"), { recursive: true })
+    fs.writeFileSync(path.join(repoRoot, ".coolie", "setup.local.sh"), "#!/bin/bash\nexit 1\n")
+    setupFails = true
+    const failed = await createWs(pid, {
+      name: "engine-options-retry",
+      engineId: "codex",
+      model: "gpt-5",
+      effort: "xhigh",
+    })
+    expect(failed.status).toBe(500)
+    const failedWs = (await (await req("/workspaces")).json()).find((w: any) => w.name === "engine-options-retry")
+    seenCreateCtx = []
+    setupFails = false
+    const retried = await req(`/workspaces/${failedWs.id}/retry`, { method: "POST", body: "{}" })
+    expect(retried.status).toBe(200)
+    expect(seenCreateCtx).toEqual([{ engineId: "codex", model: "gpt-5", effort: "xhigh" }])
+  })
+  it.each(["engineId", "model", "effort"])("POST /workspaces rejects non-string %s", async (field) => {
+    const r = await req("/workspaces", {
+      method: "POST",
+      body: JSON.stringify({ projectId: "p", [field]: 42 }),
+    })
     expect(r.status).toBe(400)
   })
 })

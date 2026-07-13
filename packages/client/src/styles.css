@@ -61,6 +61,11 @@ button { font: inherit; color: inherit; background: none; border: none; cursor: 
 .toast-msg { flex: 1; }
 .toast-x { color: var(--fg-dim); flex: none; padding: 0 4px; }
 .toast-x:hover { color: var(--fg); }
+.attention-banner {
+  flex: none; width: 100%; padding: 6px 12px; text-align: center;
+  background: rgba(224,175,104,0.15); border-bottom: 1px solid var(--warn); color: var(--warn);
+}
+.attention-banner:hover { background: rgba(224,175,104,0.22); }
 
 /* === sidebar (Task 9) === */
 .sidebar { display: flex; flex-direction: column; height: 100%; }
@@ -86,6 +91,10 @@ button { font: inherit; color: inherit; background: none; border: none; cursor: 
 .ws-name { flex: none; max-width: 45%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ws-branch { flex: 1; color: var(--fg-dim); font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .badge { flex: none; width: 14px; text-align: center; }
+.attn-dot {
+  flex: none; min-width: 15px; height: 15px; line-height: 15px; text-align: center;
+  border-radius: 50%; background: var(--warn); color: #1a1a1e; font-size: 10px; font-weight: 700;
+}
 .b-working { color: var(--accent); } .b-await { color: var(--ok); } .b-error { color: var(--danger); }
 .b-idle, .b-archived { color: var(--fg-dim); } .b-creating { color: var(--warn); animation: pulse 1.2s infinite; }
 @keyframes pulse { 50% { opacity: 0.3; } }

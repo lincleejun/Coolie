@@ -12,6 +12,8 @@ export interface StartEngineSessionInput {
   readonly sessionId: string | null   // F7：codex=null（服务端造 id）；claude=uuid
   readonly resume: boolean
   readonly home: string
+  readonly model?: string
+  readonly effort?: string
 }
 
 /**
@@ -26,7 +28,14 @@ export const startEngineSession = (
     const sessionName = tmuxSessionName(i.ws.id)
     // F7 唯一合并点：codex launchCommand 本就忽略 sessionId（除 resume），空串安全；
     // claude resume 时 i.sessionId 必非 null。string|null 到此收敛为 launchCommand 要求的 string。
-    const engineCommand = i.engine.launchCommand({ sessionId: i.sessionId ?? "", resume: i.resume })
+    const engineCommand = i.engine.launchCommand({
+      sessionId: i.sessionId ?? "",
+      resume: i.resume,
+      // Hooks-capable lanes report Stop through /hooks; only hooks-off engines receive notify context.
+      ...(!i.engine.capabilities.hooks ? { workspaceId: i.ws.id, home: i.home } : {}),
+      ...(i.model !== undefined ? { model: i.model } : {}),
+      ...(i.effort !== undefined ? { effort: i.effort } : {}),
+    })
     yield* Effect.try({
       try: () => ensureKeepAliveScript(i.home),
       catch: (e) => new TmuxError({ op: "keepalive-script", message: `keep-alive 脚本写入失败：${String(e)}`, exitCode: null, stderr: "" }),

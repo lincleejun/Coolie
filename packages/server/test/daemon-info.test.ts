@@ -1,7 +1,13 @@
 import { describe, it, expect } from "vitest"
 import * as http from "node:http"
 import * as fs from "node:fs"; import * as os from "node:os"; import * as path from "node:path"
-import { probeAlive, claimServerInfo, readServerInfo, writeServerInfo } from "../src/daemon/info.js"
+import {
+  probeAlive,
+  claimServerInfo,
+  readServerInfo,
+  readServerInfoWithRetry,
+  writeServerInfo,
+} from "../src/daemon/info.js"
 
 const tmp = () => fs.mkdtempSync(path.join(os.tmpdir(), "coolie-claim-"))
 const DEAD_PID = 2 ** 30 // macOS pid_max 远小于此，必不存在
@@ -55,5 +61,53 @@ describe("claimServerInfo（post-listen 单实例收口）", () => {
     fs.writeFileSync(p, "{corrupt")
     expect(await claimServerInfo(p, { port: 7, token: "t", pid: process.pid })).toBe(true)
     expect(readServerInfo(p)?.port).toBe(7)
+  })
+
+  it("serializes all contenders so a stale cleanup cannot produce two winners", async () => {
+    await withHealthServer(async (portA) => withHealthServer(async (portB) => {
+      const p = path.join(tmp(), "server.json")
+      fs.writeFileSync(p, "{stale")
+      const results = await Promise.all([
+        claimServerInfo(p, { port: portA, token: "a", pid: process.pid }),
+        claimServerInfo(p, { port: portB, token: "b", pid: process.pid }),
+      ])
+      expect(results.filter(Boolean)).toHaveLength(1)
+    }))
+  })
+
+  it("recovers a crash-stale claim lock with bounded waiting", async () => {
+    const p = path.join(tmp(), "server.json")
+    fs.writeFileSync(`${p}.claim.lock`, JSON.stringify({ token: "dead", pid: DEAD_PID, createdAt: 1 }), { mode: 0o600 })
+    const startedAt = Date.now()
+    expect(await claimServerInfo(p, { port: 7003, token: "winner", pid: process.pid })).toBe(true)
+    expect(Date.now() - startedAt).toBeLessThan(1000)
+    expect(fs.existsSync(`${p}.claim.lock`)).toBe(false)
+  })
+})
+
+describe("claimServerInfo 原子性（C13：tmp+link）+ reader 有界重试", () => {
+  it("claim 后内容完整、mode 0600，且目录不留 tmp 残渣", async () => {
+    const p = path.join(tmp(), "server.json")
+    expect(await claimServerInfo(p, { port: 5000, token: "tok", pid: process.pid })).toBe(true)
+    expect(readServerInfo(p)?.port).toBe(5000)
+    expect(fs.statSync(p).mode & 0o777).toBe(0o600)
+    expect(fs.readdirSync(path.dirname(p)).filter((f) => f.includes(".tmp"))).toHaveLength(0)
+  })
+
+  it("起初半写，短窗内补全后重试读到完整内容", async () => {
+    const p = path.join(tmp(), "server.json")
+    fs.writeFileSync(p, '{"port": 50')
+    setTimeout(() => {
+      fs.rmSync(p, { force: true })
+      void claimServerInfo(p, { port: 5001, token: "t", pid: process.pid })
+    }, 30)
+    expect((await readServerInfoWithRetry(p, { retries: 8, delayMs: 20 }))?.port).toBe(5001)
+  })
+
+  it("始终缺失时重试有界并返回 null", async () => {
+    const p = path.join(tmp(), "server.json")
+    const startedAt = Date.now()
+    expect(await readServerInfoWithRetry(p, { retries: 2, delayMs: 5 })).toBeNull()
+    expect(Date.now() - startedAt).toBeLessThan(100)
   })
 })

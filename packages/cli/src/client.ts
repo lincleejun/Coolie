@@ -3,7 +3,7 @@ import * as http from "node:http"
 import * as fs from "node:fs"
 import * as os from "node:os"; import * as path from "node:path"
 import { createRequire } from "node:module"
-import { readServerInfo, probeAlive, type ServerInfo } from "@coolie/server"
+import { readServerInfo, readServerInfoWithRetry, probeAlive, type ServerInfo } from "@coolie/server"
 
 const require_ = createRequire(import.meta.url)
 export const home = () => process.env.COOLIE_HOME ?? path.join(os.homedir(), ".coolie")
@@ -27,7 +27,7 @@ const spawnServer = (): void => {
 }
 
 export const ensureServer = async (): Promise<ServerInfo> => {
-  const existing = readServerInfo(infoPath())
+  const existing = await readServerInfoWithRetry(infoPath())
   if (existing && (await probeAlive(existing))) return existing
   spawnServer()
   const deadline = Date.now() + 10_000
