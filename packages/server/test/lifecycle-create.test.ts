@@ -205,6 +205,32 @@ describe("WorkspaceLifecycle.create", () => {
     // 重试补回原 prompt+引擎，而非 {}（账本 C2）
     expect(seen[0]).toEqual({ initialPrompt: "第一句", engineId: "codex" })
   })
+  it("create/retry preserves fanoutGroup in the post-create context", async () => {
+    const env = makeEnv()
+    const seen: Array<{ fanoutGroup?: string; engineId?: string }> = []
+    let calls = 0
+    env.hooks.push((_ws, ctx) => {
+      seen.push({ ...ctx })
+      calls += 1
+      return calls === 1 ? Effect.fail(new HookError({ message: "retry me" })) : Effect.void
+    })
+    const p = await ok(env, addProject(env.repoRoot))
+    await env.run(Effect.gen(function* () {
+      return yield* (yield* WorkspaceLifecycle).create({
+        projectId: p.id,
+        engineId: "codex",
+        fanoutGroup: "fo-abc",
+      })
+    }))
+    const errored = (await ok(env, Effect.gen(function* () {
+      return yield* (yield* WorkspacesRepo).list()
+    })))[0]!
+    seen.length = 0
+    await ok(env, Effect.gen(function* () {
+      return yield* (yield* WorkspaceLifecycle).retry(errored.id)
+    }))
+    expect(seen).toEqual([{ engineId: "codex", fanoutGroup: "fo-abc" }])
+  })
   it("retry on a non-error workspace -> ConflictError", async () => {
     const env = makeEnv()
     const p = await ok(env, addProject(env.repoRoot))

@@ -9,12 +9,13 @@ import { ProjectsRepo, ProjectsRepoLive } from "../src/repo/projects.js"
 import { EventsRepo, EventsRepoLive } from "../src/repo/events.js"
 import { WorkspacesRepo, WorkspacesRepoLive } from "../src/repo/workspaces.js"
 import { QueueRepo, QueueRepoLive } from "../src/repo/queue.js"
+import { TabsRepo, TabsRepoLive } from "../src/repo/tabs.js"
 import { GitService } from "../src/git/service.js"
 import { SetupRunner, type SetupRunnerShape } from "../src/workspace/setup.js"
 import { WorkspaceLifecycle, WorkspaceLifecycleLive, PostCreateHooksEmpty } from "../src/workspace/lifecycle.js"
 import { makeFakeGit } from "./helpers/fake-git.js"
 
-type AnyServices = WorkspaceLifecycle | WorkspacesRepo | ProjectsRepo | EventsRepo | QueueRepo
+type AnyServices = WorkspaceLifecycle | WorkspacesRepo | ProjectsRepo | EventsRepo | QueueRepo | TabsRepo
 
 const makeEnv = () => {
   const db = new Database(":memory:"); runMigrations(db)
@@ -24,20 +25,21 @@ const makeEnv = () => {
   fs.mkdirSync(path.join(repoRoot, ".git", "info"), { recursive: true })
   const cfg = { home, dbPath: ":memory:", serverInfoPath: path.join(home, "server.json"), workspacesRoot: wsRoot }
   const fake = makeFakeGit()
-  const setup: SetupRunnerShape = { run: () => Effect.succeed([]) }
+  let setupRuns = 0
+  const setup: SetupRunnerShape = { run: () => Effect.sync(() => { setupRuns++; return [] }) }
   const layer = WorkspaceLifecycleLive.pipe(
     Layer.provideMerge(Layer.mergeAll(
       Layer.succeed(GitService, fake.git),
       Layer.succeed(SetupRunner, setup),
       PostCreateHooksEmpty,
     )),
-    Layer.provideMerge(Layer.mergeAll(ProjectsRepoLive, EventsRepoLive, WorkspacesRepoLive, QueueRepoLive)),
+    Layer.provideMerge(Layer.mergeAll(ProjectsRepoLive, EventsRepoLive, WorkspacesRepoLive, QueueRepoLive, TabsRepoLive)),
     Layer.provideMerge(Layer.succeed(Db, db)),
     Layer.provideMerge(Layer.succeed(CoolieConfig, cfg)),
   )
   const run = <A, E>(eff: Effect.Effect<A, E, AnyServices>) =>
     Effect.runPromiseExit(Effect.provide(eff, layer) as Effect.Effect<A, E, never>)
-  return { fake, repoRoot, run }
+  return { fake, repoRoot, run, setupRuns: () => setupRuns }
 }
 const ok = async <A, E>(env: ReturnType<typeof makeEnv>, eff: Effect.Effect<A, E, AnyServices>): Promise<A> => {
   const exit = await env.run(eff)
@@ -61,6 +63,19 @@ const eventTypes = (env: ReturnType<typeof makeEnv>) =>
   }))
 
 describe("archive", () => {
+  it("removes non-engine tab rows while retaining the engine resume key", async () => {
+    const env = makeEnv()
+    const ws = await setupActive(env)
+    await ok(env, Effect.gen(function* () {
+      const tabs = yield* TabsRepo
+      yield* tabs.insert({ workspaceId: ws.id, kind: "engine", engineSessionId: "resume-me", tmuxWindow: 0 })
+      yield* tabs.insert({ workspaceId: ws.id, kind: "setup", tmuxWindow: 1 })
+      yield* tabs.insert({ workspaceId: ws.id, kind: "run", tmuxWindow: 2 })
+      yield* (yield* WorkspaceLifecycle).archive(ws.id)
+    }))
+    const tabs = await ok(env, Effect.gen(function* () { return yield* (yield* TabsRepo).listByWorkspace(ws.id) }))
+    expect(tabs.map((tab) => [tab.kind, tab.engineSessionId])).toEqual([["engine", "resume-me"]])
+  })
   it("keeps queued prompts on archive", async () => {
     const env = makeEnv()
     const ws = await setupActive(env)
@@ -123,6 +138,19 @@ describe("delete queue cleanup", () => {
 })
 
 describe("unarchive", () => {
+  it("does not rerun setup scripts", async () => {
+    const env = makeEnv()
+    fs.mkdirSync(path.join(env.repoRoot, ".coolie"), { recursive: true })
+    fs.writeFileSync(path.join(env.repoRoot, ".coolie", "setup.local.sh"), "echo setup\n")
+    const ws = await setupActive(env)
+    expect(env.setupRuns()).toBe(1)
+    await ok(env, Effect.gen(function* () {
+      const lifecycle = yield* WorkspaceLifecycle
+      yield* lifecycle.archive(ws.id)
+      yield* lifecycle.unarchive(ws.id)
+    }))
+    expect(env.setupRuns()).toBe(1)
+  })
   it("rebuilds the worktree from the kept branch", async () => {
     const env = makeEnv()
     const ws = await setupActive(env)

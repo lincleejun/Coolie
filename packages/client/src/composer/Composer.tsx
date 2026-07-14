@@ -36,9 +36,10 @@ export interface ComposerProps {
   /** dispatch 模式（Task 15）：接管 Enter 提交（创建 workspace），三档语义停用 */
   onSubmitOverride?: (text: string) => void
   placeholder?: string
+  disabled?: boolean
 }
 
-export const Composer = ({ wsId, onSubmitOverride, placeholder }: ComposerProps) => {
+export const Composer = ({ wsId, onSubmitOverride, placeholder, disabled = false }: ComposerProps) => {
   const ta = useRef<HTMLTextAreaElement>(null)
   const [text, setText] = useState(() => drafts.load(wsId))
   const focusNonce = useUi((s) => s.composerFocusNonce)
@@ -154,6 +155,7 @@ export const Composer = ({ wsId, onSubmitOverride, placeholder }: ComposerProps)
       <div className="composer-box">
         <textarea
           ref={ta}
+          disabled={disabled}
           value={text}
           rows={Math.min(8, Math.max(1, text.split("\n").length))}
           placeholder={placeholder ?? "给 engine 的话… Enter 发送 · ⌘Enter 打断并发送 · ⌥Enter 仅插入 · ⇧Enter 换行"}

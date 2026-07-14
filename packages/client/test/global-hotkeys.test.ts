@@ -32,7 +32,7 @@ describe("orderedActiveWs", () => {
     expect(orderedActiveWs().map((w) => w.id)).toEqual(["a", "c", "d"])
   })
 
-  it("pinned 优先 → 组内 createdAt 倒序", () => {
+  it("pinned 优先，pinned/未 pinned 各组保持原有稳定顺序", () => {
     useData.setState({
       workspaces: [
         ws({ id: "old", pinned: false, createdAt: 100 }),
@@ -41,6 +41,6 @@ describe("orderedActiveWs", () => {
         ws({ id: "pinNew", pinned: true, createdAt: 200 }),
       ],
     })
-    expect(orderedActiveWs().map((w) => w.id)).toEqual(["pinNew", "pinOld", "new", "old"])
+    expect(orderedActiveWs().map((w) => w.id)).toEqual(["pinOld", "pinNew", "old", "new"])
   })
 })

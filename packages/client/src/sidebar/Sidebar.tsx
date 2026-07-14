@@ -4,7 +4,7 @@ import { useData } from "../stores/data"
 import { useUi } from "../stores/ui"
 import { useAttention } from "../stores/attention"
 import { ApiError } from "../api/client"
-import { orderedActiveWs } from "../hotkeys/useGlobalHotkeys"
+import { orderedActiveWs, pinnedFirst } from "../hotkeys/useGlobalHotkeys"
 
 /** 状态徽标（spec §六）：workspace 状态优先，active 时取 engine tab 状态 */
 export const wsBadge = (ws: Workspace, tabs: Tab[] | undefined): { glyph: string; cls: string; title: string } => {
@@ -44,6 +44,7 @@ const WsRowMenu = ({ ws, onClose }: { ws: Workspace; onClose: () => void }) => {
       else if (!(e instanceof ApiError && e.status === 409)) throw e
     }
   })
+  const togglePinned = (): void => run(() => useData.getState().setPinnedWs(ws.id, !ws.pinned))
   const unarchive = (): void => run(() => useData.getState().unarchiveWs(ws.id))
   const del = (): void => {
     if (!window.confirm(`删除 workspace「${ws.name}」？\nworktree 会被删除，branch ⑂${ws.branch} 保留。`)) { onClose(); return }
@@ -51,6 +52,7 @@ const WsRowMenu = ({ ws, onClose }: { ws: Workspace; onClose: () => void }) => {
   }
   return (
     <div className="ws-menu" role="menu" onClick={(e) => e.stopPropagation()}>
+      <button role="menuitem" disabled={busy} onClick={togglePinned}>{ws.pinned ? "取消置顶" : "置顶"}</button>
       {ws.status === "active" && <button role="menuitem" disabled={busy} onClick={archive}>归档</button>}
       {ws.status === "archived" && <button role="menuitem" disabled={busy} onClick={unarchive}>恢复</button>}
       <button role="menuitem" className="danger" disabled={busy} onClick={del}>删除…</button>
@@ -109,7 +111,7 @@ export const Sidebar = () => {
   const match = (w: Workspace) =>
     query === "" || w.name.includes(query) || w.branch.includes(query)
   const ordered = orderedActiveWs().filter(match)
-  const archived = workspaces.filter((w) => w.status === "archived" && match(w))
+  const archived = pinnedFirst(workspaces.filter((w) => w.status === "archived" && match(w)))
 
   return (
     <div className="sidebar">

@@ -3,10 +3,16 @@ import { dispatchHotkey, pushHotkeyLayer } from "./dispatch"
 import { useData } from "../stores/data"
 import { useUi } from "../stores/ui"
 
-/** 视觉顺序的 active workspace 列表（pinned 优先 → createdAt 倒序）——Cmd+1..9/[/] 的索引真源 */
+/** pinned 稳定分组：置顶项优先，两个组内均保留输入顺序。 */
+export const pinnedFirst = <T extends { pinned: boolean }>(items: readonly T[]): T[] => [
+  ...items.filter((item) => item.pinned),
+  ...items.filter((item) => !item.pinned),
+]
+
+/** 视觉顺序的 active workspace 列表——Cmd+1..9/[/] 的索引真源 */
 export const orderedActiveWs = () => {
   const ws = useData.getState().workspaces.filter((w) => w.status === "active" || w.status === "creating" || w.status === "error")
-  return [...ws].sort((a, b) => (Number(b.pinned) - Number(a.pinned)) || b.createdAt - a.createdAt)
+  return pinnedFirst(ws)
 }
 
 const jumpTo = (i: number): void => {

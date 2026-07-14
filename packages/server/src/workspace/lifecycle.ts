@@ -8,7 +8,7 @@ import { WorkspacesRepo } from "../repo/workspaces.js"
 import { EventsRepo } from "../repo/events.js"
 import { ValidationError, ConflictError, NotFoundError } from "../repo/errors.js"
 import { GitService, GitError } from "../git/service.js"
-import { SetupRunner, SetupScriptError, resolveSetupScripts } from "./setup.js"
+import { SetupRunner, SetupScriptError, makeSetupPane, resolveSetupScripts } from "./setup.js"
 import { pickName, sanitizeSlug } from "./names.js"
 import { allocatePortBase, portEnv } from "./ports.js"
 import { injectInfoExclude, readWorktreeIncludePatterns, copyIncludedFiles } from "./include.js"
@@ -24,6 +24,7 @@ export interface PostCreateContext {
   readonly engineId?: string
   readonly model?: string
   readonly effort?: string
+  readonly fanoutGroup?: string
 }
 export type PostCreateHook = (ws: Workspace, ctx: PostCreateContext) => Effect.Effect<void, HookError>
 export class PostCreateHooks extends Context.Tag("PostCreateHooks")<PostCreateHooks, ReadonlyArray<PostCreateHook>>() {}
@@ -35,7 +36,7 @@ export type LifecycleError = NotFoundError | ConflictError | GitError
 export interface WorkspaceLifecycleShape {
   readonly create: (opts: {
     projectId: string; branchSlug?: string; name?: string; initialPrompt?: string; engineId?: string
-    model?: string; effort?: string
+    model?: string; effort?: string; fanoutGroup?: string
   }) => Effect.Effect<Workspace, CreateError>
   readonly retry: (id: string) => Effect.Effect<Workspace, CreateError>
   readonly archive: (id: string, opts?: { force?: boolean }) => Effect.Effect<Workspace, LifecycleError>
@@ -72,7 +73,10 @@ export const WorkspaceLifecycleLive = Layer.effect(
           yield* tmuxOpt.value.killSession(tmuxSessionName(ws.id)).pipe(Effect.ignore)
           yield* emit(ws.id, "workspace.tmux.killed", { sessionName: tmuxSessionName(ws.id), reason }).pipe(Effect.ignore)
         }
-        if (reason === "delete" && Option.isSome(tabsOpt)) yield* tabsOpt.value.removeByWorkspace(ws.id).pipe(Effect.ignore)
+        if (Option.isSome(tabsOpt)) {
+          if (reason === "delete") yield* tabsOpt.value.removeByWorkspace(ws.id).pipe(Effect.ignore)
+          else yield* tabsOpt.value.removeNonEngineByWorkspace(ws.id).pipe(Effect.ignore)
+        }
         if (reason === "delete" && Option.isSome(queueOpt)) yield* queueOpt.value.clearWorkspace(ws.id).pipe(Effect.ignore)
       })
 
@@ -131,10 +135,44 @@ export const WorkspaceLifecycleLive = Layer.effect(
         const scripts = resolveSetupScripts({ worktreePath: ws.path, repoRoot, projectId: ws.projectId, home: cfg.home })
         if (scripts.length > 0) {
           yield* emit(ws.id, "workspace.setup.started", { scripts })
+          let resultFile: string | undefined
+          if (Option.isSome(tmuxOpt) && Option.isSome(tabsOpt)) {
+            const pane = yield* Effect.try({
+              try: () => makeSetupPane({ home: cfg.home, workspaceId: ws.id, worktreePath: ws.path, scripts }),
+              catch: (e) => new SetupScriptError({ script: "", exitCode: null, message: `setup runner 准备失败：${String(e)}`, outputTail: "" }),
+            })
+            resultFile = pane.resultFile
+            const session = tmuxSessionName(ws.id)
+            yield* tmuxOpt.value.newSession({
+              name: session,
+              cwd: ws.path,
+              windowName: "engine",
+              command: ["/bin/sh", "-c", "while :; do sleep 3600; done"],
+              env: { COOLIE_ROOT: repoRoot, COOLIE_WORKSPACE: ws.id, ...portEnv(ws.portBase) },
+            }).pipe(Effect.mapError((e) => new SetupScriptError({
+              script: "", exitCode: e.exitCode, message: `setup tmux session 创建失败：${e.message}`, outputTail: e.stderr,
+            })))
+            const setupWindow = yield* tmuxOpt.value.newWindow({
+              session, name: "setup", cwd: ws.path, command: pane.command,
+            }).pipe(Effect.mapError((e) => new SetupScriptError({
+              script: "", exitCode: e.exitCode, message: `setup window 创建失败：${e.message}`, outputTail: e.stderr,
+            })))
+            if (setupWindow !== 1)
+              return yield* new SetupScriptError({ script: "", exitCode: null, message: `setup window 必须是 1，实际 ${setupWindow}`, outputTail: "" })
+            yield* tabsOpt.value.insert({
+              workspaceId: ws.id, kind: "setup", tmuxWindow: setupWindow, title: "setup",
+            }).pipe(Effect.catchAllDefect((defect) => Effect.fail(new SetupScriptError({
+              script: "",
+              exitCode: null,
+              message: `setup tab 持久化失败：${String(defect)}`,
+              outputTail: "",
+            }))))
+          }
           const results = yield* setup.run({
             worktreePath: ws.path,
             scripts,
             env: { COOLIE_ROOT: repoRoot, ...portEnv(ws.portBase) },
+            ...(resultFile !== undefined ? { resultFile } : {}),
           })
           for (const r of results) yield* emit(ws.id, "workspace.setup.finished", r)
         }
@@ -151,6 +189,8 @@ export const WorkspaceLifecycleLive = Layer.effect(
     /** 失败回滚：删半成品 worktree（只走 git worktree remove --force + prune，绝不裸 rm；branch 保留）→ status=error */
     const rollbackToError = (ws: Workspace, repoRoot: string, cause: CreateError): Effect.Effect<never, CreateError> =>
       Effect.gen(function* () {
+        if (Option.isSome(tmuxOpt)) yield* tmuxOpt.value.killSession(tmuxSessionName(ws.id)).pipe(Effect.ignore)
+        if (Option.isSome(tabsOpt)) yield* tabsOpt.value.removeByWorkspace(ws.id).pipe(Effect.ignore)
         yield* git.worktreeRemove(repoRoot, ws.path, { force: true }).pipe(Effect.ignore)
         yield* git.worktreePrune(repoRoot).pipe(Effect.ignore)
         yield* repo.setLastError(ws.id, { tag: cause._tag, message: cause.message }).pipe(Effect.ignore)
@@ -181,6 +221,7 @@ export const WorkspaceLifecycleLive = Layer.effect(
           ...(opts.engineId !== undefined ? { engineId: opts.engineId } : {}),
           ...(opts.model !== undefined ? { model: opts.model } : {}),
           ...(opts.effort !== undefined ? { effort: opts.effort } : {}),
+          ...(opts.fanoutGroup !== undefined ? { fanoutGroup: opts.fanoutGroup } : {}),
         })
         yield* emit(ws.id, "workspace.creating", { id: ws.id, projectId: project.id, name, branch, path: wsPath, portBase })
         return yield* provision(ws, project.repoRoot, {
@@ -188,6 +229,7 @@ export const WorkspaceLifecycleLive = Layer.effect(
           ...(opts.engineId !== undefined ? { engineId: opts.engineId } : {}),
           ...(opts.model !== undefined ? { model: opts.model } : {}),
           ...(opts.effort !== undefined ? { effort: opts.effort } : {}),
+          ...(opts.fanoutGroup !== undefined ? { fanoutGroup: opts.fanoutGroup } : {}),
         }).pipe(
           Effect.catchAll((e) => rollbackToError(ws, project.repoRoot, e)),
         )

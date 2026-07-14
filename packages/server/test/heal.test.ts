@@ -91,7 +91,11 @@ beforeAll(() => {
   execFileSync("git", ["-c", "user.email=t@t", "-c", "user.name=t", "commit", "--allow-empty", "-m", "init"], { cwd: repoRoot })
   db = new Database(":memory:"); runMigrations(db)
 })
-afterAll(() => { try { execFileSync("tmux", ["-L", SOCK, "kill-server"]) } catch { /* gone */ } })
+afterAll(() => {
+  try { execFileSync("tmux", ["-L", SOCK, "kill-server"]) } catch { /* gone */ }
+  db.close()
+  for (const dir of [home, wsRoot, repoRoot]) fs.rmSync(dir, { recursive: true, force: true })
+})
 
 const runIn = <A>(layer: ReturnType<typeof buildLayer>, eff: Effect.Effect<A, any, any>): Promise<A> =>
   Effect.runPromise(Effect.provide(eff, layer) as Effect.Effect<A, never, never>)

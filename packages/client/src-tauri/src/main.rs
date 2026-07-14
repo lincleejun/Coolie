@@ -48,6 +48,7 @@ fn binary_on_path(name: String) -> bool {
 
 fn main() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_deep_link::init())
         .invoke_handler(tauri::generate_handler![read_server_info, spawn_detached, binary_on_path])
         .setup(|app| {
             let win = app.get_webview_window("main").expect("main window");

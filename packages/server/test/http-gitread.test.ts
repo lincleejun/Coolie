@@ -20,6 +20,10 @@ const fakeGitRead = {
   },
   changes: async () => ({ againstBase: [], committed: [], staged: [], unstaged: [], untracked: ["u.txt"] }),
   files: async () => ["a.ts", "b.ts"],
+  diff: async (wt: string, baseRef: string, section: string, filePath: string) => {
+    fakeGitRead.calls.push(["diff", wt, baseRef, section, filePath])
+    return { path: filePath, section, unified: "@@ -1 +1 @@\n-one\n+ONE\n", binary: false }
+  },
 }
 
 // 直接插一行 workspace（照 hooks-endpoint.test.ts 姿势）；返回 {id, path, baseRef}
@@ -93,6 +97,19 @@ describe("git read routes", () => {
     const f = await get(`/workspaces/${ws.id}/files`)
     expect(f.status).toBe(200)
     expect(f.body).toEqual({ files: ["a.ts", "b.ts"] })
+  })
+  it("single-file diff validates parameters before workspace lookup and delegates section/path", async () => {
+    const ws = insertWorkspace("active", "/tmp/wt-diff", "BASE")
+    const ok = await get(`/workspaces/${ws.id}/git/diff?section=unstaged&path=${encodeURIComponent("src/a.ts")}`)
+    expect(ok.status).toBe(200)
+    expect(ok.body).toMatchObject({ path: "src/a.ts", section: "unstaged", binary: false })
+    expect(ok.body.unified).toContain("+ONE")
+    expect(fakeGitRead.calls.at(-1)).toEqual(["diff", ws.path, ws.baseRef, "unstaged", "src/a.ts"])
+
+    expect((await get(`/workspaces/${ws.id}/git/diff?section=unstaged`)).status).toBe(400)
+    expect((await get(`/workspaces/${ws.id}/git/diff?section=bogus&path=a.txt`)).status).toBe(400)
+    expect((await get(`/workspaces/${ws.id}/git/diff?section=unstaged&path=${encodeURIComponent("../../etc/passwd")}`)).status).toBe(400)
+    expect((await get("/workspaces/does-not-exist/git/diff?section=bogus&path=a.txt")).status).toBe(400)
   })
   it("commands：扫描 repo .claude/commands + claudeHome/commands，source 正确", async () => {
     const wt = fs.mkdtempSync(path.join(os.tmpdir(), "coolie-gr-wt-"))

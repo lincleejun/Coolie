@@ -15,11 +15,20 @@ export interface ComposerOps {
   input(target: string, opts: { text: string; mode: InputMode; skipStable: boolean }): Promise<void>
   newShellWindow(session: string, cwd: string): Promise<number>
   killWindow(session: string, index: number): Promise<void>
+  listWindows?(session: string): Promise<ReadonlyArray<{ readonly index: number; readonly name: string }>>
+  newRunWindow?(session: string, cwd: string, script: string): Promise<number>
+  respawnRunWindow?(session: string, window: number, cwd: string, script: string): Promise<void>
 }
 
 const ENTER_DELAY_MS = 150 // kobe 实测：粘贴终止符与回车必须分开两次 tty read
 
 export const makeComposerOps = (tmux: TmuxServiceShape): ComposerOps => {
+  // script 路径只作为 $1 argv 传入；不插值进 shell 程序文本。
+  const runCommand = (script: string): readonly string[] => [
+    "/bin/sh", "-c",
+    'script="$1"; /bin/bash "$script"; code=$?; printf "\\n[coolie run exited %s]\\n" "$code"; exec "${SHELL:-/bin/sh}" -l',
+    "coolie-run", script,
+  ]
   const pasteClean = (target: string, text: string, enter: boolean) =>
     Effect.gen(function* () {
       const clean = sanitizePromptForPty(text)
@@ -52,6 +61,11 @@ export const makeComposerOps = (tmux: TmuxServiceShape): ComposerOps => {
       ),
     newShellWindow: (session, cwd) =>
       Effect.runPromise(tmux.newWindow({ session, name: "shell", cwd })),
+    listWindows: (session) => Effect.runPromise(tmux.listWindows(session)),
+    newRunWindow: (session, cwd, script) =>
+      Effect.runPromise(tmux.newWindow({ session, name: "run", cwd, command: runCommand(script) })),
+    respawnRunWindow: (session, window, cwd, script) =>
+      Effect.runPromise(tmux.respawnWindow({ session, window, cwd, command: runCommand(script) })),
     killWindow: (session, index) => Effect.runPromise(tmux.killWindow(session, index)),
   }
 }

@@ -129,6 +129,38 @@ describe("WorkspacesRepo", () => {
     expect(Exit.isSuccess(exit)).toBe(true)
     if (Exit.isSuccess(exit)) expect(exit.value.baseRef).toBe("abc123")
   })
+  it("setPinned persists for any status, is idempotent, and records one event per change", async () => {
+    const { db, run } = make()
+    const exit = await run(Effect.gen(function* () {
+      const repo = yield* WorkspacesRepo
+      const ws = yield* repo.insertCreating(w1)
+      const pinned = yield* repo.setPinned(ws.id, true)
+      const same = yield* repo.setPinned(ws.id, true)
+      yield* repo.setStatus(ws.id, "active")
+      yield* repo.setStatus(ws.id, "archived")
+      const unpinned = yield* repo.setPinned(ws.id, false)
+      return { pinned, same, unpinned, persisted: yield* repo.get(ws.id) }
+    }))
+    expect(Exit.isSuccess(exit)).toBe(true)
+    if (Exit.isSuccess(exit)) {
+      expect(exit.value.pinned.pinned).toBe(true)
+      expect(exit.value.same.pinned).toBe(true)
+      expect(exit.value.unpinned.pinned).toBe(false)
+      expect(exit.value.persisted.pinned).toBe(false)
+      const events = db.prepare("SELECT type, payload FROM events WHERE workspace_id = ? ORDER BY seq")
+        .all(exit.value.persisted.id) as Array<{ type: string; payload: string }>
+      expect(events.map((event) => event.type)).toEqual(["workspace.pinned", "workspace.pinned"])
+      expect(events.map((event) => JSON.parse(event.payload))).toEqual([{ pinned: true }, { pinned: false }])
+    }
+  })
+  it("setPinned unknown id -> NotFoundError without event", async () => {
+    const { db, run } = make()
+    const exit = await run(Effect.gen(function* () {
+      return yield* (yield* WorkspacesRepo).setPinned("nope", true)
+    }))
+    expect(failTag(exit)).toBe("NotFoundError")
+    expect((db.prepare("SELECT count(*) AS n FROM events").get() as { n: number }).n).toBe(0)
+  })
   it("setLastError stores shape with tag, message, and numeric at", async () => {
     const { db, run } = make()
     const exit = await run(Effect.gen(function* () {
@@ -147,6 +179,31 @@ describe("WorkspacesRepo", () => {
       expect(data.lastError.message).toBe("boom")
       expect(typeof data.lastError.at).toBe("number")
       expect(data.portBase).toBe(40000) // ensure portBase still present (merge, not overwrite)
+    }
+  })
+  it("setCreateCtx/getCreateCtx round-trips fanoutGroup without exposing it on Workspace", async () => {
+    const { run } = make()
+    const exit = await run(Effect.gen(function* () {
+      const repo = yield* WorkspacesRepo
+      const ws = yield* repo.insertCreating(w1)
+      yield* repo.setCreateCtx(ws.id, {
+        initialPrompt: "ship it",
+        engineId: "codex",
+        fanoutGroup: "fo-abc",
+      })
+      return {
+        workspace: yield* repo.get(ws.id),
+        createCtx: yield* repo.getCreateCtx(ws.id),
+      }
+    }))
+    expect(Exit.isSuccess(exit)).toBe(true)
+    if (Exit.isSuccess(exit)) {
+      expect(exit.value.createCtx).toEqual({
+        initialPrompt: "ship it",
+        engineId: "codex",
+        fanoutGroup: "fo-abc",
+      })
+      expect("fanoutGroup" in exit.value.workspace).toBe(false)
     }
   })
 })

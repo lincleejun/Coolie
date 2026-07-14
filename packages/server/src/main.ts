@@ -220,10 +220,16 @@ const cmdStart = async (): Promise<void> => {
   // WS 终端通道（挂 TCP server；GUI/浏览器从 TCP 连）
   attachTerminalWs(server, {
     token, tmuxSocket: cfg.tmuxSocket, clients,
-    resolveSession: async (wsId) => {
-      const exit = await runtime(Effect.gen(function* () { return yield* (yield* WorkspacesRepo).get(wsId) }))
+    resolveSession: async (wsId, window) => {
+      const exit = await runtime(Effect.gen(function* () {
+        const ws = yield* (yield* WorkspacesRepo).get(wsId)
+        if (ws.status !== "active" && ws.status !== "creating") return null
+        const registered = (yield* (yield* TabsRepo).listByWorkspace(wsId))
+          .some((tab) => tab.tmuxWindow === window)
+        return registered ? tmuxSessionName(ws.id) : null
+      }))
       return Exit.match(exit, {
-        onSuccess: (ws) => (ws.status === "active" ? tmuxSessionName(ws.id) : null),
+        onSuccess: (session) => session,
         onFailure: () => null,
       })
     },

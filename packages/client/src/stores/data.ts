@@ -43,6 +43,7 @@ interface DataState {
    *  archive 脏树会被 server 409 拒（force=false）；调用方据此弹确认再以 force=true 重试。 */
   archiveWs(wsId: string, force?: boolean): Promise<void>
   unarchiveWs(wsId: string): Promise<void>
+  setPinnedWs(wsId: string, pinned: boolean): Promise<void>
   deleteWs(wsId: string, force?: boolean): Promise<void>
   cancelSend(id: number): void
   pushWarning(code: string, message: string): void
@@ -166,6 +167,10 @@ export const useData = create<DataState>((set, get) => ({
   },
   archiveWs: async (wsId, force = false) => { if (api) await api.req("POST", `/workspaces/${wsId}/archive`, { force }) },
   unarchiveWs: async (wsId) => { if (api) await api.req("POST", `/workspaces/${wsId}/unarchive`, {}) },
+  setPinnedWs: async (wsId, pinned) => {
+    if (!api) throw new Error("api 未就绪")
+    await api.req("POST", `/workspaces/${wsId}/pin`, { pinned })
+  },
   deleteWs: async (wsId, force = true) => { if (api) await api.req("DELETE", `/workspaces/${wsId}${force ? "?force=1" : ""}`) },
   cancelSend: (id) => {
     const p = get().pendingSends.find((x) => x.id === id)

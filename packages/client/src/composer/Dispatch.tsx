@@ -3,6 +3,8 @@ import { useData } from "../stores/data"
 import { useUi } from "../stores/ui"
 import { Composer } from "./Composer"
 import { makeDrafts, type DraftStorage } from "./drafts"
+import { MAX_FANOUT } from "@coolie/protocol"
+import type { EngineInfo } from "../stores/types"
 
 const draftStorage: DraftStorage =
   typeof localStorage !== "undefined"
@@ -26,6 +28,65 @@ export const buildCreateBody = (i: CreateBodyInput): Record<string, string> => (
   ...(i.effort !== "default" ? { effort: i.effort } : {}),
 })
 
+export const fanoutTotal = (counts: Readonly<Record<string, number>>): number =>
+  Object.values(counts).reduce((total, count) =>
+    total + (Number.isFinite(count) && count > 0 ? Math.floor(count) : 0), 0)
+
+export const buildFanoutRequests = (
+  base: CreateBodyInput,
+  counts: Readonly<Record<string, number>>,
+  engines: readonly EngineInfo[],
+  groupId: string,
+): Array<Record<string, string>> => {
+  const requests: Array<Record<string, string>> = []
+  for (const engine of engines) {
+    const count = Math.max(0, Math.floor(counts[engine.id] ?? 0))
+    const selected = engine.id === base.engineId
+    for (let index = 0; index < count; index++) {
+      requests.push({
+        ...buildCreateBody({
+          projectId: base.projectId,
+          engineId: engine.id,
+          prompt: base.prompt,
+          // 当前 UI 只有一组 model/effort 选择器。只把选择值发给它所属的引擎；
+          // 其他引擎明确使用默认值，避免把 codex-only effort 发给 claude。
+          model: selected && engine.models.includes(base.model) ? base.model : "default",
+          effort: selected && engine.capabilities.effort && engine.efforts?.includes(base.effort)
+            ? base.effort
+            : "default",
+        }),
+        fanoutGroup: groupId,
+      })
+    }
+  }
+  return requests
+}
+
+export type FanoutCreateResult =
+  | { readonly engineId: string; readonly ok: true; readonly workspaceId: string }
+  | { readonly engineId: string; readonly ok: false; readonly error: string }
+
+export const submitFanoutRequests = async (
+  requests: readonly Record<string, string>[],
+  create: (body: Record<string, string>) => Promise<{ id: string }>,
+): Promise<FanoutCreateResult[]> => {
+  const results: FanoutCreateResult[] = []
+  for (const body of requests) {
+    const engineId = body.engineId ?? "unknown"
+    try {
+      const workspace = await create(body)
+      results.push({ engineId, ok: true, workspaceId: workspace.id })
+    } catch (error) {
+      results.push({
+        engineId,
+        ok: false,
+        error: error instanceof Error ? error.message : String(error),
+      })
+    }
+  }
+  return results
+}
+
 export const DispatchPanel = () => {
   const projects = useData((s) => s.projects)
   const engines = useData((s) => s.config?.engines ?? [])
@@ -36,13 +97,41 @@ export const DispatchPanel = () => {
   const [effort, setEffort] = useState("default")
   const [creating, setCreating] = useState(false)
   const [err, setErr] = useState<string | null>(null)
+  const [counts, setCounts] = useState<Record<string, number>>({})
+  const total = fanoutTotal(counts)
+  const overCap = total > MAX_FANOUT
 
   const submit = (prompt: string): void => {
     const api = useData.getState().getApi()
     if (!api || !projectId || !engine || creating) return
+    if (overCap) {
+      setErr(`fan-out 实例数 ${total} 超上限 ${MAX_FANOUT}`)
+      return
+    }
     setCreating(true); setErr(null)
     void (async () => {
       try {
+        if (total > 0) {
+          const groupId = `fo-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`
+          const requests = buildFanoutRequests({
+            projectId,
+            engineId: engine.id,
+            prompt,
+            model,
+            effort,
+          }, counts, engines, groupId)
+          const results = await submitFanoutRequests(
+            requests,
+            (body) => api.req("POST", "/workspaces", body),
+          )
+          const first = results.find((result) => result.ok)
+          if (first?.ok) useUi.getState().selectWs(first.workspaceId)
+          const failures = results.filter((result): result is Extract<FanoutCreateResult, { ok: false }> => !result.ok)
+          if (failures.length > 0)
+            setErr(`部分失败（${failures.length}/${results.length}）：${failures.map((result) =>
+              `${result.engineId}: ${result.error}`).join("；")}；成功项已保留`)
+          return
+        }
         // 同步流水线：fetch 会等到 active/error 才返回（server 行为，可长达数十秒）
         const ws = await api.req("POST", "/workspaces", buildCreateBody({
           projectId,
@@ -103,10 +192,36 @@ export const DispatchPanel = () => {
           </>
         )}
       </div>
+      <div className="dispatch-fanout">
+        <label>Fan-out（每引擎实例数）</label>
+        {engines.map((candidate) => (
+          <span key={candidate.id} className="fanout-engine">
+            {candidate.displayName}
+            <input
+              aria-label={`${candidate.displayName} 实例数`}
+              type="number"
+              min={0}
+              max={MAX_FANOUT}
+              step={1}
+              value={counts[candidate.id] ?? 0}
+              onChange={(event) => setCounts((current) => ({
+                ...current,
+                [candidate.id]: Math.max(0, Math.floor(Number(event.target.value) || 0)),
+              }))}
+            />
+          </span>
+        ))}
+        {total > 0 && (
+          <span className={overCap ? "dispatch-err" : "dim"}>
+            将创建 {total} 个（上限 {MAX_FANOUT}）{overCap ? "，请减少实例数" : ""}
+          </span>
+        )}
+      </div>
       {err && <div className="dispatch-err">创建失败：{err}（左栏 error 项可 Retry）</div>}
       {creating
         ? <div className="dispatch-busy">◌ 创建中…（fetch worktree → setup → tmux → engine → 投递首条 prompt）</div>
         : <Composer wsId={`dispatch:${projectId ?? "none"}`} onSubmitOverride={submit}
+            disabled={overCap}
             placeholder="描述任务… Enter 创建 workspace 并作为首条 prompt 投递" />}
     </div>
   )

@@ -100,6 +100,76 @@ describe("coolie CLI e2e", () => {
     db.close()
     coolie("delete", id, "--force")
   })
+  it("pin and unpin persist workspace state", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "coolie-cli-pin-"))
+    execFileSync("git", ["init", "-b", "main"], { cwd: dir })
+    execFileSync("git", ["-c", "user.email=t@t", "-c", "user.name=t", "commit", "--allow-empty", "-m", "init"], { cwd: dir })
+    const id = /\(([^)]+)\)/.exec(coolie("create", dir, "--name", "pin-me"))![1]!
+    expect(coolie("pin", id)).toContain(`pinned ${id}`)
+    let db = new Database(path.join(home, "coolie.db"), { readonly: true })
+    expect((db.prepare("SELECT pinned FROM workspaces WHERE id = ?").get(id) as { pinned: number }).pinned).toBe(1)
+    db.close()
+    expect(coolie("unpin", id)).toContain(`unpinned ${id}`)
+    db = new Database(path.join(home, "coolie.db"), { readonly: true })
+    expect((db.prepare("SELECT pinned FROM workspaces WHERE id = ?").get(id) as { pinned: number }).pinned).toBe(0)
+    db.close()
+    coolie("delete", id, "--force")
+  })
+  it("create --agents creates each instance independently with unique slugs", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "coolie-cli-fanout-"))
+    execFileSync("git", ["init", "-b", "main"], { cwd: dir })
+    execFileSync("git", ["-c", "user.email=t@t", "-c", "user.name=t", "commit", "--allow-empty", "-m", "init"], { cwd: dir })
+    const out = coolie(
+      "create", dir, "--agents", "claude:2,codex:1",
+      "--slug", "fan", "--name", "fan-name", "--prompt", "hi",
+    )
+    expect(out).toContain("3/3 成功")
+    expect(out).toMatch(/claude\s+created/)
+    expect(out).toMatch(/codex\s+created/)
+    const db = new Database(path.join(home, "coolie.db"), { readonly: true })
+    const rows = db.prepare("SELECT id, name, branch, data FROM workspaces WHERE project_id = (SELECT id FROM projects WHERE repo_root = ?) ORDER BY created_at")
+      .all(dir) as Array<{ id: string; name: string; branch: string; data: string }>
+    expect(rows.map((row) => row.branch)).toEqual(["coolie/fan-1", "coolie/fan-2", "coolie/fan-3"])
+    expect(rows.map((row) => row.name)).toEqual(["fan-name-1", "fan-name-2", "fan-name-3"])
+    expect(new Set(rows.map((row) => JSON.parse(row.data).createCtx.fanoutGroup)).size).toBe(1)
+    db.close()
+    for (const row of rows) coolie("delete", row.id, "--force")
+  })
+  it("create --agents rejects unknown engines before creating anything", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "coolie-cli-unknown-engine-"))
+    execFileSync("git", ["init", "-b", "main"], { cwd: dir })
+    expect(() => coolie("create", dir, "--agents", "bogus:1")).toThrow(/未知引擎|Command failed/)
+    const db = new Database(path.join(home, "coolie.db"), { readonly: true })
+    const count = db.prepare("SELECT count(*) AS n FROM workspaces WHERE project_id = (SELECT id FROM projects WHERE repo_root = ?)")
+      .get(dir) as { n: number }
+    expect(count.n).toBe(0)
+    db.close()
+  })
+  it("create makes --agents and --engine mutually exclusive", () => {
+    expect(() => coolie("create", repo, "--agents", "claude:1", "--engine", "claude")).toThrow()
+  })
+  it("create --agents reports partial failure and keeps successful workspaces", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "coolie-cli-partial-"))
+    execFileSync("git", ["init", "-b", "main"], { cwd: dir })
+    execFileSync("git", ["-c", "user.email=t@t", "-c", "user.name=t", "commit", "--allow-empty", "-m", "init"], { cwd: dir })
+    execFileSync("git", ["checkout", "-b", "coolie/partial-2"], { cwd: dir })
+    execFileSync("git", ["-c", "user.email=t@t", "-c", "user.name=t", "commit", "--allow-empty", "-m", "independent"], { cwd: dir })
+    execFileSync("git", ["checkout", "main"], { cwd: dir })
+    let output = ""
+    try {
+      coolie("create", dir, "--agents", "claude:2", "--name", "same-name", "--slug", "partial")
+    } catch (error: any) {
+      output = String(error.stdout ?? "") + String(error.stderr ?? "")
+    }
+    expect(output).toContain("1/2 成功")
+    expect(output).toContain("failed:")
+    const db = new Database(path.join(home, "coolie.db"), { readonly: true })
+    const rows = db.prepare("SELECT id, status FROM workspaces WHERE project_id = (SELECT id FROM projects WHERE repo_root = ?)")
+      .all(dir) as Array<{ id: string; status: string }>
+    expect(rows.map((row) => row.status).sort()).toEqual(["active", "error"])
+    db.close()
+    for (const row of rows) coolie("delete", row.id, "--force")
+  })
   it("resume：session 被外力清理 → 经 ensure 重建（enter 的 heal 同一条 server 路径）", () => {
     execFileSync("git", ["-c", "user.email=t@t", "-c", "user.name=t", "commit", "--allow-empty", "-m", "init"], { cwd: repo })
     const created = coolie("create", repo, "--name", "heal-me")

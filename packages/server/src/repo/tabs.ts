@@ -37,6 +37,8 @@ export interface TabsRepoShape {
   readonly listEngineTabs: () => Effect.Effect<Array<{ tab: Tab; workspacePath: string }>>
   /** 删单个 tab 行 + tab.closed 事件（shell tab 关闭用） */
   readonly remove: (id: string) => Effect.Effect<void, NotFoundError>
+  /** archive：engine resume 钥匙保留，其余 runtime tab 立即删除。 */
+  readonly removeNonEngineByWorkspace: (workspaceId: string) => Effect.Effect<void>
   readonly removeByWorkspace: (workspaceId: string) => Effect.Effect<void>
 }
 export class TabsRepo extends Context.Tag("TabsRepo")<TabsRepo, TabsRepoShape>() {}
@@ -151,6 +153,16 @@ export const TabsRepoLive = Layer.effect(
           ev = appendEventRow(db, { workspaceId: r.workspace_id, type: "tab.closed", payload: { tabId: id, kind: r.kind } })
         })()
         broadcast(ev)
+      }),
+      removeNonEngineByWorkspace: (wsId) => Effect.sync(() => {
+        const rows = db.prepare("SELECT id, kind FROM tabs WHERE workspace_id = ? AND kind <> 'engine'").all(wsId) as any[]
+        const evs: CoolieEvent[] = []
+        db.transaction(() => {
+          db.prepare("DELETE FROM tabs WHERE workspace_id = ? AND kind <> 'engine'").run(wsId)
+          for (const row of rows)
+            evs.push(appendEventRow(db, { workspaceId: wsId, type: "tab.closed", payload: { tabId: row.id, kind: row.kind } }))
+        })()
+        for (const ev of evs) broadcast(ev)
       }),
       removeByWorkspace: (wsId) => Effect.sync(() => {
         db.prepare("DELETE FROM tabs WHERE workspace_id = ?").run(wsId)

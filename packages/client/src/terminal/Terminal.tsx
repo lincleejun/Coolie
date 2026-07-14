@@ -1,21 +1,32 @@
-import { useEffect, useRef, useState } from "react"
+import { useCallback, useEffect, useMemo, useRef, useState } from "react"
+import type { TabKind, TabStatus } from "@coolie/protocol"
 import { useData } from "../stores/data"
+import { setExternalModeDisposer } from "../stores/terminal"
 import { createTermSession, getOrCreateSession, sessionKey, disposeWorkspaceSessions, type TermState } from "./session"
+import { createTerminalRecovery, planTerminalRecoveryUi, readableRecoveryError } from "./resume"
 import "./terminal.css"
 
 // F2：Terminal 模块一加载就把真实的会话回收器注入 data store。
 // store 里默认是 noop（保持 store 纯 node 可测）；一旦终端进场，workspace.archived/deleted 即触发按 ws 断连。
 useData.getState().setSessionDisposer(disposeWorkspaceSessions)
+setExternalModeDisposer(disposeWorkspaceSessions)
 
-/**
- * 退出横幅的 Resume：[Plan 4 contract — verify at execution]
- * Plan 4 提供 engine keep-alive + resume API 后接真按钮（POST resume → session 复活）。
- * 未合并时降级提示走 Open in iTerm2 手动 `claude --resume`。
- */
-export const TerminalView = ({ wsId, windowIdx, active }: { wsId: string; windowIdx: number; active: boolean }) => {
+interface TerminalViewProps {
+  readonly wsId: string
+  readonly tabId: string
+  readonly kind: TabKind
+  readonly tabStatus: TabStatus
+  readonly windowIdx: number
+  readonly active: boolean
+}
+
+export const TerminalView = ({ wsId, tabId, kind, tabStatus, windowIdx, active }: TerminalViewProps) => {
   const host = useRef<HTMLDivElement>(null)
   const [state, setState] = useState<TermState>("connecting")
+  const [resuming, setResuming] = useState(false)
+  const [resumeError, setResumeError] = useState<string | null>(null)
   const api = useData((s) => s.getApi())
+  const refreshTabs = useData((s) => s.refreshTabs)
 
   useEffect(() => {
     if (!api || !host.current) return
@@ -33,17 +44,51 @@ export const TerminalView = ({ wsId, windowIdx, active }: { wsId: string; window
     getOrCreateSession(sessionKey(wsId, windowIdx), () => createTermSession(api, wsId, windowIdx)).focus()
   }, [active, api, wsId, windowIdx])
 
-  const reconnect = (): void => {
+  const reconnect = useCallback((): void => {
     if (!api) return
     getOrCreateSession(sessionKey(wsId, windowIdx), () => createTermSession(api, wsId, windowIdx)).reconnect()
+  }, [api, wsId, windowIdx])
+
+  const recovery = useMemo(() => createTerminalRecovery({
+    resume: async () => {
+      if (!api) throw new Error("API 尚未就绪")
+      return api.req("POST", `/workspaces/${encodeURIComponent(wsId)}/tabs/${encodeURIComponent(tabId)}/resume`)
+    },
+    refreshTabs: () => refreshTabs(wsId),
+    reconnect,
+  }), [api, reconnect, refreshTabs, tabId, wsId])
+
+  const resumeEngine = async (): Promise<void> => {
+    if (kind !== "engine" || recovery.pending()) return
+    setResuming(true)
+    setResumeError(null)
+    try {
+      await recovery.run()
+    } catch (error) {
+      setResumeError(readableRecoveryError(error))
+    } finally {
+      setResuming(false)
+    }
   }
+
+  const recoveryUi = planTerminalRecoveryUi(kind, state, tabStatus)
+  const interruptedLabel = state === "exited"
+    ? "进程已退出"
+    : state === "dead"
+      ? "连接已断开（server 重启/会话丢失）"
+      : "engine 运行错误"
 
   return (
     <div className="term-wrap" style={{ visibility: active ? "visible" : "hidden", zIndex: active ? 1 : 0 }}>
       <div className="term-container" ref={host} />
-      {(state === "exited" || state === "dead") && (
+      {recoveryUi.interrupted && (
         <div className="term-banner">
-          <span>{state === "exited" ? "进程已退出" : "连接已断开（server 重启/会话丢失）"}</span>
+          <span>{resumeError ?? interruptedLabel}</span>
+          {recoveryUi.showResume && (
+            <button className="btn" disabled={resuming} onClick={() => void resumeEngine()}>
+              {resuming ? "恢复中…" : "Resume"}
+            </button>
+          )}
           <button className="btn" onClick={reconnect}>重新连接</button>
         </div>
       )}

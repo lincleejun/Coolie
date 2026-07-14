@@ -60,7 +60,11 @@ beforeAll(() => {
   execFileSync("git", ["-c", "user.email=t@t", "-c", "user.name=t", "commit", "--allow-empty", "-m", "init"], { cwd: repoRoot })
   db = new Database(":memory:"); runMigrations(db)
 })
-afterAll(() => { try { execFileSync("tmux", ["-L", SOCK, "kill-server"]) } catch { /* gone */ } })
+afterAll(() => {
+  try { execFileSync("tmux", ["-L", SOCK, "kill-server"]) } catch { /* gone */ }
+  db.close()
+  for (const dir of [home, wsRoot, repoRoot]) fs.rmSync(dir, { recursive: true, force: true })
+})
 
 const eventTypes = () => (db.prepare("SELECT type FROM events ORDER BY seq").all() as any[]).map((r) => r.type)
 const cap = (target: string) => Effect.runPromise(tmux.capturePane(target))
@@ -71,13 +75,98 @@ const waitFor = async (fn: () => Promise<boolean>, ms = 8000): Promise<void> => 
 }
 
 describe("lifecycle × tmux × engine bootstrap", () => {
+  it("有 setup 时保持 engine@0 占位，setup@1 可见；成功后才 respawn engine 并保留输出", async () => {
+    const layer = buildLayer([fakeClaude])
+    const project = await Effect.runPromise(Effect.provide(Effect.gen(function* () {
+      const projects = yield* ProjectsRepo
+      return (yield* projects.list())[0] ?? (yield* projects.add(repoRoot))
+    }), layer) as Effect.Effect<any, never, never>)
+    const machine = path.join(home, "projects", project.id, "setup.sh")
+    fs.mkdirSync(path.dirname(machine), { recursive: true })
+    fs.writeFileSync(machine, 'printf "SETUP_VISIBLE_MARK\\n"; echo ok > setup-ok\n')
+    try {
+      const { ws, tabs } = await Effect.runPromise(Effect.provide(Effect.gen(function* () {
+        const created = yield* (yield* WorkspaceLifecycle).create({ projectId: project.id, name: "visible-setup" })
+        return { ws: created, tabs: yield* (yield* TabsRepo).listByWorkspace(created.id) }
+      }), layer) as Effect.Effect<any, never, never>)
+      const session = sessionNameFor(ws.id)
+      expect(await Effect.runPromise(tmux.listWindows(session))).toEqual([
+        { index: 0, name: "engine" },
+        { index: 1, name: "setup" },
+      ])
+      expect(tabs.map((t: any) => [t.kind, t.tmuxWindow])).toEqual([["engine", 0], ["setup", 1]])
+      expect(fs.readFileSync(path.join(ws.path, "setup-ok"), "utf8").trim()).toBe("ok")
+      expect(await cap(`${session}:1`)).toContain("SETUP_VISIBLE_MARK")
+      await Effect.runPromise(Effect.provide(Effect.gen(function* () {
+        yield* (yield* WorkspaceLifecycle).archive(ws.id, { force: true })
+      }), layer) as Effect.Effect<any, never, never>)
+      expect((db.prepare("SELECT kind FROM tabs WHERE workspace_id=?").all(ws.id) as any[]).map((r) => r.kind)).toEqual(["engine"])
+    } finally {
+      fs.rmSync(machine, { force: true })
+    }
+  })
+
+  it("setup 失败即停止并清除 session/tabs/worktree，workspace 进入 error", async () => {
+    const layer = buildLayer([fakeClaude])
+    const project = await Effect.runPromise(Effect.provide(Effect.gen(function* () {
+      const projects = yield* ProjectsRepo
+      return (yield* projects.list())[0] ?? (yield* projects.add(repoRoot))
+    }), layer) as Effect.Effect<any, never, never>)
+    const machine = path.join(home, "projects", project.id, "setup.sh")
+    fs.mkdirSync(path.dirname(machine), { recursive: true })
+    fs.writeFileSync(machine, 'echo SETUP_FAIL_MARK; exit 7\n')
+    try {
+      const exit = await Effect.runPromiseExit(Effect.provide(Effect.gen(function* () {
+        return yield* (yield* WorkspaceLifecycle).create({ projectId: project.id, name: "failed-setup" })
+      }), layer) as Effect.Effect<any, any, never>)
+      expect(Exit.isFailure(exit)).toBe(true)
+      const row = db.prepare("SELECT id, path, status, data FROM workspaces WHERE name='failed-setup'").get() as any
+      expect(row.status).toBe("error")
+      expect(JSON.parse(row.data).lastError.tag).toBe("SetupScriptError")
+      expect(await Effect.runPromise(tmux.hasSession(sessionNameFor(row.id)))).toBe(false)
+      expect((db.prepare("SELECT COUNT(*) c FROM tabs WHERE workspace_id=?").get(row.id) as any).c).toBe(0)
+      expect(fs.existsSync(row.path)).toBe(false)
+    } finally {
+      fs.rmSync(machine, { force: true })
+    }
+  })
+
+  it("setup tab 持久化 defect 映射 SetupScriptError 并完整回滚", async () => {
+    const layer = buildLayer([fakeClaude])
+    const project = await Effect.runPromise(Effect.provide(Effect.gen(function* () {
+      const projects = yield* ProjectsRepo
+      return (yield* projects.list())[0] ?? (yield* projects.add(repoRoot))
+    }), layer) as Effect.Effect<any, never, never>)
+    const machine = path.join(home, "projects", project.id, "setup.sh")
+    fs.mkdirSync(path.dirname(machine), { recursive: true })
+    fs.writeFileSync(machine, "echo should-not-complete\n")
+    db.exec(`CREATE TRIGGER fail_setup_tab BEFORE INSERT ON tabs
+      WHEN NEW.kind = 'setup' BEGIN SELECT RAISE(FAIL, 'injected setup tab failure'); END`)
+    try {
+      const exit = await Effect.runPromiseExit(Effect.provide(Effect.gen(function* () {
+        return yield* (yield* WorkspaceLifecycle).create({ projectId: project.id, name: "setup-tab-defect" })
+      }), layer) as Effect.Effect<any, any, never>)
+      expect(Exit.isFailure(exit)).toBe(true)
+      const row = db.prepare("SELECT id, path, status, data FROM workspaces WHERE name='setup-tab-defect'").get() as any
+      expect(row.status).toBe("error")
+      expect(JSON.parse(row.data).lastError.tag).toBe("SetupScriptError")
+      expect(await Effect.runPromise(tmux.hasSession(sessionNameFor(row.id)))).toBe(false)
+      expect(db.prepare("SELECT COUNT(*) c FROM tabs WHERE workspace_id=?").get(row.id)).toEqual({ c: 0 })
+      expect(fs.existsSync(row.path)).toBe(false)
+      expect(eventTypes()).toContain("workspace.error")
+    } finally {
+      db.exec("DROP TRIGGER IF EXISTS fail_setup_tab")
+      fs.rmSync(machine, { force: true })
+    }
+  })
+
   it("create 建 session/启 engine/写 tab/投首条 prompt；archive/delete 拆干净", async () => {
     const layer = buildLayer([fakeClaude])
     const program = Effect.gen(function* () {
       const projects = yield* ProjectsRepo
       const lc = yield* WorkspaceLifecycle
       const tabs = yield* TabsRepo
-      const project = yield* projects.add(repoRoot)
+      const project = (yield* projects.list())[0] ?? (yield* projects.add(repoRoot))
       const ws = yield* lc.create({ projectId: project.id, initialPrompt: "hello from coolie" })
       const tabList = yield* tabs.listByWorkspace(ws.id)
       return { ws, tabList }

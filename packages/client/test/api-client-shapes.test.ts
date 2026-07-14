@@ -1,6 +1,5 @@
 import { describe, it, expect, afterEach, vi } from "vitest"
-import { makeApi, probeHealth, ApiError, type ServerInfo } from "../src/api/client.js"
-import { startGuiLease } from "../src/api/lease.js"
+import { makeApi, probeHealth, type ServerInfo } from "../src/api/client.js"
 
 const info: ServerInfo = { port: 61234, token: "tok-abc/xyz", pid: 999 }
 const realFetch = globalThis.fetch
@@ -59,16 +58,5 @@ describe("req request shapes (mock fetch — T3 routes not live yet)", () => {
     expect(await probeHealth(info)).toBe(true)
     globalThis.fetch = (async () => { throw new Error("down") }) as typeof fetch
     expect(await probeHealth(info)).toBe(false)
-  })
-})
-
-describe("startGuiLease", () => {
-  it("404 → 静默降级（Plan 4 未合并），stop() 幂等", async () => {
-    let n = 0
-    globalThis.fetch = (async () => { n++; return new Response(JSON.stringify({ code: "NotFound" }), { status: 404, headers: { "content-type": "application/json" } }) }) as typeof fetch
-    const stop = startGuiLease(makeApi(info))
-    await new Promise((r) => setTimeout(r, 20))
-    expect(n).toBe(1) // 404 后不再重试
-    stop(); stop()
   })
 })

@@ -1,8 +1,10 @@
-import { Context, Effect, Layer } from "effect"
+import { Context, Effect, Layer, Option } from "effect"
 import { ulid } from "ulid"
-import { Workspace, type WorkspaceStatus } from "@coolie/protocol"
+import { Workspace, type CoolieEvent, type WorkspaceStatus } from "@coolie/protocol"
 import { Db } from "../db/sqlite.js"
 import { ConflictError, NotFoundError } from "./errors.js"
+import { EventsBus, EVENT_CHANNEL } from "../events/bus.js"
+import { appendEventRow } from "./events.js"
 
 /** 设计文档 §四 状态机：creating→active→archived→active；creating 失败→error；error 可重试回 creating */
 const ALLOWED_TRANSITIONS: Record<WorkspaceStatus, ReadonlyArray<WorkspaceStatus>> = {
@@ -30,14 +32,15 @@ export interface WorkspacesRepoShape {
   readonly get: (id: string) => Effect.Effect<Workspace, NotFoundError>
   readonly list: (filter?: { projectId?: string }) => Effect.Effect<Workspace[]>
   readonly setStatus: (id: string, next: WorkspaceStatus) => Effect.Effect<Workspace, NotFoundError | ConflictError>
+  readonly setPinned: (id: string, pinned: boolean) => Effect.Effect<Workspace, NotFoundError>
   readonly setBaseRef: (id: string, baseRef: string) => Effect.Effect<void, NotFoundError>
   readonly setLastError: (id: string, err: { tag: string; message: string }) => Effect.Effect<void, NotFoundError>
   /** create 存下首条 prompt+引擎（C2）：error 后 retry 从 data.createCtx 回填 PostCreateContext 补投 */
   readonly setCreateCtx: (id: string, ctx: {
-    initialPrompt?: string; engineId?: string; model?: string; effort?: string
+    initialPrompt?: string; engineId?: string; model?: string; effort?: string; fanoutGroup?: string
   }) => Effect.Effect<void, NotFoundError>
   readonly getCreateCtx: (id: string) => Effect.Effect<{
-    initialPrompt?: string; engineId?: string; model?: string; effort?: string
+    initialPrompt?: string; engineId?: string; model?: string; effort?: string; fanoutGroup?: string
   }, NotFoundError>
   readonly usedPortBases: () => Effect.Effect<number[]>
   readonly remove: (id: string) => Effect.Effect<void, NotFoundError>
@@ -48,6 +51,8 @@ export const WorkspacesRepoLive = Layer.effect(
   WorkspacesRepo,
   Effect.gen(function* () {
     const db = yield* Db
+    const bus = yield* Effect.serviceOption(EventsBus)
+    const broadcast = (ev: CoolieEvent): void => { if (Option.isSome(bus)) bus.value.emit(EVENT_CHANNEL, ev) }
     const getRow = (id: string): any => db.prepare("SELECT * FROM workspaces WHERE id = ?").get(id)
     const mustGetRow = (id: string) => Effect.gen(function* () {
       const r = getRow(id)
@@ -86,6 +91,21 @@ export const WorkspacesRepoLive = Layer.effect(
         db.prepare("UPDATE workspaces SET status = ?, archived_at = ? WHERE id = ?").run(next, archivedAt, id)
         return rowToWorkspace(getRow(id))
       }),
+      setPinned: (id, pinned) => Effect.gen(function* () {
+        const r = yield* mustGetRow(id)
+        if (!!r.pinned === pinned) return rowToWorkspace(r)
+        let ev!: CoolieEvent
+        db.transaction(() => {
+          db.prepare("UPDATE workspaces SET pinned = ? WHERE id = ?").run(pinned ? 1 : 0, id)
+          ev = appendEventRow(db, {
+            workspaceId: id,
+            type: "workspace.pinned",
+            payload: { pinned },
+          })
+        })()
+        broadcast(ev)
+        return rowToWorkspace(getRow(id))
+      }),
       setBaseRef: (id, baseRef) => Effect.gen(function* () {
         yield* mustGetRow(id)
         db.prepare("UPDATE workspaces SET base_ref = ? WHERE id = ?").run(baseRef, id)
@@ -106,6 +126,7 @@ export const WorkspacesRepoLive = Layer.effect(
           ...(ctx.engineId !== undefined ? { engineId: ctx.engineId } : {}),
           ...(ctx.model !== undefined ? { model: ctx.model } : {}),
           ...(ctx.effort !== undefined ? { effort: ctx.effort } : {}),
+          ...(ctx.fanoutGroup !== undefined ? { fanoutGroup: ctx.fanoutGroup } : {}),
         }
         db.prepare("UPDATE workspaces SET data = ? WHERE id = ?").run(JSON.stringify(data), id)
       }),
@@ -114,13 +135,14 @@ export const WorkspacesRepoLive = Layer.effect(
         let data: any = {}
         try { data = r.data ? JSON.parse(r.data) : {} } catch { /* 坏 JSON 视为无 ctx */ }
         const c = (data.createCtx ?? {}) as {
-          initialPrompt?: unknown; engineId?: unknown; model?: unknown; effort?: unknown
+          initialPrompt?: unknown; engineId?: unknown; model?: unknown; effort?: unknown; fanoutGroup?: unknown
         }
         return {
           ...(typeof c.initialPrompt === "string" ? { initialPrompt: c.initialPrompt } : {}),
           ...(typeof c.engineId === "string" ? { engineId: c.engineId } : {}),
           ...(typeof c.model === "string" ? { model: c.model } : {}),
           ...(typeof c.effort === "string" ? { effort: c.effort } : {}),
+          ...(typeof c.fanoutGroup === "string" ? { fanoutGroup: c.fanoutGroup } : {}),
         }
       }),
       usedPortBases: () => Effect.sync(() =>

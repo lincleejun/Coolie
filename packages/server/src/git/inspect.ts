@@ -42,10 +42,10 @@ export const diffShortstat = (worktree: string, baseRef: string): Promise<DiffSt
 
 export const collectChanges = async (worktree: string, baseRef: string): Promise<ChangesReport> => {
   const [againstBase, committed, staged, unstaged, untrackedRaw] = await Promise.all([
-    run(worktree, ["diff", "--numstat", baseRef]),          // base vs 工作树（总账）
-    run(worktree, ["diff", "--numstat", baseRef, "HEAD"]),  // base 之后已提交的
-    run(worktree, ["diff", "--numstat", "--cached"]),       // 已暂存
-    run(worktree, ["diff", "--numstat"]),                   // 未暂存
+    run(worktree, ["diff", "--no-renames", "--numstat", baseRef]),          // base vs 工作树（总账）
+    run(worktree, ["diff", "--no-renames", "--numstat", baseRef, "HEAD"]),  // base 之后已提交的
+    run(worktree, ["diff", "--no-renames", "--numstat", "--cached"]),       // 已暂存
+    run(worktree, ["diff", "--no-renames", "--numstat"]),                   // 未暂存
     run(worktree, ["ls-files", "--others", "--exclude-standard", "-z"]),
   ])
   return {
@@ -61,9 +61,45 @@ export const listFiles = (worktree: string): Promise<string[]> =>
   run(worktree, ["ls-files", "--cached", "--others", "--exclude-standard", "-z"])
     .then((out) => out.split("\0").filter((s) => s !== ""))
 
+export type DiffSection = "againstBase" | "committed" | "staged" | "unstaged"
+export interface FileDiff { path: string; section: DiffSection; unified: string; binary: boolean }
+
+/** Build one-file read-only diff arguments. `--` terminates options before the pathspec. */
+export const sectionDiffArgs = (section: DiffSection, baseRef: string, filePath: string): string[] => {
+  const unified = "--unified=3"
+  switch (section) {
+    case "againstBase": return ["diff", "--no-renames", unified, baseRef, "--", filePath]
+    case "committed": return ["diff", "--no-renames", unified, baseRef, "HEAD", "--", filePath]
+    case "staged": return ["diff", "--no-renames", unified, "--cached", "--", filePath]
+    case "unstaged": return ["diff", "--no-renames", unified, "--", filePath]
+  }
+}
+
+const DIFF_SECTIONS: ReadonlySet<string> = new Set(["againstBase", "committed", "staged", "unstaged"])
+export const isDiffSection = (value: string): value is DiffSection => DIFF_SECTIONS.has(value)
+
+/** Reject absolute, traversal, platform-ambiguous, NUL, and option-shaped pathspecs. */
+export const isSafeRelPath = (filePath: string): boolean => {
+  if (filePath === "" || filePath.startsWith("/") || filePath.startsWith("-") ||
+      filePath.includes("\\") || filePath.includes("\0")) return false
+  return !filePath.split("/").some((segment) => segment === "..")
+}
+
+export const fileDiff = async (
+  worktree: string,
+  baseRef: string,
+  section: DiffSection,
+  filePath: string,
+): Promise<FileDiff> => {
+  const unified = await run(worktree, sectionDiffArgs(section, baseRef, filePath))
+  const binary = /^Binary files .* differ$/m.test(unified) || unified.includes("GIT binary patch")
+  return { path: filePath, section, unified, binary }
+}
+
 export interface GitReadOps {
   diffstat(worktree: string, baseRef: string): Promise<DiffStat>
   changes(worktree: string, baseRef: string): Promise<ChangesReport>
   files(worktree: string): Promise<string[]>
+  diff(worktree: string, baseRef: string, section: DiffSection, path: string): Promise<FileDiff>
 }
-export const realGitRead: GitReadOps = { diffstat: diffShortstat, changes: collectChanges, files: listFiles }
+export const realGitRead: GitReadOps = { diffstat: diffShortstat, changes: collectChanges, files: listFiles, diff: fileDiff }

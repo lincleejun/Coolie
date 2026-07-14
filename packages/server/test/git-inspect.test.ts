@@ -1,7 +1,10 @@
 import { describe, it, expect, beforeAll } from "vitest"
 import { execFileSync } from "node:child_process"
 import * as fs from "node:fs"; import * as os from "node:os"; import * as path from "node:path"
-import { parseShortstat, parseNumstat, diffShortstat, collectChanges, listFiles } from "../src/git/inspect.js"
+import {
+  parseShortstat, parseNumstat, diffShortstat, collectChanges, listFiles,
+  sectionDiffArgs, fileDiff, isSafeRelPath,
+} from "../src/git/inspect.js"
 
 describe("parsers", () => {
   it("parseShortstat: 完整行", () => {
@@ -53,5 +56,77 @@ describe("against real repo", () => {
     expect(files).toContain("a.txt")
     expect(files).toContain("b.txt")
     expect(files).not.toContain("ignored.txt")
+  })
+})
+
+describe("sectionDiffArgs", () => {
+  it("maps every section and places the pathspec after --", () => {
+    expect(sectionDiffArgs("againstBase", "BASE", "src/a.ts")).toEqual(["diff", "--no-renames", "--unified=3", "BASE", "--", "src/a.ts"])
+    expect(sectionDiffArgs("committed", "BASE", "src/a.ts")).toEqual(["diff", "--no-renames", "--unified=3", "BASE", "HEAD", "--", "src/a.ts"])
+    expect(sectionDiffArgs("staged", "BASE", "src/a.ts")).toEqual(["diff", "--no-renames", "--unified=3", "--cached", "--", "src/a.ts"])
+    expect(sectionDiffArgs("unstaged", "BASE", "src/a.ts")).toEqual(["diff", "--no-renames", "--unified=3", "--", "src/a.ts"])
+  })
+})
+
+describe("isSafeRelPath", () => {
+  it("accepts repository-relative paths", () => {
+    expect(isSafeRelPath("a.txt")).toBe(true)
+    expect(isSafeRelPath("src/a/b.ts")).toBe(true)
+  })
+
+  it.each(["", "/etc/passwd", "../../etc/passwd", "src/../../../x", "a\\b", "--output=x", "a\0b"])(
+    "rejects unsafe path %j",
+    (unsafe) => expect(isSafeRelPath(unsafe)).toBe(false),
+  )
+})
+
+describe("fileDiff against real repo", () => {
+  it("returns a textual unified diff for one changed file", async () => {
+    const repo = fs.mkdtempSync(path.join(os.tmpdir(), "coolie-fd-"))
+    const git = (...args: string[]) => execFileSync("git", args, { cwd: repo, encoding: "utf8" })
+    try {
+      git("init", "-q")
+      git("config", "user.email", "t@t")
+      git("config", "user.name", "t")
+      fs.writeFileSync(path.join(repo, "a.txt"), "one\ntwo\n")
+      git("add", ".")
+      git("commit", "-qm", "init")
+      const base = git("rev-parse", "HEAD").trim()
+      fs.writeFileSync(path.join(repo, "a.txt"), "one\nTWO\n")
+
+      const result = await fileDiff(repo, base, "unstaged", "a.txt")
+      expect(result).toMatchObject({ path: "a.txt", section: "unstaged", binary: false })
+      expect(result.unified).toContain("@@")
+      expect(result.unified).toContain("-two")
+      expect(result.unified).toContain("+TWO")
+    } finally {
+      fs.rmSync(repo, { recursive: true, force: true })
+    }
+  })
+
+  it("uses literal old/new paths for a committed rename", async () => {
+    const repo = fs.mkdtempSync(path.join(os.tmpdir(), "coolie-rename-"))
+    const git = (...args: string[]) => execFileSync("git", args, { cwd: repo, encoding: "utf8" })
+    try {
+      git("init", "-q")
+      git("config", "user.email", "t@t")
+      git("config", "user.name", "t")
+      fs.writeFileSync(path.join(repo, "old name.txt"), "same contents\n")
+      git("add", ".")
+      git("commit", "-qm", "base")
+      const base = git("rev-parse", "HEAD").trim()
+      git("mv", "old name.txt", "new name.txt")
+      git("commit", "-qm", "rename")
+
+      const changes = await collectChanges(repo, base)
+      expect(changes.committed).toEqual([
+        { path: "new name.txt", insertions: 1, deletions: 0 },
+        { path: "old name.txt", insertions: 0, deletions: 1 },
+      ])
+      expect((await fileDiff(repo, base, "committed", "new name.txt")).unified).toContain("+++ b/new name.txt")
+      expect((await fileDiff(repo, base, "committed", "old name.txt")).unified).toContain("--- a/old name.txt")
+    } finally {
+      fs.rmSync(repo, { recursive: true, force: true })
+    }
   })
 })

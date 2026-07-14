@@ -88,4 +88,16 @@ describe("SetupRunner", () => {
       expect(Option.isSome(f) && (f.value as any).message).toContain("超时")
     }
   })
+  it("removes a pane result file even when its payload is malformed", async () => {
+    const wt = mkdir("coolie-pane-result-wt-")
+    const resultFile = path.join(wt, "setup-result.json")
+    fs.writeFileSync(resultFile, "{not-json")
+    const exit = await run(Effect.gen(function* () {
+      return yield* (yield* SetupRunner).run({
+        worktreePath: wt, scripts: [], env: {}, resultFile,
+      })
+    }))
+    expect(Exit.isFailure(exit)).toBe(true)
+    expect(fs.existsSync(resultFile)).toBe(false)
+  })
 })

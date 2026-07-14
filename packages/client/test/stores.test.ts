@@ -74,6 +74,24 @@ describe("useData.applyEvent", () => {
 })
 
 describe("useData 生命周期动作（D2：archive/unarchive/delete 打对端点）", () => {
+  it("setPinnedWs POST /pin，成功前不修改本地 workspace", async () => {
+    let resolve!: () => void
+    const pending = new Promise<void>((done) => { resolve = done })
+    const calls: Array<{ m: string; p: string; b: any }> = []
+    const api = {
+      info: { port: 1, token: "t", pid: 1 },
+      req: async (m: string, p: string, b: any) => { calls.push({ m, p, b }); await pending; return {} },
+      wsTerminalUrl: () => "",
+    } as any
+    useData.setState({ workspaces: [{ id: "W", pinned: false }] as any })
+    useData.getState().setApi(api)
+    const request = useData.getState().setPinnedWs("W", true)
+    expect(useData.getState().workspaces[0]!.pinned).toBe(false)
+    resolve()
+    await request
+    expect(calls).toEqual([{ m: "POST", p: "/workspaces/W/pin", b: { pinned: true } }])
+    expect(useData.getState().workspaces[0]!.pinned).toBe(false)
+  })
   it("archiveWs 默认 force=false；确认后可 force=true", async () => {
     const calls: Array<{ m: string; p: string; b: any }> = []
     const api = { info: { port: 1, token: "t", pid: 1 }, req: async (m: string, p: string, b: any) => { calls.push({ m, p, b }); return {} }, wsTerminalUrl: () => "" } as any

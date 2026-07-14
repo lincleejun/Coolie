@@ -16,7 +16,7 @@ import { EngineRegistry, engineHome } from "../engine/registry.js"
 import { ConflictError, NotFoundError } from "../repo/errors.js"
 import { tmuxSessionName } from "@coolie/protocol"
 import type { ComposerOps, InputMode } from "../tmux/ops.js"
-import type { GitReadOps } from "../git/inspect.js"
+import { isDiffSection, isSafeRelPath, type DiffSection, type GitReadOps } from "../git/inspect.js"
 import type { WorkspaceSerial } from "../engine/queue-drain.js"
 import { scanSlashCommands } from "../engine/claude/commands.js"
 import { SessionEnsurer } from "../workspace/heal.js"
@@ -452,6 +452,8 @@ export const createApp = ({ runtime, token, onShutdown, onError, bus, sseHeartbe
             return err(res, 400, "Validation", "model must be a string")
           if (body.effort !== undefined && typeof body.effort !== "string")
             return err(res, 400, "Validation", "effort must be a string")
+          if (body.fanoutGroup !== undefined && typeof body.fanoutGroup !== "string")
+            return err(res, 400, "Validation", "fanoutGroup must be a string")
           return await runRoute(
             res, runtime,
             Effect.gen(function* () {
@@ -463,9 +465,30 @@ export const createApp = ({ runtime, token, onShutdown, onError, bus, sseHeartbe
                 ...(body.engineId ? { engineId: body.engineId } : {}),
                 ...(body.model ? { model: body.model } : {}),
                 ...(body.effort ? { effort: body.effort } : {}),
+                ...(body.fanoutGroup ? { fanoutGroup: body.fanoutGroup } : {}),
               })
             }),
             (ws) => send(res, 201, ws),
+            onError,
+          )
+        }
+        const wsPin = url.pathname.match(/^\/workspaces\/([^/]+)\/pin$/)
+        if (req.method === "POST" && wsPin) {
+          const body = await readJson(req)
+          if (
+            body === null ||
+            typeof body !== "object" ||
+            Array.isArray(body) ||
+            Object.keys(body).length !== 1 ||
+            typeof body.pinned !== "boolean"
+          )
+            return err(res, 400, "Validation", "body 必须严格为 { pinned: boolean }")
+          return await runRoute(
+            res, runtime,
+            Effect.gen(function* () {
+              return yield* (yield* WorkspacesRepo).setPinned(wsPin[1]!, body.pinned)
+            }),
+            (ws) => send(res, 200, ws),
             onError,
           )
         }
@@ -498,12 +521,15 @@ export const createApp = ({ runtime, token, onShutdown, onError, bus, sseHeartbe
         }
         const tabResume = url.pathname.match(/^\/workspaces\/([^/]+)\/tabs\/([^/]+)\/resume$/)
         if (req.method === "POST" && tabResume) {
-          return await runRoute(
+          const handleResume = () => runRoute(
             res, runtime,
             Effect.gen(function* () { return yield* (yield* SessionEnsurer).resumeTab(tabResume[1]!, tabResume[2]!) }),
             (out) => send(res, 200, out),
             onError,
           )
+          return await (workspaceSerial
+            ? workspaceSerial.run(tabResume[1]!, handleResume)
+            : handleResume())
         }
         const wsDel = url.pathname.match(/^\/workspaces\/([^/]+)$/)
         if (req.method === "DELETE" && wsDel) {
@@ -535,11 +561,24 @@ export const createApp = ({ runtime, token, onShutdown, onError, bus, sseHeartbe
             onError,
           )
         }
-        const gitRoute = url.pathname.match(/^\/workspaces\/([^/]+)\/(git\/diffstat|git\/changes|files|commands)$/)
+        const gitRoute = url.pathname.match(/^\/workspaces\/([^/]+)\/(git\/diffstat|git\/changes|git\/diff|files|commands)$/)
         if (req.method === "GET" && gitRoute) {
           const wsId = gitRoute[1]!
           const kind = gitRoute[2]!
           if (kind !== "commands" && !gitRead) return err(res, 501, "Internal", "gitRead unavailable")
+          // Validate request-controlled diff arguments before workspace lookup/status checks.
+          let diffSection: DiffSection = "againstBase"
+          let diffPath = ""
+          if (kind === "git/diff") {
+            const section = url.searchParams.get("section") ?? ""
+            diffPath = url.searchParams.get("path") ?? ""
+            if (!isDiffSection(section))
+              return err(res, 400, "Validation", "section 必须是 againstBase|committed|staged|unstaged")
+            if (diffPath === "") return err(res, 400, "Validation", "path required")
+            if (!isSafeRelPath(diffPath))
+              return err(res, 400, "Validation", "path 非法（禁绝对路径 / .. 穿越 / 前导 -）")
+            diffSection = section
+          }
           return await runRoute(
             res, runtime,
             Effect.gen(function* () {
@@ -552,6 +591,7 @@ export const createApp = ({ runtime, token, onShutdown, onError, bus, sseHeartbe
               try {
                 if (kind === "git/diffstat") return send(res, 200, await gitRead!.diffstat(ws.path, ws.baseRef))
                 if (kind === "git/changes") return send(res, 200, await gitRead!.changes(ws.path, ws.baseRef))
+                if (kind === "git/diff") return send(res, 200, await gitRead!.diff(ws.path, ws.baseRef, diffSection, diffPath))
                 if (kind === "files") return send(res, 200, { files: await gitRead!.files(ws.path) })
                 return send(res, 200, { commands: claudeHome !== undefined ? scanSlashCommands(ws.path, claudeHome) : scanSlashCommands(ws.path, "") })
               } catch (e: any) {
@@ -565,8 +605,10 @@ export const createApp = ({ runtime, token, onShutdown, onError, bus, sseHeartbe
         if (req.method === "POST" && tabsCreate) {
           if (!composerOps) return err(res, 501, "Internal", "composerOps unavailable")
           const body = await readJson(req)
-          if (body.kind !== "shell") return err(res, 400, "Validation", "只支持 kind=shell")
-          return await runRoute(
+          if (body.kind !== "shell" && body.kind !== "run") return err(res, 400, "Validation", "kind 必须是 shell|run")
+          if (body.kind === "run" && (!composerOps.listWindows || !composerOps.newRunWindow || !composerOps.respawnRunWindow))
+            return err(res, 501, "Internal", "run tab unavailable")
+          const handleTabsCreate = () => runRoute(
             res, runtime,
             Effect.gen(function* () {
               const ws = yield* (yield* WorkspacesRepo).get(tabsCreate[1]!)
@@ -576,13 +618,61 @@ export const createApp = ({ runtime, token, onShutdown, onError, bus, sseHeartbe
             }),
             async (ws) => {
               try {
-                const idx = await composerOps.newShellWindow(tmuxSessionName(ws.id), ws.path)
+                const session = tmuxSessionName(ws.id)
+                if (body.kind === "run") {
+                  const ensured = await runtime(Effect.gen(function* () {
+                    yield* (yield* SessionEnsurer).ensure(ws.id)
+                    return yield* (yield* TabsRepo).listByWorkspace(ws.id)
+                  }))
+                  if (Exit.isFailure(ensured)) {
+                    const mapped = errorFromCause(ensured.cause, onError)
+                    send(res, mapped.status, mapped.body)
+                    return
+                  }
+                  const script = path.join(ws.path, ".coolie", "run.sh")
+                  let stat: fs.Stats
+                  try { stat = fs.statSync(script) }
+                  catch { return err(res, 409, "Conflict", `.coolie/run.sh 不存在：${script}`) }
+                  if (!stat.isFile()) return err(res, 409, "Conflict", `.coolie/run.sh 不是普通文件：${script}`)
+
+                  const live = new Set((await composerOps.listWindows!(session)).map((w) => w.index))
+                  const runTabs = ensured.value.filter((t) => t.kind === "run")
+                  const existing = runTabs[0]
+                  for (const duplicate of runTabs.slice(1)) {
+                    if (duplicate.tmuxWindow !== null && live.has(duplicate.tmuxWindow))
+                      await composerOps.killWindow(session, duplicate.tmuxWindow)
+                    await runtime(Effect.gen(function* () { yield* (yield* TabsRepo).remove(duplicate.id) }))
+                  }
+                  if (existing?.tmuxWindow !== null && existing?.tmuxWindow !== undefined && live.has(existing.tmuxWindow)) {
+                    await composerOps.respawnRunWindow!(session, existing.tmuxWindow, ws.path, script)
+                    return send(res, 200, existing)
+                  }
+                  if (existing) await runtime(Effect.gen(function* () { yield* (yield* TabsRepo).remove(existing.id) }))
+                  const idx = await composerOps.newRunWindow!(session, ws.path, script)
+                  const inserted = await runtime(Effect.gen(function* () {
+                    return yield* (yield* TabsRepo).insert({ workspaceId: ws.id, kind: "run", tmuxWindow: idx, title: "run" })
+                  }))
+                  if (Exit.isFailure(inserted)) {
+                    try { await composerOps.killWindow(session, idx) } catch { /* original insert error wins */ }
+                    const mapped = errorFromCause(inserted.cause, onError)
+                    return send(res, mapped.status, mapped.body)
+                  }
+                  return send(res, 201, inserted.value)
+                }
+                const idx = await composerOps.newShellWindow(session, ws.path)
                 const exit = await runtime(Effect.gen(function* () {
                   return yield* (yield* TabsRepo).insert({ workspaceId: ws.id, kind: "shell", tmuxWindow: idx })
                 }))
-                Exit.match(exit, {
-                  onSuccess: (tab) => send(res, 201, tab),
-                  onFailure: (cause) => { const { status, body } = errorFromCause(cause, onError); send(res, status, body) },
+                await Exit.match(exit, {
+                  onSuccess: async (tab) => { send(res, 201, tab) },
+                  onFailure: async (cause) => {
+                    // The tmux operation has committed but the DB operation has not.
+                    // Compensation is best-effort; the HTTP response must retain the
+                    // original insert failure even if killing the window also fails.
+                    try { await composerOps.killWindow(session, idx) } catch { /* original error wins */ }
+                    const { status, body } = errorFromCause(cause, onError)
+                    send(res, status, body)
+                  },
                 })
               } catch (e: any) {
                 if (!res.headersSent) err(res, 500, "TmuxError", e?.message ?? String(e))
@@ -590,6 +680,9 @@ export const createApp = ({ runtime, token, onShutdown, onError, bus, sseHeartbe
             },
             onError,
           )
+          return await (workspaceSerial
+            ? workspaceSerial.run(tabsCreate[1]!, handleTabsCreate)
+            : handleTabsCreate())
         }
         const tabDel = url.pathname.match(/^\/workspaces\/([^/]+)\/tabs\/([^/]+)$/)
         if (req.method === "DELETE" && tabDel) {

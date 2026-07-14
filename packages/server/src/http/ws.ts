@@ -11,7 +11,7 @@ export interface TerminalWsDeps {
   readonly token: string
   readonly tmuxSocket: string
   /** workspace id → tmux session 名；无效/非 active 返回 null */
-  readonly resolveSession: (workspaceId: string) => Promise<string | null>
+  readonly resolveSession: (workspaceId: string, window: number) => Promise<string | null>
   readonly log?: (msg: string) => void
   /** 登记进 /clients 视图；WS 终端一律 role=terminal——pane 永不持有 server 生命周期（§2.1） */
   readonly clients?: ClientRegistry
@@ -74,7 +74,7 @@ const handleConn = async (ws: WebSocket, url: URL, deps: TerminalWsDeps): Promis
   ws.on("close", () => { closed = true; teardown() })
   ws.on("error", () => { closed = true; teardown() }) // 异常断连同一清理，且避免 unhandled 'error' 抛出
 
-  const session = await deps.resolveSession(wsId).catch(() => null)
+  const session = await deps.resolveSession(wsId, windowIdx).catch(() => null)
   if (session === null) { ws.close(4404, "workspace/session not found"); return }
   if (closed) return // setup 期间已断开（尚无 view）
 

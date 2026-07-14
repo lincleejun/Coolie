@@ -2,7 +2,9 @@ import { useEffect, useState } from "react"
 import { useData } from "../stores/data"
 import { useUi } from "../stores/ui"
 import { makeDrafts, type DraftStorage } from "../composer/drafts"
-import type { FileChange } from "../stores/types"
+import type { DiffSection, FileChange } from "../stores/types"
+import { DiffView } from "./DiffView"
+import { injectComment } from "./comment"
 
 // node 测试环境（filetree.test）会 import 本模块取 buildTree；此处不能裸引 localStorage（node 无此全局会 ReferenceError）。
 const storage: DraftStorage =
@@ -60,13 +62,19 @@ const Tree = ({ node, wsId, depth }: { node: TreeNode; wsId: string; depth: numb
   )
 }
 
-const ChangeSection = ({ title, list }: { title: string; list: FileChange[] }) => {
+const ChangeSection = ({ title, section, list, onOpen }: {
+  title: string
+  section: DiffSection
+  list: FileChange[]
+  onOpen: (section: DiffSection, path: string) => void
+}) => {
   const [open, setOpen] = useState(true)
   return (
     <section className="chg-section">
       <h4 onClick={() => setOpen(!open)}>{open ? "▾" : "▸"} {title}（{list.length}）</h4>
       {open && list.map((f) => (
-        <div className="chg-row" key={f.path} title={f.path}>
+        <div className="chg-row chg-row-pick" key={f.path} title={`点开行级 diff：${f.path}`}
+          onClick={() => onOpen(section, f.path)}>
           <span className="chg-path">{f.path}</span>
           <span className="diffcount"><em className="plus">+{f.insertions}</em><em className="minus">−{f.deletions}</em></span>
         </div>
@@ -80,8 +88,10 @@ export const RightPanel = ({ wsId }: { wsId: string }) => {
   const changes = useData((s) => s.changesByWs[wsId])
   const stat = useData((s) => s.diffstatByWs[wsId])
   const [files, setFiles] = useState<string[]>([])
+  const [openDiff, setOpenDiff] = useState<{ section: DiffSection; path: string } | null>(null)
 
   useEffect(() => {
+    setOpenDiff(null)
     if (panel === "changes") void useData.getState().refreshChanges(wsId).catch(() => {})
     if (panel === "files")
       void useData.getState().getApi()?.req("GET", `/workspaces/${wsId}/files`)
@@ -115,13 +125,27 @@ export const RightPanel = ({ wsId }: { wsId: string }) => {
       </div>
       <div className="right-body">
         {panel === "changes" && (
-          changes ? (
+          openDiff ? (
+            <div className="diff-pane">
+              <button className="diff-back" onClick={() => setOpenDiff(null)}>‹ 返回变更列表</button>
+              <DiffView
+                wsId={wsId}
+                section={openDiff.section}
+                path={openDiff.path}
+                onComment={(selection) => injectComment(wsId, selection)}
+              />
+            </div>
+          ) : changes ? (
             <>
               <div className="chg-total">vs base：{stat ? `+${stat.insertions} −${stat.deletions}（${stat.filesChanged} 文件）` : "…"}</div>
-              <ChangeSection title="Against base" list={changes.againstBase} />
-              <ChangeSection title="Committed" list={changes.committed} />
-              <ChangeSection title="Staged" list={changes.staged} />
-              <ChangeSection title="Unstaged" list={changes.unstaged} />
+              <ChangeSection title="Against base" section="againstBase" list={changes.againstBase}
+                onOpen={(section, path) => setOpenDiff({ section, path })} />
+              <ChangeSection title="Committed" section="committed" list={changes.committed}
+                onOpen={(section, path) => setOpenDiff({ section, path })} />
+              <ChangeSection title="Staged" section="staged" list={changes.staged}
+                onOpen={(section, path) => setOpenDiff({ section, path })} />
+              <ChangeSection title="Unstaged" section="unstaged" list={changes.unstaged}
+                onOpen={(section, path) => setOpenDiff({ section, path })} />
               {changes.untracked.length > 0 && (
                 <section className="chg-section">
                   <h4>Untracked（{changes.untracked.length}）</h4>

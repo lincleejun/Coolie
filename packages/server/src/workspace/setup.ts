@@ -21,6 +21,8 @@ export interface SetupRunOpts {
   readonly scripts: readonly string[]
   readonly env: Readonly<Record<string, string>>
   readonly timeoutMs?: number
+  /** 已在 tmux setup pane 中启动 runner 时，等待这个结构化结果文件。 */
+  readonly resultFile?: string
 }
 
 export interface SetupRunnerShape {
@@ -49,6 +51,74 @@ export const resolveSetupScripts = (opts: {
 
 const TAIL_CHARS = 4000
 const DEFAULT_TIMEOUT_MS = 600_000 // 10 分钟
+const POLL_MS = 50
+
+type PaneResult =
+  | { readonly ok: true; readonly results: SetupResult[] }
+  | { readonly ok: false; readonly error: { readonly script: string; readonly exitCode: number | null; readonly message: string; readonly outputTail: string } }
+
+/** 写入 COOLIE_HOME 的固定 runner；所有动态值均经 argv/env 传递，不拼进 shell。 */
+export const ensureSetupPaneRunner = (home: string): string => {
+  const dir = path.join(home, "runtime")
+  const file = path.join(dir, "setup-pane-runner.cjs")
+  fs.mkdirSync(dir, { recursive: true })
+  fs.writeFileSync(file, String.raw`const fs=require("node:fs"),{spawn}=require("node:child_process");
+const [resultFile,cwd,timeoutRaw,...scripts]=process.argv.slice(2), timeout=Number(timeoutRaw);
+const tailLimit=4000, results=[]; let tail="";
+const finish=(value)=>{const tmp=resultFile+".tmp-"+process.pid;fs.writeFileSync(tmp,JSON.stringify(value));fs.renameSync(tmp,resultFile)};
+const run=(i)=>{if(i>=scripts.length){finish({ok:true,results});return shell()}
+ const script=scripts[i], child=spawn("bash",[script],{cwd,env:process.env,stdio:["ignore","pipe","pipe"],detached:true});let timed=false;
+ const push=(b)=>{const s=b.toString();tail=(tail+s).slice(-tailLimit);process.stdout.write(s)};child.stdout.on("data",push);child.stderr.on("data",push);
+ const timer=setTimeout(()=>{timed=true;try{process.kill(-child.pid,"SIGKILL")}catch{};child.kill("SIGKILL")},timeout);
+ child.on("error",e=>{clearTimeout(timer);finish({ok:false,error:{script,exitCode:null,message:"无法启动 setup script："+e.message,outputTail:tail}});shell()});
+ child.on("exit",code=>{clearTimeout(timer);if(timed){finish({ok:false,error:{script,exitCode:null,message:"setup script 超时被杀（"+timeout+"ms）",outputTail:tail}});return shell()}
+  if(code!==0){finish({ok:false,error:{script,exitCode:code,message:"setup script 退出码 "+code+"："+script,outputTail:tail}});return shell()}
+  results.push({script,exitCode:0,outputTail:tail});tail="";run(i+1)})};
+const shell=()=>{const sh=process.env.SHELL||"/bin/sh";spawn(sh,["-l"],{cwd,env:process.env,stdio:"inherit"}).on("exit",()=>process.exit())};run(0);
+`)
+  return file
+}
+
+export const makeSetupPane = (opts: {
+  readonly home: string
+  readonly workspaceId: string
+  readonly worktreePath: string
+  readonly scripts: readonly string[]
+  readonly timeoutMs?: number
+}): { readonly resultFile: string; readonly command: readonly string[] } => {
+  const runner = ensureSetupPaneRunner(opts.home)
+  const resultDir = path.join(opts.home, "runtime", "setup-results")
+  fs.mkdirSync(resultDir, { recursive: true })
+  const resultFile = path.join(resultDir, `${opts.workspaceId}-${Date.now()}-${process.pid}.json`)
+  return {
+    resultFile,
+    command: [process.execPath, runner, resultFile, opts.worktreePath, String(opts.timeoutMs ?? DEFAULT_TIMEOUT_MS), ...opts.scripts],
+  }
+}
+
+const waitForPaneResult = (file: string, timeoutMs: number): Promise<SetupResult[]> =>
+  new Promise((resolve, reject) => {
+    const deadline = Date.now() + timeoutMs + 5_000
+    const poll = (): void => {
+      if (fs.existsSync(file)) {
+        try {
+          const parsed = JSON.parse(fs.readFileSync(file, "utf8")) as PaneResult
+          fs.rmSync(file, { force: true })
+          if (parsed.ok) resolve(parsed.results)
+          else reject(new SetupScriptError(parsed.error))
+        } catch (e) {
+          reject(e)
+        }
+        return
+      }
+      if (Date.now() >= deadline) {
+        reject(new SetupScriptError({ script: "", exitCode: null, message: "setup runner 未写入结构化结果", outputTail: "" }))
+        return
+      }
+      setTimeout(poll, POLL_MS)
+    }
+    poll()
+  })
 
 const runOne = (
   script: string,
@@ -99,6 +169,14 @@ const runOne = (
 export const makeSetupRunnerLive = (log?: (chunk: string) => void): Layer.Layer<SetupRunner> =>
   Layer.succeed(SetupRunner, {
     run: (opts) => Effect.gen(function* () {
+      if (opts.resultFile !== undefined) {
+        return yield* Effect.tryPromise({
+          try: () => waitForPaneResult(opts.resultFile!, opts.timeoutMs ?? DEFAULT_TIMEOUT_MS),
+          catch: (e) => e instanceof SetupScriptError
+            ? e
+            : new SetupScriptError({ script: "", exitCode: null, message: String(e), outputTail: "" }),
+        }).pipe(Effect.ensuring(Effect.sync(() => fs.rmSync(opts.resultFile!, { force: true }))))
+      }
       const results: SetupResult[] = []
       for (const script of opts.scripts) {
         results.push(yield* Effect.tryPromise({

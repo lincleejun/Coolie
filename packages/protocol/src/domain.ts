@@ -43,6 +43,9 @@ export const decodeTab = Schema.decodeUnknownSync(Tab)
 /** tmux session 命名唯一真源（设计文档 §五）：server bootstrap、CLI enter/open、WS resolveSession 共用。 */
 export const tmuxSessionName = (wsId: string): string => `coolie-${wsId}`
 
+/** CLI 与 GUI 共用的单次 fan-out 实例上限。 */
+export const MAX_FANOUT = 16
+
 export class Project extends Schema.Class<Project>("Project")({
   id: Schema.String,
   name: Schema.String,

@@ -5,6 +5,8 @@ export interface ChangesReport {
   againstBase: FileChange[]; committed: FileChange[]
   staged: FileChange[]; unstaged: FileChange[]; untracked: string[]
 }
+export type DiffSection = "againstBase" | "committed" | "staged" | "unstaged"
+export interface FileDiff { path: string; section: DiffSection; unified: string; binary: boolean }
 export interface SlashCommand { name: string; source: "repo" | "user" }
 export interface EngineInfo {
   id: string; displayName: string

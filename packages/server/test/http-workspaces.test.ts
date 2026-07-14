@@ -19,7 +19,9 @@ let server: http.Server, base: string, token: string
 let fake: ReturnType<typeof makeFakeGit>
 let setupFails = false
 let repoRoot: string
-let seenCreateCtx: Array<{ initialPrompt?: string; engineId?: string; model?: string; effort?: string }>
+let seenCreateCtx: Array<{
+  initialPrompt?: string; engineId?: string; model?: string; effort?: string; fanoutGroup?: string
+}>
 
 beforeEach(async () => {
   const db = new Database(":memory:"); runMigrations(db)
@@ -138,6 +140,31 @@ describe("workspace HTTP API", () => {
     expect(types).toContain("workspace.creating")
     expect(types).toContain("workspace.created")
   })
+  it("POST /workspaces/:id/pin strictly validates and persists pin state", async () => {
+    const pid = await addProject()
+    const ws = await (await createWs(pid)).json()
+    const badBodies = [{}, { pinned: 1 }, { pinned: true, extra: "nope" }]
+    for (const body of badBodies) {
+      const bad = await req(`/workspaces/${ws.id}/pin`, { method: "POST", body: JSON.stringify(body) })
+      expect(bad.status).toBe(400)
+      expect((await bad.json()).code).toBe("Validation")
+    }
+    const pinned = await req(`/workspaces/${ws.id}/pin`, { method: "POST", body: JSON.stringify({ pinned: true }) })
+    expect(pinned.status).toBe(200)
+    expect((await pinned.json()).pinned).toBe(true)
+    const listed = await (await req("/workspaces")).json()
+    expect(listed.find((item: any) => item.id === ws.id).pinned).toBe(true)
+    const events = await (await req(`/events?workspace=${ws.id}`)).json()
+    expect(events.filter((event: any) => event.type === "workspace.pinned")).toHaveLength(1)
+  })
+  it("POST /workspaces/:id/pin returns 404 for unknown workspace", async () => {
+    const response = await req("/workspaces/nope/pin", {
+      method: "POST",
+      body: JSON.stringify({ pinned: true }),
+    })
+    expect(response.status).toBe(404)
+    expect((await response.json()).code).toBe("NotFound")
+  })
   it("POST /workspaces rejects non-string initialPrompt", async () => {
     const r = await req("/workspaces", { method: "POST", body: JSON.stringify({ projectId: "p", initialPrompt: 42 }) })
     expect(r.status).toBe(400)
@@ -176,7 +203,17 @@ describe("workspace HTTP API", () => {
     expect(retried.status).toBe(200)
     expect(seenCreateCtx).toEqual([{ engineId: "codex", model: "gpt-5", effort: "xhigh" }])
   })
-  it.each(["engineId", "model", "effort"])("POST /workspaces rejects non-string %s", async (field) => {
+  it("POST /workspaces accepts fanoutGroup and passes it to lifecycle", async () => {
+    const pid = await addProject()
+    const created = await createWs(pid, {
+      name: "fanout-one",
+      engineId: "claude",
+      fanoutGroup: "fo-abc",
+    })
+    expect(created.status).toBe(201)
+    expect(seenCreateCtx).toEqual([{ engineId: "claude", fanoutGroup: "fo-abc" }])
+  })
+  it.each(["engineId", "model", "effort", "fanoutGroup"])("POST /workspaces rejects non-string %s", async (field) => {
     const r = await req("/workspaces", {
       method: "POST",
       body: JSON.stringify({ projectId: "p", [field]: 42 }),

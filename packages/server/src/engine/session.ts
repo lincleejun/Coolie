@@ -40,10 +40,16 @@ export const startEngineSession = (
       try: () => ensureKeepAliveScript(i.home),
       catch: (e) => new TmuxError({ op: "keepalive-script", message: `keep-alive 脚本写入失败：${String(e)}`, exitCode: null, stderr: "" }),
     })
-    yield* tmux.newSession({
-      name: sessionName, cwd: i.ws.path, windowName: "engine",
-      command: wrapEngineCommand(i.home, i.ws.id, engineCommand),
-      env: { COOLIE_ROOT: i.repoRoot, COOLIE_WORKSPACE: i.ws.id, ...portEnv(i.ws.portBase) },
-    })
+    const command = wrapEngineCommand(i.home, i.ws.id, engineCommand)
+    if (yield* tmux.hasSession(sessionName)) {
+      // setup lane 已提前建立 placeholder engine@0；仅在全部 setup 成功后原位替换。
+      yield* tmux.respawnWindow({ session: sessionName, window: 0, cwd: i.ws.path, command })
+    } else {
+      yield* tmux.newSession({
+        name: sessionName, cwd: i.ws.path, windowName: "engine",
+        command,
+        env: { COOLIE_ROOT: i.repoRoot, COOLIE_WORKSPACE: i.ws.id, ...portEnv(i.ws.portBase) },
+      })
+    }
     return { sessionName, engineCommand }
   })

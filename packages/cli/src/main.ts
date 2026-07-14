@@ -1,6 +1,14 @@
 #!/usr/bin/env node
 import { Command } from "commander"
-import { ROUTES, decodeProject, decodeWorkspace, decodeCoolieEvent, decodeHealOutcome, tmuxSessionName } from "@coolie/protocol"
+import {
+  ROUTES,
+  buildCoolieUrl,
+  decodeProject,
+  decodeWorkspace,
+  decodeCoolieEvent,
+  decodeHealOutcome,
+  tmuxSessionName,
+} from "@coolie/protocol"
 import {
   SUN_PATH_MAX,
   probeAlive,
@@ -14,6 +22,7 @@ import { spawnSync } from "node:child_process"
 import Database from "better-sqlite3"
 import { api, home } from "./client.js"
 import { toCsv, toTable } from "./export-format.js"
+import { expandAgents, parseAgentsSpec } from "./fanout.js"
 
 const program = new Command("coolie").showHelpAfterError()
 const fail = (e: unknown): never => { console.error(String(e instanceof Error ? e.message : e)); process.exit(1) }
@@ -34,37 +43,98 @@ project.command("remove <id>").action(async (id) => {
   try { await api("DELETE", `/projects/${id}`); console.log(`removed ${id}`) } catch (e) { fail(e) }
 })
 
+const resolveProjectId = async (arg: string): Promise<string> => {
+  if (!fs.existsSync(arg)) return arg
+  const abs = path.resolve(arg)
+  const projects: any[] = await api("GET", "/projects")
+  let project = projects.find((candidate) => candidate.repoRoot === abs)
+  if (!project) project = await api("POST", "/projects", { repoRoot: abs })
+  return project.id
+}
+
+interface ConfigEngine {
+  id: string
+  capabilities: { effort: boolean }
+  models: string[]
+  efforts?: readonly string[]
+}
+
 // ---------- workspace lifecycle（Plan 2） ----------
 program.command("create")
   .argument("<projectIdOrPath>", "项目 id，或 git 仓库路径（未注册时自动注册）")
   .option("--slug <slug>", "branch 语义名（branch = coolie/<slug>；缺省用目录名）")
   .option("--name <name>", "指定目录名（缺省从 national-parks 名池取）")
   .option("--prompt <text>", "workspace 就绪后投递给 engine 的首条 prompt")
-  .option("--engine <id>", "coding engine（如 claude/codex）", "claude")
+  .option("--engine <id>", "coding engine（如 claude/codex）；不可与 --agents 同用")
+  .option("--agents <spec>", "fan-out 规格，如 claude:2,codex:1；不可与 --engine 同用")
   .option("--model <model>", "创建时使用的模型")
   .option("--effort <effort>", "reasoning effort（如 low/medium/high/xhigh）")
   .action(async (arg: string, opts: {
-    slug?: string; name?: string; prompt?: string; engine: string; model?: string; effort?: string
+    slug?: string; name?: string; prompt?: string; engine?: string; agents?: string; model?: string; effort?: string
   }) => {
     try {
-      let projectId = arg
-      if (fs.existsSync(arg)) {
-        const abs = path.resolve(arg)
-        const projects: any[] = await api("GET", "/projects")
-        let p = projects.find((x) => x.repoRoot === abs)
-        if (!p) p = await api("POST", "/projects", { repoRoot: abs })
-        projectId = p.id
+      if (opts.agents !== undefined && opts.engine !== undefined)
+        return fail("--agents 与 --engine 互斥：fan-out 的引擎请全部写在 --agents 中")
+
+      const projectId = await resolveProjectId(arg)
+      const config = await api("GET", "/config") as { engines: ConfigEngine[] }
+      const engines = new Map(config.engines.map((engine) => [engine.id, engine]))
+
+      if (opts.agents === undefined) {
+        const engineId = opts.engine ?? "claude"
+        if (!engines.has(engineId))
+          return fail(`未知引擎 '${engineId}'，可用：${[...engines.keys()].join(", ")}`)
+        const ws = decodeWorkspace(await api("POST", "/workspaces", {
+          projectId,
+          ...(opts.slug ? { branchSlug: opts.slug } : {}),
+          ...(opts.name ? { name: opts.name } : {}),
+          ...(opts.prompt ? { initialPrompt: opts.prompt } : {}),
+          engineId,
+          ...(opts.model ? { model: opts.model } : {}),
+          ...(opts.effort ? { effort: opts.effort } : {}),
+        }))
+        console.log(`created ${ws.name} (${ws.id}) branch=${ws.branch} path=${ws.path}`)
+        return
       }
-      const ws = decodeWorkspace(await api("POST", "/workspaces", {
-        projectId,
-        ...(opts.slug ? { branchSlug: opts.slug } : {}),
-        ...(opts.name ? { name: opts.name } : {}),
-        ...(opts.prompt ? { initialPrompt: opts.prompt } : {}),
-        engineId: opts.engine,
-        ...(opts.model ? { model: opts.model } : {}),
-        ...(opts.effort ? { effort: opts.effort } : {}),
-      }))
-      console.log(`created ${ws.name} (${ws.id}) branch=${ws.branch} path=${ws.path}`)
+
+      const instances = expandAgents(parseAgentsSpec(opts.agents))
+      const unknown = [...new Set(instances.filter((engineId) => !engines.has(engineId)))]
+      if (unknown.length > 0)
+        return fail(`未知引擎 '${unknown.join(", ")}'，可用：${[...engines.keys()].join(", ")}`)
+
+      const groupId = `fo-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`
+      const rows: Array<{ n: number; engineId: string; status: string; id: string }> = []
+      for (const [index, engineId] of instances.entries()) {
+        const engine = engines.get(engineId)!
+        try {
+          const ws = decodeWorkspace(await api("POST", "/workspaces", {
+            projectId,
+            engineId,
+            fanoutGroup: groupId,
+            ...(opts.slug ? { branchSlug: instances.length > 1 ? `${opts.slug}-${index + 1}` : opts.slug } : {}),
+            ...(opts.name ? { name: instances.length > 1 ? `${opts.name}-${index + 1}` : opts.name } : {}),
+            ...(opts.prompt ? { initialPrompt: opts.prompt } : {}),
+            // --model/--effort 是单一选择，跨引擎时只向明确支持该值的引擎发送；其余使用引擎默认值。
+            ...(opts.model && engine.models.includes(opts.model) ? { model: opts.model } : {}),
+            ...(opts.effort && engine.capabilities.effort && engine.efforts?.includes(opts.effort)
+              ? { effort: opts.effort }
+              : {}),
+          }))
+          rows.push({ n: index + 1, engineId, status: "created", id: ws.id })
+        } catch (error) {
+          rows.push({
+            n: index + 1,
+            engineId,
+            status: `failed: ${error instanceof Error ? error.message : String(error)}`,
+            id: "-",
+          })
+        }
+      }
+      const succeeded = rows.filter((row) => row.id !== "-").length
+      console.log(`fan-out group ${groupId}（${succeeded}/${rows.length} 成功）`)
+      for (const row of rows)
+        console.log(`${String(row.n).padEnd(4)}${row.engineId.padEnd(12)}${row.status.padEnd(18)}${row.id}`)
+      if (succeeded !== rows.length) process.exitCode = 1
     } catch (e) { fail(e) }
   })
 
@@ -84,6 +154,16 @@ program.command("archive <wsId>")
 
 program.command("unarchive <wsId>").action(async (id: string) => {
   try { await api("POST", `/workspaces/${id}/unarchive`, {}); console.log(`unarchived ${id}`) }
+  catch (e) { fail(e) }
+})
+
+program.command("pin <wsId>").action(async (id: string) => {
+  try { await api("POST", `/workspaces/${id}/pin`, { pinned: true }); console.log(`pinned ${id}`) }
+  catch (e) { fail(e) }
+})
+
+program.command("unpin <wsId>").action(async (id: string) => {
+  try { await api("POST", `/workspaces/${id}/pin`, { pinned: false }); console.log(`unpinned ${id}`) }
   catch (e) { fail(e) }
 })
 
@@ -117,6 +197,27 @@ program.command("open <wsId>")
   .description("打印 iTerm2 逃生舱命令（GUI 的 Open in iTerm2 按钮复用此命令）")
   .action((id: string) => {
     console.log(`tmux -L ${tmuxSocketName()} attach -t ${tmuxSessionName(id)}`)
+  })
+
+program.command("link")
+  .description("生成 workspace/tab 的 coolie:// deep link（无需 server）")
+  .argument("<wsId>")
+  .option("--tab <tabId>", "定位到 workspace 中的 tab")
+  .option("--open", "通过 macOS open 交给已注册的 Coolie.app")
+  .action((wsId: string, opts: { tab?: string; open?: boolean }) => {
+    const url = buildCoolieUrl({
+      kind: "workspace",
+      workspaceId: wsId,
+      ...(opts.tab !== undefined ? { tabId: opts.tab } : {}),
+    })
+    console.log(url)
+    if (!opts.open) return
+    if (process.platform !== "darwin")
+      return fail("--open 当前仅支持 macOS")
+    // argv-only invocation: never interpolate the URL into a shell command.
+    const result = spawnSync("open", [url], { stdio: "inherit" })
+    if (result.error || result.status !== 0)
+      return fail("open 失败；请确认 Coolie.app 已安装且注册了 coolie:// scheme")
   })
 
 program.command("resume <wsId>")

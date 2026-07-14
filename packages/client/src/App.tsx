@@ -2,7 +2,6 @@ import { useEffect, useRef, useState } from "react"
 import { ensureServer } from "./api/discovery"
 import { makeApi } from "./api/client"
 import { startEventStream } from "./api/sse"
-import { startGuiLease } from "./api/lease"
 import { useData } from "./stores/data"
 import { useUi } from "./stores/ui"
 import { useAttention } from "./stores/attention"
@@ -18,10 +17,49 @@ import { Composer } from "./composer/Composer"
 import { DispatchPanel, ErrorActions } from "./composer/Dispatch"
 import { RightPanel } from "./rightpanel/RightPanel"
 import { EmptyState } from "./chrome/EmptyState"
+import { createSafeDeepLinkRouter, installDeepLinkHandlers } from "./deeplink"
+import { createAsyncLifecycle } from "./async-lifecycle"
 
 export const App = () => {
   const [bootErr, setBootErr] = useState<string | null>(null)
-  const started = useRef(false)
+  const bootstrapLifecycle = useRef<ReturnType<typeof createAsyncLifecycle> | null>(null)
+  if (bootstrapLifecycle.current === null) {
+    bootstrapLifecycle.current = createAsyncLifecycle(async (owner) => {
+      const info = await ensureServer()
+      if (!owner.isCurrent()) return
+      const api = makeApi(info)
+      useData.getState().setApi(api)
+      await useData.getState().bootstrap()
+      if (!owner.isCurrent()) return
+      useData.getState().setStatus("online")
+      owner.own(startEventStream({
+        after: 0,
+        role: "gui",
+        getInfo: async () => {
+          const fresh = await ensureServer()
+          const freshApi = makeApi(fresh)
+          useData.getState().setApi(freshApi)
+          void useData.getState().bootstrap()
+          return fresh
+        },
+        onEvent: (e) => useData.getState().applyEvent(e),
+        onStatus: (s) => useData.getState().setStatus(s),
+      }))
+      const router = createSafeDeepLinkRouter({
+        hasWorkspace: (id) => useData.getState().workspaces.some((workspace) => workspace.id === id),
+        hasTab: (workspaceId, tabId) => {
+          const tabs = useData.getState().tabsByWs[workspaceId]
+          return tabs === undefined || tabs.some((tab) => tab.id === tabId)
+        },
+        hasProject: (id) => useData.getState().projects.some((project) => project.id === id),
+      }, {
+        selectWs: (id) => useUi.getState().selectWs(id),
+        selectTab: (workspaceId, tabId) => useUi.getState().selectTab(workspaceId, tabId),
+        openProjectDispatch: (projectId) => useUi.getState().setDispatchMode(true, projectId),
+      })
+      owner.own(await installDeepLinkHandlers(router))
+    }, (error) => setBootErr(error instanceof Error ? error.message : String(error)))
+  }
   useGlobalHotkeys()
 
   useEffect(() => {
@@ -29,36 +67,7 @@ export const App = () => {
   }, [])
 
   useEffect(() => {
-    if (started.current) return // StrictMode 双跑防抖
-    started.current = true
-    let stopSse: (() => void) | null = null
-    let stopLease: (() => void) | null = null
-    void (async () => {
-      try {
-        const info = await ensureServer()
-        const api = makeApi(info)
-        useData.getState().setApi(api)
-        await useData.getState().bootstrap()
-        useData.getState().setStatus("online")
-        stopLease = startGuiLease(api) // [Plan 4 contract — verify at execution]
-        stopSse = startEventStream({
-          after: 0, // 首连从 0 replay 没意义且量大：用 bootstrap 后的最新态即可 → 实际用当前最大 seq；M1 简化为 0 + 幂等刷新，事件量小可接受
-          role: "gui", // Plan-4 server lease：SSE 连接即持有 GUI refcount（连接断＝自动释放）
-          getInfo: async () => {
-            const fresh = await ensureServer() // server 崩溃：重发现/重拉起（spec §十）
-            const freshApi = makeApi(fresh)
-            useData.getState().setApi(freshApi)
-            void useData.getState().bootstrap()
-            return fresh
-          },
-          onEvent: (e) => useData.getState().applyEvent(e),
-          onStatus: (s) => useData.getState().setStatus(s),
-        })
-      } catch (e: any) {
-        setBootErr(e?.message ?? String(e))
-      }
-    })()
-    return () => { stopSse?.(); stopLease?.() }
+    return bootstrapLifecycle.current!.start()
   }, [])
 
   const rightPanel = useUi((s) => s.rightPanel)

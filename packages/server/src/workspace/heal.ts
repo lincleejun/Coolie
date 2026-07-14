@@ -55,6 +55,15 @@ export const SessionEnsurerLive = Layer.effect(
       cwd: string, sessionId: string | null): boolean =>
       sessionId !== null && fs.existsSync(engine.transcriptPath({ home: engineHome(engine.id, cfg), cwd, sessionId }))
 
+    const reconcileNonEngineTabs = (workspaceId: string, sessionName: string) =>
+      Effect.gen(function* () {
+        const live = new Set((yield* tmux.listWindows(sessionName)).map((w) => w.index))
+        const stale = (yield* tabs.listByWorkspace(workspaceId)).filter(
+          (t) => t.kind !== "engine" && (t.tmuxWindow === null || !live.has(t.tmuxWindow)),
+        )
+        for (const t of stale) yield* tabs.remove(t.id).pipe(Effect.ignore)
+      })
+
     const ensure: SessionEnsurerShape["ensure"] = (wsId) =>
       Effect.gen(function* () {
         // ---- observe ----
@@ -72,8 +81,10 @@ export const SessionEnsurerLive = Layer.effect(
           transcriptExists: yield* Effect.sync(() => transcriptExists(engine, ws.path, tab?.engineSessionId ?? null)),
           freshSessionId: engine.newSessionId(),
         })
-        if (plan.kind === "none")
+        if (plan.kind === "none") {
+          yield* reconcileNonEngineTabs(ws.id, sessionName)
           return { action: "none", resumed: false, sessionName, tabId: tab?.id ?? null, sessionId: tab?.engineSessionId ?? null } satisfies HealOutcome
+        }
         // ---- apply ----
         const project = yield* projects.get(ws.projectId)
         yield* startEngineSession(tmux, {
@@ -90,11 +101,7 @@ export const SessionEnsurerLive = Layer.effect(
         // D3：recreate 后 session 只余 engine window——历史 shell/run tab 行仍指向已不存在的 window
         //（GUI 表现为「can't find window: N」死 tab，要手动重连才消失）。按真实 window 存在性 prune
         // 非 engine tab（每次 remove 与其 tab.closed 事件同事务；engine tab 由上面的重建流程自愈，保活）。
-        const liveWindows = new Set((yield* tmux.listWindows(sessionName)).map((w) => w.index))
-        const staleTabs = (yield* tabs.listByWorkspace(ws.id)).filter(
-          (t) => t.id !== tabId && (t.tmuxWindow === null || !liveWindows.has(t.tmuxWindow)),
-        )
-        for (const t of staleTabs) yield* tabs.remove(t.id).pipe(Effect.ignore)
+        yield* reconcileNonEngineTabs(ws.id, sessionName)
         yield* events.append({
           workspaceId: ws.id, type: "workspace.tmux.healed",
           payload: { sessionName, resumed: plan.resume, sessionId: plan.sessionId, tabId },

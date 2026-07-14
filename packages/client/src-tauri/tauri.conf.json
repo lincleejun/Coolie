@@ -25,5 +25,14 @@
     ],
     "security": { "csp": null }
   },
-  "bundle": { "active": false }
+  "plugins": {
+    "deep-link": {
+      "desktop": { "schemes": ["coolie"] }
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["app", "dmg"],
+    "macOS": { "minimumSystemVersion": "12.0" }
+  }
 }
