@@ -50,6 +50,19 @@ describe("attention store", () => {
     expect(document.title).toBe("(1) Coolie")
   })
 
+  it("does not raise attention while replaying historical events on startup", () => {
+    ;(useData.getState().applyEvent as any)({
+      seq: 1,
+      workspaceId: "w2",
+      type: "tab.status.changed",
+      payload: { status: "awaiting-input" },
+      ts: 1,
+    }, { allowAttention: false })
+
+    expect(useAttention.getState().count()).toBe(0)
+    expect(document.title).toBe("Coolie")
+  })
+
   it("does not raise attention for the visible selected workspace", () => {
     useData.getState().applyEvent({
       seq: 2,

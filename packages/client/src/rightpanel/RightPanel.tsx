@@ -3,8 +3,6 @@ import { useData } from "../stores/data"
 import { useUi } from "../stores/ui"
 import { makeDrafts, type DraftStorage } from "../composer/drafts"
 import type { DiffSection, FileChange } from "../stores/types"
-import { DiffView } from "./DiffView"
-import { injectComment } from "./comment"
 import { useT } from "../i18n"
 import { CaretRightIcon, ChevronDownIcon, FolderIcon, PanelRightIcon } from "../chrome/icons"
 
@@ -94,10 +92,8 @@ export const RightPanel = ({ wsId }: { wsId: string }) => {
   const changes = useData((s) => s.changesByWs[wsId])
   const stat = useData((s) => s.diffstatByWs[wsId])
   const [files, setFiles] = useState<string[]>([])
-  const [openDiff, setOpenDiff] = useState<{ section: DiffSection; path: string } | null>(null)
 
   useEffect(() => {
-    setOpenDiff(null)
     if (panel === "changes") void useData.getState().refreshChanges(wsId).catch(() => {})
     if (panel === "files")
       void useData.getState().getApi()?.req("GET", `/workspaces/${wsId}/files`)
@@ -133,27 +129,17 @@ export const RightPanel = ({ wsId }: { wsId: string }) => {
       </div>
       <div className="right-body">
         {panel === "changes" && (
-          openDiff ? (
-            <div className="diff-pane">
-              <button className="diff-back" onClick={() => setOpenDiff(null)}>{tr("diff.back")}</button>
-              <DiffView
-                wsId={wsId}
-                section={openDiff.section}
-                path={openDiff.path}
-                onComment={(selection) => injectComment(wsId, selection)}
-              />
-            </div>
-          ) : changes ? (
+          changes ? (
             <>
               <div className="chg-total">vs base：{stat ? `+${stat.insertions} −${stat.deletions}（${stat.filesChanged} 文件）` : "…"}</div>
               <ChangeSection title="Against base" section="againstBase" list={changes.againstBase}
-                onOpen={(section, path) => setOpenDiff({ section, path })} />
+                onOpen={(section, path) => useUi.getState().openCenterDiff({ wsId, section, path })} />
               <ChangeSection title="Committed" section="committed" list={changes.committed}
-                onOpen={(section, path) => setOpenDiff({ section, path })} />
+                onOpen={(section, path) => useUi.getState().openCenterDiff({ wsId, section, path })} />
               <ChangeSection title="Staged" section="staged" list={changes.staged}
-                onOpen={(section, path) => setOpenDiff({ section, path })} />
+                onOpen={(section, path) => useUi.getState().openCenterDiff({ wsId, section, path })} />
               <ChangeSection title="Unstaged" section="unstaged" list={changes.unstaged}
-                onOpen={(section, path) => setOpenDiff({ section, path })} />
+                onOpen={(section, path) => useUi.getState().openCenterDiff({ wsId, section, path })} />
               {changes.untracked.length > 0 && (
                 <section className="chg-section">
                   <h4>Untracked（{changes.untracked.length}）</h4>

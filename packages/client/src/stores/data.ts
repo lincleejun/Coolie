@@ -11,6 +11,7 @@ export interface PendingSend { id: number; wsId: string; text: string; mode: str
 /** UI 警告面（prompt.delivery.degraded 等 server 侧降级信号 → toast/badge） */
 export interface Warning { id: number; code: string; message: string }
 export interface QueuedPrompt { id: number; text: string; position: number }
+export interface ApplyEventOptions { allowAttention?: boolean }
 
 interface DataState {
   status: "connecting" | "online" | "offline"
@@ -37,7 +38,7 @@ interface DataState {
   refreshChanges(wsId: string): Promise<void>
   refreshQueue(wsId: string): Promise<void>
   withdrawQueued(wsId: string, id: number): Promise<void>
-  applyEvent(e: CoolieEventLike): void
+  applyEvent(e: CoolieEventLike, options?: ApplyEventOptions): void
   sendInput(wsId: string, req: { text: string; mode: string; skipStable: boolean }): Promise<void>
   /** 生命周期动作（D2）：包已有 REST 端点。列表由 workspace.* SSE 事件重拉，故这里不手动刷新。
    *  archive 脏树会被 server 409 拒（force=false）；调用方据此弹确认再以 force=true 重试。 */
@@ -107,7 +108,7 @@ export const useData = create<DataState>((set, get) => ({
     try { await api.req("DELETE", `/workspaces/${wsId}/queue/${id}`) } catch { /* drain may have won the race */ }
     await get().refreshQueue(wsId)
   },
-  applyEvent: (e) => {
+  applyEvent: (e, options = {}) => {
     const { refreshWorkspaces, refreshTabs, refreshProjects, refreshDiffstat, refreshQueue, pushWarning } = get()
     if (e.type.startsWith("project.")) swallow(refreshProjects())
     else if (e.type.startsWith("workspace.")) {
@@ -122,7 +123,9 @@ export const useData = create<DataState>((set, get) => ({
     } else if (e.workspaceId && (e.type.startsWith("tab.") || e.type.startsWith("engine.") || e.type.startsWith("composer."))) {
       swallow(refreshTabs(e.workspaceId))
       if (e.type === "engine.turn.finished") swallow(refreshDiffstat(e.workspaceId)) // turn 结束大概率有新 diff
-      if (e.type === "tab.status.changed" && (e.payload as { status?: unknown } | null)?.status === "awaiting-input") {
+      if (options.allowAttention !== false &&
+          e.type === "tab.status.changed" &&
+          (e.payload as { status?: unknown } | null)?.status === "awaiting-input") {
         const wsId = e.workspaceId
         const selectedWs = useUi.getState().selectedWs
         const unattended = typeof document !== "undefined" &&

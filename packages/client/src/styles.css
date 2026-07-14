@@ -228,6 +228,8 @@ button { font: inherit; color: inherit; background: none; border: none; cursor: 
 .tab-close:hover { background: var(--line-2); color: var(--text-2); }
 .tab-new { width: 28px; padding: 0; justify-content: center; color: var(--text-3); }
 .tab-new:hover { background: var(--row-hover); color: var(--text-2); }
+.tab-diff { max-width: 220px; }
+.tab-diff > span:first-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .tabsbar-spacer { flex: 1; }
 .iterm-btn { font-size: 12px; color: var(--fg-dim); padding: 4px 10px; border: 1px solid var(--border); border-radius: 6px; }
 .iterm-btn:hover { color: var(--fg); background: var(--panel); }
@@ -348,11 +350,22 @@ button { font: inherit; color: inherit; background: none; border: none; cursor: 
 .ob-err { color: var(--danger); font-size: 12px; text-align: left; white-space: pre-wrap; }
 .onboarding-foot { margin-top: 8px; font-size: 12px; }
 .side-onboard-hint { line-height: 1.5; padding: 12px 8px; }
+.new-agent-row { width: 100%; text-align: left; font-style: italic; }
+.project-picker { position: relative; width: min(560px, calc(100vw - 32px)); max-width: 560px; padding: 8px; }
+.project-picker .onboarding { height: auto; padding: 32px 24px 28px; }
+.project-picker-close {
+  position: absolute; top: 8px; right: 8px; z-index: 1;
+  width: 28px; height: 28px; border-radius: 6px; color: var(--text-3); font-size: 18px;
+}
+.project-picker-close:hover { background: var(--row-hover); color: var(--text); }
 
 /* P1 diff */
 .chg-row-pick { cursor: pointer; border-radius: 4px; }
 .chg-row-pick:hover { background: var(--panel); }
 .diff-pane, .diff-view { display: flex; flex-direction: column; min-height: 0; }
+.center-diff { display: flex; flex-direction: column; flex: 1; min-height: 0; }
+.center-diff > .diff-view { flex: 1; padding: 8px 12px 0; }
+.center-diff .diff-body { flex: 1; }
 .diff-back { align-self: flex-start; color: var(--fg-dim); font-size: 12px; padding: 4px 0; }
 .diff-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 4px 0; }
 .diff-file { font-size: 12px; color: var(--fg-dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

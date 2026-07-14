@@ -3,6 +3,7 @@ import { dispatchHotkey, pushHotkeyLayer } from "./dispatch"
 import { useData } from "../stores/data"
 import { useUi } from "../stores/ui"
 import type { HotkeyId } from "./registry"
+import { openWorkspaceWindow } from "../chrome/workspaceWindow"
 
 /** pinned 稳定分组：置顶项优先，两个组内均保留输入顺序。 */
 export const pinnedFirst = <T extends { pinned: boolean }>(items: readonly T[]): T[] => [
@@ -30,10 +31,19 @@ const jumpAdjacent = (delta: number): void => {
   useUi.getState().selectWs(list[next]!.id)
 }
 
+const openWorkspaceForCurrentProject = (): void => {
+  const data = useData.getState()
+  const selectedWs = data.workspaces.find((workspace) => workspace.id === useUi.getState().selectedWs)
+  const projectId = selectedWs?.projectId ?? data.projects[0]?.id
+  if (!projectId) return
+  void openWorkspaceWindow(projectId)
+    .catch((error: unknown) => window.alert(error instanceof Error ? error.message : String(error)))
+}
+
 export const useGlobalHotkeys = (): void => {
   useEffect(() => {
     const handlers: Partial<Record<HotkeyId, () => void>> = {
-      "workspace.new": () => useUi.getState().setDispatchMode(true, useData.getState().projects[0]?.id ?? null),
+      "workspace.new": openWorkspaceForCurrentProject,
       "workspace.prev": () => jumpAdjacent(-1),
       "workspace.next": () => jumpAdjacent(+1),
       ...(Object.fromEntries([1, 2, 3, 4, 5, 6, 7, 8, 9].map((n) =>

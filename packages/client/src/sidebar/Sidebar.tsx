@@ -6,6 +6,8 @@ import { useAttention } from "../stores/attention"
 import { ApiError } from "../api/client"
 import { orderedActiveWs, pinnedFirst } from "../hotkeys/useGlobalHotkeys"
 import { CaretRightIcon, ChevronDownIcon, FolderPlusIcon, GitBranchIcon, HelpIcon, PlusIcon, SearchIcon, SettingsIcon } from "../chrome/icons"
+import { ProjectOnboarding } from "../chrome/EmptyState"
+import { openWorkspaceWindow } from "../chrome/workspaceWindow"
 
 /** 状态徽标（spec §六）：workspace 状态优先，active 时取 engine tab 状态 */
 export const wsBadge = (ws: Workspace, tabs: Tab[] | undefined): { glyph: string; cls: string; title: string } => {
@@ -135,6 +137,9 @@ export const Sidebar = () => {
   const workspaces = useData((s) => s.workspaces)
   const query = useUi((s) => s.searchQuery)
   const collapsedProjects = useUi((s) => s.collapsedProjects)
+  const dispatchMode = useUi((s) => s.dispatchMode)
+  const dispatchProjectId = useUi((s) => s.dispatchProjectId)
+  const [projectPickerOpen, setProjectPickerOpen] = useState(false)
 
   // diff 计数轮询（spec §7.1：git diff --shortstat 轮询）：5s、窗口聚焦时才打
   useEffect(() => {
@@ -150,6 +155,10 @@ export const Sidebar = () => {
     query === "" || w.name.includes(query) || w.branch.includes(query)
   const ordered = orderedActiveWs().filter(match)
   const archived = pinnedFirst(workspaces.filter((w) => w.status === "archived" && match(w)))
+  const startWorkspace = (projectId: string): void => {
+    void openWorkspaceWindow(projectId)
+      .catch((error: unknown) => window.alert(error instanceof Error ? error.message : String(error)))
+  }
   const adopt = async (projectId: string): Promise<void> => {
     const data = useData.getState()
     const api = data.getApi()
@@ -176,8 +185,8 @@ export const Sidebar = () => {
   return (
     <div className="sidebar">
       <div className="side-actions">
-        <button className="side-new" onClick={() => useUi.getState().setDispatchMode(true, projects[0]?.id ?? null)}>
-          <PlusIcon size={15} /> New Workspace <kbd>⌘N</kbd>
+        <button className="side-new" onClick={() => setProjectPickerOpen(true)}>
+          <PlusIcon size={15} /> Open Project
         </button>
         <div className="side-search-wrap">
           <SearchIcon size={13} />
@@ -190,7 +199,9 @@ export const Sidebar = () => {
       <div className="side-list">
         {projects.map((p) => {
           const rows = ordered.filter((w) => w.projectId === p.id)
-          if (rows.length === 0 && query !== "") return null
+          const creatingHere = dispatchMode && dispatchProjectId === p.id
+          const showNewAgent = creatingHere && !rows.some((workspace) => workspace.status === "creating")
+          if (rows.length === 0 && query !== "" && !creatingHere) return null
           const collapsed = collapsedProjects[p.id] === true
           return (
             <section key={p.id}>
@@ -206,12 +217,18 @@ export const Sidebar = () => {
                 <button className="proj-add" title="采用已有 worktree…" aria-label="采用 worktree" onClick={() => void adopt(p.id)}>
                   <FolderPlusIcon size={13} />
                 </button>
-                <button className="proj-add" title="新建 workspace" aria-label="新建 workspace" onClick={() => useUi.getState().setDispatchMode(true, p.id)}>
+                <button className="proj-add" title="在新窗口新建 workspace" aria-label="新建 workspace" onClick={() => startWorkspace(p.id)}>
                   <PlusIcon size={13} />
                 </button>
               </div>
               {!collapsed && rows.map((w) => <WsRow key={w.id} ws={w} />)}
-              {!collapsed && rows.length === 0 && <div className="dim empty-hint">⌘N 创建第一个 workspace</div>}
+              {!collapsed && showNewAgent && (
+                <button className="ws-row new-agent-row selected" onClick={() => useUi.getState().setDispatchMode(true, p.id)}>
+                  <span className="badge b-creating">◌</span>
+                  <span className="ws-name">&lt;new agent&gt;</span>
+                </button>
+              )}
+              {!collapsed && rows.length === 0 && !creatingHere && <div className="dim empty-hint">⌘N 创建第一个 workspace</div>}
             </section>
           )
         })}
@@ -240,6 +257,17 @@ export const Sidebar = () => {
           <SettingsIcon size={16} />
         </button>
       </div>
+      {projectPickerOpen && (
+        <div className="modal-backdrop" onClick={() => setProjectPickerOpen(false)}>
+          <div className="modal project-picker" role="dialog" aria-label="Open Project" onClick={(event) => event.stopPropagation()}>
+            <button className="project-picker-close" onClick={() => setProjectPickerOpen(false)} aria-label="关闭">×</button>
+            <ProjectOnboarding onProjectReady={(project) => {
+              setProjectPickerOpen(false)
+              startWorkspace(project.id)
+            }} />
+          </div>
+        </div>
+      )}
     </div>
   )
 }

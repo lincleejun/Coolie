@@ -763,6 +763,7 @@ export const createApp = ({ runtime, token, onShutdown, onError, bus, sseHeartbe
                 displayName: e.displayName,
                 capabilities: e.capabilities,
                 models: e.models ?? [], // F4：models 可选，缺省下发空数组（fake 引擎无 models）
+                ...(e.modelEfforts !== undefined ? { modelEfforts: e.modelEfforts } : {}),
                 ...(e.efforts !== undefined ? { efforts: e.efforts } : {}),
               }))
               return {

@@ -19,7 +19,10 @@ const fakeEngine = (id: string, models: string[]): Engine => ({
   deriveTitle: () => null,
   resumeArgs: () => [],
   models,
-  ...(id === "codex" ? { efforts: ["low", "high"] } : {}),
+  ...(id === "codex" ? {
+    efforts: ["low", "high"],
+    modelEfforts: { "gpt-5": ["high"] },
+  } : {}),
 })
 
 let server: http.Server, base: string, token: string
@@ -61,6 +64,7 @@ describe("GET /config engines", () => {
     expect(codex.capabilities.nativeQueue).toBe(false)
     expect(codex.models).toEqual(["gpt-5"])
     expect(codex.efforts).toEqual(["low", "high"])
+    expect(codex.modelEfforts).toEqual({ "gpt-5": ["high"] })
   })
 
   it("tmuxSocket 随 config 下发；claude 无 efforts 字段", async () => {

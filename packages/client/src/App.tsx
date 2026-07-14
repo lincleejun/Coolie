@@ -34,6 +34,7 @@ import { applyResolvedTheme, resolveTheme, systemIsDark, watchSystemTheme } from
 import { syncTerminalTheme } from "./terminal/session"
 import { useT } from "./i18n"
 import { capabilities } from "./platform"
+import { projectIdFromWindowSearch } from "./chrome/workspaceWindow"
 
 const WebServerSetup = ({ onConnect }: { onConnect: () => void }) => {
   const [value, setValue] = useState("")
@@ -98,12 +99,18 @@ export const App = () => {
   const bootstrapStop = useRef<(() => void) | null>(null)
   if (bootstrapLifecycle.current === null) {
     bootstrapLifecycle.current = createAsyncLifecycle(async (owner) => {
+      // SSE starts at seq 0 to rebuild durable state. Only events produced after this GUI
+      // session began are eligible to raise "needs you"; older replay still refreshes stores.
+      const attentionStartedAt = Date.now()
       const info = await ensureServer()
       if (!owner.isCurrent()) return
       const api = makeApi(info)
       useData.getState().setApi(api)
       await useData.getState().bootstrap()
       if (!owner.isCurrent()) return
+      const requestedProjectId = projectIdFromWindowSearch(window.location.search)
+      if (requestedProjectId && useData.getState().projects.some((project) => project.id === requestedProjectId))
+        useUi.getState().setDispatchMode(true, requestedProjectId)
       useData.getState().setStatus("online")
       owner.own(startEventStream({
         after: 0,
@@ -115,7 +122,7 @@ export const App = () => {
           void useData.getState().bootstrap()
           return fresh
         },
-        onEvent: (e) => useData.getState().applyEvent(e),
+        onEvent: (e) => useData.getState().applyEvent(e, { allowAttention: e.ts >= attentionStartedAt }),
         onStatus: (s) => useData.getState().setStatus(s),
       }))
       const router = createSafeDeepLinkRouter({

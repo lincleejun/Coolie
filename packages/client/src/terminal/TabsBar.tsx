@@ -10,6 +10,7 @@ import { openRunTab } from "./run"
 import { capabilities } from "../platform"
 import { CloseIcon, PlusIcon } from "../chrome/icons"
 import { Dropdown } from "../chrome/Dropdown"
+import { CenterDiff } from "../rightpanel/CenterDiff"
 
 export const openInTerminal = async (
   tmuxSocket: string,
@@ -33,6 +34,8 @@ export const CenterArea = ({ wsId }: { wsId: string }) => {
   const engines = config?.engines ?? []
   const selectedId = useUi((s) => s.selectedTabByWs[wsId]) ?? tabs[0]?.id
   const selected = tabs.find((t) => t.id === selectedId) ?? tabs[0]
+  const centerDiff = useUi((s) => s.centerDiff)
+  const activeDiff = centerDiff?.wsId === wsId ? centerDiff : null
   const terminalApp = useTerminal((s) => s.terminalApp)
   const customTemplate = useTerminal((s) => s.customTemplate)
   const external = useTerminal((s) => capabilities.externalTerminal && s.externalByWs[wsId] === true)
@@ -73,9 +76,12 @@ export const CenterArea = ({ wsId }: { wsId: string }) => {
   useEffect(() => {
     return pushHotkeyLayer({
       "tab.newShell": () => void newShell().catch((e) => alert(e.message)),
-      "tab.close": () => { if (selected) void closeTab(selected).catch((e) => alert(e.message)) },
+      "tab.close": () => {
+        if (activeDiff) useUi.getState().closeCenterDiff()
+        else if (selected) void closeTab(selected).catch((e) => alert(e.message))
+      },
     })
-  }, [wsId, selected?.id])
+  }, [wsId, selected?.id, activeDiff?.path, activeDiff?.section])
 
   const engineName = (id: string | null) => engines.find((e) => e.id === id)?.displayName ?? id ?? "engine"
 
@@ -85,7 +91,7 @@ export const CenterArea = ({ wsId }: { wsId: string }) => {
         {tabs.map((t) => (
           <button
             key={t.id}
-            className={`tab ${t.id === selected?.id ? "active" : ""}`}
+            className={`tab ${!activeDiff && t.id === selected?.id ? "active" : ""}`}
             title={t.kind === "engine" ? engineName(t.engineId) : t.kind}
             onClick={() => useUi.getState().selectTab(wsId, t.id)}
           >
@@ -96,6 +102,17 @@ export const CenterArea = ({ wsId }: { wsId: string }) => {
             )}
           </button>
         ))}
+        {activeDiff && (
+          <button className="tab tab-diff active" title={activeDiff.path}>
+            <span>{activeDiff.path.split("/").at(-1)}</span>
+            <span
+              className="tab-close"
+              onClick={(event) => { event.stopPropagation(); useUi.getState().closeCenterDiff() }}
+            >
+              <CloseIcon size={12} />
+            </span>
+          </button>
+        )}
         <button className="tab tab-run" title="运行 .coolie/run.sh" onClick={() => void run().catch((e) => alert(e.message))}>Run</button>
         <button className="tab tab-new" title="新 shell tab（⌘T）" aria-label="新 shell tab" onClick={() => void newShell()}><PlusIcon size={14} /></button>
         <div className="tabsbar-spacer" />
@@ -125,46 +142,52 @@ export const CenterArea = ({ wsId }: { wsId: string }) => {
           </>
         )}
       </div>
-      {capabilities.externalTerminal && terminalApp === "custom" && (
-        <label className="term-custom-editor">
-          <span>自定义 JSON argv 模板</span>
-          <input
-            value={customTemplate}
-            placeholder={'["/usr/bin/open","-na","WezTerm","--args","sh","-lc","{cmd}"]'}
-            onChange={(event) => useTerminal.getState().setCustomTemplate(event.target.value)}
-            spellCheck={false}
-          />
-        </label>
-      )}
-      {external ? (
-        <div className="term-external">
-          <p className="dim">外部终端模式已开启。GUI 终端会话与 WebSocket 已释放。</p>
-          {config && <code className="attach-cmd">{buildAttachCommand(config.tmuxSocket, wsId)}</code>}
-          <div className="term-external-actions">
-            <button className="btn" onClick={openExternal}>在 {terminalLabel} 中打开</button>
-            <button className="btn-secondary" onClick={() => useTerminal.getState().setExternal(wsId, false)}>回内嵌终端</button>
-          </div>
-        </div>
+      {activeDiff ? (
+        <CenterDiff wsId={wsId} section={activeDiff.section} path={activeDiff.path} />
       ) : (
-        <div className="term-stack">
-          {tabs.filter((t) => t.tmuxWindow !== null).map((t) =>
-            // 惰性挂载（F3）：active 或已看过 → 活 TerminalView（active 条件保证首帧不闪占位）；否则零 WS 占位符。
-            viewed.has(t.id) || t.id === selected?.id ? (
-              <TerminalView
-                key={t.id}
-                wsId={wsId}
-                tabId={t.id}
-                kind={t.kind}
-                tabStatus={t.status}
-                windowIdx={t.tmuxWindow!}
-                active={t.id === selected?.id}
+        <>
+          {capabilities.externalTerminal && terminalApp === "custom" && (
+            <label className="term-custom-editor">
+              <span>自定义 JSON argv 模板</span>
+              <input
+                value={customTemplate}
+                placeholder={'["/usr/bin/open","-na","WezTerm","--args","sh","-lc","{cmd}"]'}
+                onChange={(event) => useTerminal.getState().setCustomTemplate(event.target.value)}
+                spellCheck={false}
               />
-            ) : (
-              <div key={t.id} className="term-wrap term-placeholder" style={{ visibility: "hidden" }} aria-hidden />
-            ),
+            </label>
           )}
-          {tabs.length === 0 && <div className="dim center-empty">无终端 tab（workspace 可能已归档）</div>}
-        </div>
+          {external ? (
+            <div className="term-external">
+              <p className="dim">外部终端模式已开启。GUI 终端会话与 WebSocket 已释放。</p>
+              {config && <code className="attach-cmd">{buildAttachCommand(config.tmuxSocket, wsId)}</code>}
+              <div className="term-external-actions">
+                <button className="btn" onClick={openExternal}>在 {terminalLabel} 中打开</button>
+                <button className="btn-secondary" onClick={() => useTerminal.getState().setExternal(wsId, false)}>回内嵌终端</button>
+              </div>
+            </div>
+          ) : (
+            <div className="term-stack">
+              {tabs.filter((t) => t.tmuxWindow !== null).map((t) =>
+                // 惰性挂载（F3）：active 或已看过 → 活 TerminalView（active 条件保证首帧不闪占位）；否则零 WS 占位符。
+                viewed.has(t.id) || t.id === selected?.id ? (
+                  <TerminalView
+                    key={t.id}
+                    wsId={wsId}
+                    tabId={t.id}
+                    kind={t.kind}
+                    tabStatus={t.status}
+                    windowIdx={t.tmuxWindow!}
+                    active={t.id === selected?.id}
+                  />
+                ) : (
+                  <div key={t.id} className="term-wrap term-placeholder" style={{ visibility: "hidden" }} aria-hidden />
+                ),
+              )}
+              {tabs.length === 0 && <div className="dim center-empty">无终端 tab（workspace 可能已归档）</div>}
+            </div>
+          )}
+        </>
       )}
     </div>
   )

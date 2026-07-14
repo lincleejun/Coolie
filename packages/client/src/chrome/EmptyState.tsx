@@ -2,6 +2,7 @@ import { useState } from "react"
 import { useData } from "../stores/data"
 import { useUi } from "../stores/ui"
 import { capabilities, pickDirectory } from "../platform"
+import type { Project } from "@coolie/protocol"
 
 /**
  * 中央空态引导（conductor 风格 onboarding）：
@@ -35,7 +36,9 @@ export const registerPickedDirectory = async (
   return true
 }
 
-const ProjectOnboarding = () => {
+export const ProjectOnboarding = ({ onProjectReady }: {
+  onProjectReady?: (project: Project) => void
+}) => {
   const [mode, setMode] = useState<Mode>("none")
   const [value, setValue] = useState("")
   const [busy, setBusy] = useState(false)
@@ -46,11 +49,19 @@ const ProjectOnboarding = () => {
     const api = useData.getState().getApi()
     if (!api) return
     setBusy(true); setErr(null)
+    let project: Project | null = null
     void registerPickedDirectory(
       () => pickDirectory(),
-      (repoRoot) => api.req("POST", "/projects", { repoRoot }),
+      async (repoRoot) => {
+        project = await api.req("POST", "/projects", { repoRoot })
+        return project
+      },
     )
-      .then((registered) => registered ? useData.getState().refreshProjects() : undefined)
+      .then(async (registered) => {
+        if (!registered) return
+        await useData.getState().refreshProjects()
+        if (project) onProjectReady?.(project)
+      })
       .catch((e: unknown) => setErr(e instanceof Error ? e.message : String(e)))
       .finally(() => setBusy(false))
   }
@@ -62,8 +73,11 @@ const ProjectOnboarding = () => {
     if (!api) return
     setBusy(true); setErr(null)
     void api.req("POST", plan.path, plan.body)
-      .then(() => useData.getState().refreshProjects())
-      .then(() => { setValue(""); setMode("none") })
+      .then(async (project: Project) => {
+        await useData.getState().refreshProjects()
+        setValue(""); setMode("none")
+        onProjectReady?.(project)
+      })
       .catch((e: any) => setErr(e?.message ?? String(e)))
       .finally(() => setBusy(false))
   }
@@ -71,20 +85,20 @@ const ProjectOnboarding = () => {
   return (
     <div className="onboarding">
       <div className="onboarding-card">
-        <h1 className="onboarding-title">欢迎使用 Coolie</h1>
-        <p className="onboarding-sub">添加一个项目开始：打开本地仓库，或从远端 clone。</p>
+        <h1 className="onboarding-title">Open Project</h1>
+        <p className="onboarding-sub">打开本地项目，或从远端 repository 创建项目。</p>
         <div className="onboarding-actions">
           {capabilities.directoryPicker && (
             <button className="ob-action" disabled={busy} onClick={openDirectory}>
               <span className="ob-icon">📁</span>
-              <span className="ob-label">打开本地目录</span>
-              <span className="ob-hint">已有 git 仓库</span>
+              <span className="ob-label">Open Project</span>
+              <span className="ob-hint">选择本地 git repository</span>
             </button>
           )}
           <button className={`ob-action ${mode === "clone" ? "active" : ""}`} onClick={() => { setMode("clone"); setErr(null) }}>
             <span className="ob-icon">⬇</span>
-            <span className="ob-label">Clone repository</span>
-            <span className="ob-hint">从 URL 克隆</span>
+            <span className="ob-label">Open Repository</span>
+            <span className="ob-hint">从 URL clone repository</span>
           </button>
         </div>
         {mode !== "none" && (

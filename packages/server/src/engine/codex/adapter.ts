@@ -26,14 +26,51 @@ const HOOK_STATUS: Record<string, TabStatus> = {
 
 const defaultCodexHome = (): string => process.env.COOLIE_CODEX_HOME ?? `${process.env.HOME}/.codex`
 
-/** GUI 模型选择器选项（占位，可经 COOLIE_CODEX_MODELS 逗号分隔覆写）。 */
-export const codexModels = (process.env.COOLIE_CODEX_MODELS?.split(",").map((s) => s.trim()).filter(Boolean) ?? [])
-  .length > 0
-  ? process.env.COOLIE_CODEX_MODELS!.split(",").map((s) => s.trim()).filter(Boolean)
-  : ["gpt-5-codex", "gpt-5"]
+export interface CodexModelCatalog {
+  models: string[]
+  modelEfforts: Record<string, string[]>
+}
 
-/** reasoning effort 档位（codex.md §2）。 */
-export const codexEfforts = ["low", "medium", "high", "xhigh"]
+/** Account-aware GUI options from Codex's own cache. Explicit env configuration remains authoritative. */
+export const loadCodexModelCatalog = (
+  override = process.env.COOLIE_CODEX_MODELS,
+  cachePath = `${defaultCodexHome()}/models_cache.json`,
+): CodexModelCatalog => {
+  const configured = override?.split(",").map((value) => value.trim()).filter(Boolean) ?? []
+  if (configured.length > 0) return { models: configured, modelEfforts: {} }
+  try {
+    const parsed = JSON.parse(fs.readFileSync(cachePath, "utf8")) as { models?: unknown[] }
+    const models: string[] = []
+    const modelEfforts: Record<string, string[]> = {}
+    for (const item of parsed.models ?? []) {
+      if (typeof item !== "object" || item === null) continue
+      const model = item as {
+        slug?: unknown
+        visibility?: unknown
+        supported_reasoning_levels?: unknown
+      }
+      if (typeof model.slug !== "string" || model.slug === "" || model.visibility !== "list") continue
+      if (!models.includes(model.slug)) models.push(model.slug)
+      if (Array.isArray(model.supported_reasoning_levels)) {
+        const efforts = model.supported_reasoning_levels
+          .map((level) => typeof level === "object" && level !== null ? (level as { effort?: unknown }).effort : null)
+          .filter((effort): effort is string => typeof effort === "string" && effort !== "")
+        if (efforts.length > 0) modelEfforts[model.slug] = [...new Set(efforts)]
+      }
+    }
+    return { models, modelEfforts }
+  } catch {
+    // No cache yet: keep only "default" in the UI instead of advertising stale/invalid model names.
+    return { models: [], modelEfforts: {} }
+  }
+}
+
+const codexModelCatalog = loadCodexModelCatalog()
+export const codexModels = codexModelCatalog.models
+export const codexModelEfforts = codexModelCatalog.modelEfforts
+/** Union used while the CLI-default model is selected. */
+export const codexEfforts = [...new Set(Object.values(codexModelEfforts).flat())]
+export const resolvedCodexEfforts = codexEfforts.length > 0 ? codexEfforts : ["low", "medium", "high", "xhigh"]
 
 export const codexEngine: Engine = {
   id: "codex",
@@ -49,7 +86,8 @@ export const codexEngine: Engine = {
   terminalTitle: "engine-owned", // codex OSC0 标题可配（codex.md §8）
   serverGeneratedId: true,       // 服务端造 id：bootstrap 起始存 null，rollout 文件出现后回填真 id
   models: codexModels,
-  efforts: codexEfforts,
+  modelEfforts: codexModelEfforts,
+  efforts: resolvedCodexEfforts,
   // 占位 id：codex 不支持预指定 session id，此值永不传给 codex（serverGeneratedId 分流后 bootstrap 都不会用它）。
   newSessionId: () => randomUUID(),
   launchCommand: ({ sessionId, model, effort, resume, workspaceId, home }) => {

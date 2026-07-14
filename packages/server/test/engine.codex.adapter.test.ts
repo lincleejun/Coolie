@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, it, expect } from "vitest"
 import * as fs from "node:fs"
 import * as os from "node:os"
 import * as path from "node:path"
-import { codexEngine } from "../src/engine/codex/adapter.js"
+import { codexEngine, loadCodexModelCatalog } from "../src/engine/codex/adapter.js"
 import { EngineRegistryLive } from "../src/engine/registry.js"
 import { Effect } from "effect"
 import { EngineRegistry } from "../src/engine/registry.js"
@@ -24,6 +24,23 @@ afterEach(() => {
 })
 
 describe("codexEngine", () => {
+  it("模型选项读取 Codex cache，并允许环境配置显式覆盖", () => {
+    const cache = path.join(testHome, "models_cache.json")
+    fs.writeFileSync(cache, JSON.stringify({
+      models: [
+        { slug: "gpt-5.6-sol", visibility: "list", supported_reasoning_levels: [{ effort: "low" }, { effort: "ultra" }] },
+        { slug: "hidden-model", visibility: "hide", supported_reasoning_levels: [{ effort: "high" }] },
+      ],
+    }))
+    expect(loadCodexModelCatalog(undefined, cache)).toEqual({
+      models: ["gpt-5.6-sol"],
+      modelEfforts: { "gpt-5.6-sol": ["low", "ultra"] },
+    })
+    expect(loadCodexModelCatalog(" custom-a, custom-b ", "/missing")).toEqual({
+      models: ["custom-a", "custom-b"],
+      modelEfforts: {},
+    })
+  })
   it("能力位与 claude 分流：nativeQueue=false、effort=true、serverGeneratedId=true、hooks=false（0.139 无-hooks 通路）", () => {
     expect(codexEngine.capabilities.nativeQueue).toBe(false)
     expect(codexEngine.capabilities.effort).toBe(true)

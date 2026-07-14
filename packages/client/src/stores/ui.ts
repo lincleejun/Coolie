@@ -1,4 +1,11 @@
 import { create } from "zustand"
+import type { DiffSection } from "./types"
+
+export interface CenterDiff {
+  wsId: string
+  section: DiffSection
+  path: string
+}
 
 interface UiState {
   selectedWs: string | null
@@ -13,6 +20,7 @@ interface UiState {
   settingsOpen: boolean
   searchQuery: string
   composerFocusNonce: number       // 递增触发 composer focus（Cmd+L / 创建流）
+  centerDiff: CenterDiff | null
   selectWs(id: string | null): void
   /** 该 ws 被删除时的收尾：仅当它正是当前选中项才清空（否则无操作），避免悬空选中态 */
   clearWsIfSelected(id: string): void
@@ -26,6 +34,8 @@ interface UiState {
   setSettings(open: boolean): void
   setSearch(q: string): void
   focusComposer(): void
+  openCenterDiff(diff: CenterDiff): void
+  closeCenterDiff(): void
 }
 
 const LS_KEY = "coolie.selectedWs"
@@ -47,16 +57,20 @@ export const useUi = create<UiState>((set) => ({
   settingsOpen: false,
   searchQuery: "",
   composerFocusNonce: 0,
+  centerDiff: null,
   selectWs: (id) => {
     if (id) storage.setItem(LS_KEY, id); else storage.removeItem(LS_KEY)
-    set({ selectedWs: id, dispatchMode: false })
+    set({ selectedWs: id, dispatchMode: false, centerDiff: null })
   },
   clearWsIfSelected: (id) => set((s) => {
     if (s.selectedWs !== id) return s
     storage.removeItem(LS_KEY)
     return { selectedWs: null }
   }),
-  selectTab: (wsId, tabId) => set((s) => ({ selectedTabByWs: { ...s.selectedTabByWs, [wsId]: tabId } })),
+  selectTab: (wsId, tabId) => set((s) => ({
+    selectedTabByWs: { ...s.selectedTabByWs, [wsId]: tabId },
+    centerDiff: null,
+  })),
   setRightPanel: (rightPanel) => set({ rightPanel }),
   toggleSidebar: () => set((s) => ({ sidebarCollapsed: !s.sidebarCollapsed })),
   toggleProjectCollapsed: (projectId) =>
@@ -77,4 +91,6 @@ export const useUi = create<UiState>((set) => ({
   }),
   setSearch: (searchQuery) => set({ searchQuery }),
   focusComposer: () => set((s) => ({ composerFocusNonce: s.composerFocusNonce + 1 })),
+  openCenterDiff: (centerDiff) => set({ centerDiff, dispatchMode: false }),
+  closeCenterDiff: () => set({ centerDiff: null }),
 }))

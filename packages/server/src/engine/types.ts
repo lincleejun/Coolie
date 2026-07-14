@@ -26,7 +26,9 @@ export interface Engine {
    * **F4：可选，默认 `[]`**（`GET /config` 侧 `e.models ?? []`）——同上，既有 fake 不必补。
    * claude/codex 两真 adapter 仍显式设 `models`（否则 /config 下发空数组，GUI 无选项）。 */
   readonly models?: readonly string[]
-  /** reasoning effort 档位（codex ✓ none/low/medium/high/xhigh；claude 无 → undefined）。 */
+  /** Optional per-model effort options discovered from the engine's local model catalog. */
+  readonly modelEfforts?: Readonly<Record<string, readonly string[]>>
+  /** Engine-wide reasoning effort fallback; modelEfforts may narrow or extend it per model. */
   readonly efforts?: readonly string[]
   /** 会话 id 生命周期差异进抽象（codex M2：服务端造 id 需先启动后回填——函数形态预留） */
   readonly newSessionId: () => string

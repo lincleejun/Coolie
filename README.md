@@ -145,7 +145,7 @@ engine 经能力位（`EngineCapabilities`）与注册表抽象，**UI/调用方
 | effort 档位 | 无（`effort:false`，Noop） | `effort:true`，档位 `low`/`medium`/`high`/`xhigh`（`-c model_reasoning_effort=<档>`；`COOLIE_CODEX_MODELS` 只覆写 models，effort 档固定） |
 | nativeQueue | `true`——TUI 原生 mid-turn 排队，忙时直投 | **`false`**——忙时 `send` 进入 SQLite 持久 FIFO；turn-complete 后逐条投递，GUI 可查看与撤回 queued 项 |
 | resume | `claude --resume <sessionId>` | `codex resume <sessionId>` |
-| 模型选择 | `default`/`opus`/`sonnet`/`haiku` | `gpt-5-codex`/`gpt-5`（`COOLIE_CODEX_MODELS` 逗号分隔覆写） |
+| 模型选择 | `default`/`opus`/`sonnet`/`haiku` | 从 `~/.codex/models_cache.json` 读取当前账号可见模型（`COOLIE_CODEX_MODELS` 逗号分隔覆写） |
 | OSC title | engine 自写 | engine-owned；由 `-c tui.terminal_title=["activity","thread-title"]` 注入 |
 
 - **per-engine monitor**：mtime 兜底轮询按 `tab.engineId` 解析引擎与转录目录。hooks 具备 10 分钟权威窗；旧版 codex 的 notify/interrupt 只有 5 秒防抖窗，随后 mtime 恢复裁决权。
@@ -176,7 +176,7 @@ Coolie 启动时探测 codex 版本：`>=0.144` 使用 hooks lane；旧版或探
 | `COOLIE_CODEX_CONFIG` | trust 预置写入的 `config.toml` 路径 | 缺省回落 `<COOLIE_CODEX_HOME>/config.toml` |
 | `COOLIE_CODEX_CMD` | engine 启动命令整体覆写（原样使用，测试/调试用） | 无（发现真 binary） |
 | `COOLIE_CODEX_BIN` | codex 二进制显式路径 | 多路径自动发现（`/opt/homebrew/bin/codex` 等） |
-| `COOLIE_CODEX_MODELS` | GUI 模型选择器选项（逗号分隔覆写） | `gpt-5-codex,gpt-5` |
+| `COOLIE_CODEX_MODELS` | GUI 模型选择器选项（逗号分隔覆写） | 缺省读取 Codex 模型缓存；缓存缺失时仅使用 CLI 默认模型 |
 | `COOLIE_CODEX_HOOKS` | `1/true` 强制 hooks lane；`0/false` 强制 notify lane | 按 codex 版本探测 |
 
 > **零泄漏纪律**：测试**必须**同设 `COOLIE_CODEX_HOME` **和** `COOLIE_CODEX_CONFIG` 指临时目录。否则 `seedCodexTrust` 会写进真实 `~/.codex/config.toml`、转录 reader 会读真实 `~/.codex/sessions/`。真机冒烟（用真 codex binary、不设这两变量、seeding 落真实 `config.toml`）须先快照 `~/.codex/config.toml`、事后逐段还原——清单见 `docs/superpowers/plans/2026-07-12-coolie-m2-plan1-codex-adapter.md`。

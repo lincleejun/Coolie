@@ -111,6 +111,9 @@ export const DispatchPanel = () => {
   const [counts, setCounts] = useState<Record<string, number>>({})
   const total = fanoutTotal(counts)
   const overCap = total > MAX_FANOUT
+  const effortOptions = model === "default"
+    ? engine?.efforts
+    : engine?.modelEfforts?.[model] ?? engine?.efforts
   const namePool = useSettings((state) => state.namePool)
   const customNames = useSettings((state) => state.customNames)
 
@@ -193,18 +196,18 @@ export const DispatchPanel = () => {
         {engine && engine.models.length > 0 && (
           <>
             <label>{tr("dispatch.model")}</label>
-            <select value={model} onChange={(e) => setModel(e.target.value)}>
+            <select value={model} onChange={(e) => { setModel(e.target.value); setEffort("default") }}>
               <option value="default">{tr("dispatch.default")}</option>
-              {engine.models.map((m) => <option key={m} value={m}>{engine.displayName}·{m}</option>)}
+              {engine.models.map((m) => <option key={m} value={m}>{m}</option>)}
             </select>
           </>
         )}
-        {engine?.capabilities.effort && engine.efforts && engine.efforts.length > 0 && (
+        {engine?.capabilities.effort && effortOptions && effortOptions.length > 0 && (
           <>
             <label>{tr("dispatch.effort")}</label>
             <select value={effort} onChange={(e) => setEffort(e.target.value)}>
               <option value="default">{tr("dispatch.default")}</option>
-              {engine.efforts.map((value) => <option key={value} value={value}>{value}</option>)}
+              {effortOptions.map((value) => <option key={value} value={value}>{value}</option>)}
             </select>
           </>
         )}
