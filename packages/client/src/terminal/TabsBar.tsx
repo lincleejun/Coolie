@@ -21,10 +21,9 @@ export const openInTerminal = async (
   await invoke("spawn_detached", { program, args })
 }
 
-const tabLabel = (t: Tab): string => {
-  if (t.kind === "engine") return t.title ?? "claude" // displayName 来自 server config；title 由 historyReader 派生
-  return t.kind
-}
+// engineLabel 由调用方按 tab.engineId 从 /config 解析（绝不硬编码 vendor 名——否则 codex 会误显示为 claude）。
+const tabLabel = (t: Tab, engineLabel: string): string =>
+  t.kind === "engine" ? (t.title ?? engineLabel) : t.kind
 
 export const CenterArea = ({ wsId }: { wsId: string }) => {
   const tabs = useData((s) => s.tabsByWs[wsId]) ?? []
@@ -89,7 +88,7 @@ export const CenterArea = ({ wsId }: { wsId: string }) => {
             onClick={() => useUi.getState().selectTab(wsId, t.id)}
           >
             {t.kind === "engine" && <span className={`badge b-${t.status}`}>●</span>}
-            <span>{tabLabel(t)}</span>
+            <span>{tabLabel(t, engineName(t.engineId))}</span>
             {t.kind === "shell" && (
               <span className="tab-close" onClick={(e) => { e.stopPropagation(); void closeTab(t) }}>×</span>
             )}

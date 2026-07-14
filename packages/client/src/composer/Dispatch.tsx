@@ -98,7 +98,9 @@ export const submitFanoutRequests = async (
 export const DispatchPanel = () => {
   const tr = useT()
   const projects = useData((s) => s.projects)
-  const engines = useData((s) => s.config?.engines ?? [])
+  // Default outside the selector: a fresh [] inside the selector makes useSyncExternalStore
+  // loop forever (Maximum update depth) — keep the selector returning a stable reference.
+  const engines = useData((s) => s.config?.engines) ?? []
   const projectId = useUi((s) => s.dispatchProjectId) ?? projects[0]?.id ?? null
   const [engineId, setEngineId] = useState(engines[0]?.id ?? "claude")
   const engine = engines.find((candidate) => candidate.id === engineId) ?? engines[0]

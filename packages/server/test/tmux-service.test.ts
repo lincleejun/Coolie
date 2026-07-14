@@ -20,12 +20,18 @@ const waitFor = async (fn: () => Promise<boolean>, ms = 5000): Promise<void> => 
 
 describe("tmux env boundary（纯函数）", () => {
   it("strips TERM_PROGRAM* and pins TERM/COLORTERM", () => {
-    const env = sanitizedTmuxEnv({ TERM_PROGRAM: "iTerm.app", TERM_PROGRAM_VERSION: "3", TERM_SESSION_ID: "x", PATH: "/bin", TERM: "screen" })
+    const env = sanitizedTmuxEnv({
+      TERM_PROGRAM: "iTerm.app", TERM_PROGRAM_VERSION: "3", TERM_SESSION_ID: "x",
+      PATH: "/bin", TERM: "screen", LANG: "", LC_CTYPE: "C", LC_ALL: "C",
+    })
     expect(env.TERM_PROGRAM).toBeUndefined()
     expect(env.TERM_PROGRAM_VERSION).toBeUndefined()
     expect(env.TERM_SESSION_ID).toBeUndefined()
     expect(env.TERM).toBe("xterm-256color")
     expect(env.COLORTERM).toBe("truecolor")
+    expect(env.LANG).toMatch(/UTF-8$/)
+    expect(env.LC_CTYPE).toBe(env.LANG)
+    expect(env.LC_ALL).toBe(env.LANG)
     expect(env.PATH).toBe("/bin")
   })
   it("shellQuote survives single quotes and spaces", () => {

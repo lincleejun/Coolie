@@ -62,6 +62,30 @@ describe("WS terminal channel", () => {
     ws.close()
   })
 
+  it("C locale 的 server 仍通过 tmux attach 完整传输 UTF-8 中文", async () => {
+    const saved = {
+      LANG: process.env.LANG,
+      LC_CTYPE: process.env.LC_CTYPE,
+      LC_ALL: process.env.LC_ALL,
+    }
+    process.env.LANG = ""
+    process.env.LC_CTYPE = "C"
+    process.env.LC_ALL = "C"
+    try {
+      const ws = new WebSocket(`${base}?workspace=w1&window=0&cols=100&rows=30&token=${token}`)
+      await new Promise<void>((r) => ws.once("open", () => r()))
+      // 八进制字节由 shell printf 直接写进 pane，不依赖 shell 自己的 locale。
+      ws.send(Buffer.from("printf '\\344\\270\\255\\346\\226\\207\\347\\273\\210\\347\\253\\257\\n'\r"), { binary: true })
+      const out = await collectUntil(ws, (s) => s.includes("中文终端"))
+      expect(out).toContain("中文终端")
+      ws.close()
+    } finally {
+      if (saved.LANG === undefined) delete process.env.LANG; else process.env.LANG = saved.LANG
+      if (saved.LC_CTYPE === undefined) delete process.env.LC_CTYPE; else process.env.LC_CTYPE = saved.LC_CTYPE
+      if (saved.LC_ALL === undefined) delete process.env.LC_ALL; else process.env.LC_ALL = saved.LC_ALL
+    }
+  })
+
   it("二进制输入原样透传（非 UTF8 字节不被 utf8 往返损坏）", async () => {
     const written: Buffer[] = []
     const fakePty = {

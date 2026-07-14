@@ -8,6 +8,15 @@ export const sanitizedTmuxEnv = (base: NodeJS.ProcessEnv = process.env): Record<
   }
   env.TERM = "xterm-256color"
   env.COLORTERM = "truecolor"
+  // tmux 客户端按 locale 决定是否启用 UTF-8。Cursor/IDE 启动的进程常见
+  // LANG="" + LC_CTYPE=C；该环境下 `tmux attach` 会直接省略 CJK/宽字符，
+  // GUI 只剩英文与横线碎片，而 iTerm2（UTF-8 locale）显示正常。
+  // 在唯一的终端环境边界统一钉住 UTF-8，LC_ALL 必须一起覆盖，否则它会压过
+  // LANG/LC_CTYPE。macOS 普遍提供 en_US.UTF-8，Linux 普遍提供 C.UTF-8。
+  const utf8Locale = process.platform === "darwin" ? "en_US.UTF-8" : "C.UTF-8"
+  env.LANG = utf8Locale
+  env.LC_CTYPE = utf8Locale
+  env.LC_ALL = utf8Locale
   return env
 }
 

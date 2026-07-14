@@ -14,7 +14,9 @@ export const KeybindingSettings = () => {
   const error = useSettings((state) => state.keybindingError)
   const namePool = useSettings((state) => state.namePool)
   const customNames = useSettings((state) => state.customNames)
-  const namePools = useData((state) => state.config?.namePools ?? [])
+  // Default outside the selector: returning a fresh [] inside a zustand selector makes
+  // useSyncExternalStore see a new snapshot every render → infinite re-render (blank screen).
+  const namePools = useData((state) => state.config?.namePools) ?? []
   const [draft, setDraft] = useState("{}")
 
   useEffect(() => {
