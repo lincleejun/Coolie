@@ -5,6 +5,7 @@ import { useUi } from "../stores/ui"
 import { useAttention } from "../stores/attention"
 import { ApiError } from "../api/client"
 import { orderedActiveWs, pinnedFirst } from "../hotkeys/useGlobalHotkeys"
+import { CaretRightIcon, ChevronDownIcon, FolderPlusIcon, GitBranchIcon, HelpIcon, PlusIcon, SearchIcon, SettingsIcon } from "../chrome/icons"
 
 /** 状态徽标（spec §六）：workspace 状态优先，active 时取 engine tab 状态 */
 export const wsBadge = (ws: Workspace, tabs: Tab[] | undefined): { glyph: string; cls: string; title: string } => {
@@ -19,6 +20,10 @@ export const wsBadge = (ws: Workspace, tabs: Tab[] | undefined): { glyph: string
     default: return { glyph: "○", cls: "b-idle", title: "空闲" }
   }
 }
+
+/** Two-letter warm monogram for the project group header (Conductor sidebar). */
+const monogram = (name: string): string =>
+  (name.match(/[A-Za-z0-9]/g)?.slice(0, 2).join("") || name.slice(0, 2)).toUpperCase()
 
 export const archiveForceConfirmation = (ws: Workspace): string =>
   ws.ownership === "adopted"
@@ -114,7 +119,7 @@ const WsRow = ({ ws }: { ws: Workspace }) => {
       <span className={`badge ${badge.cls}`} title={badge.title}>{badge.glyph}</span>
       {raised && <span className="attn-dot" title="需要你" aria-label="需要你">!</span>}
       <span className="ws-name">{ws.pinned ? "📌 " : ""}{ws.name}</span>
-      <span className="ws-branch" title={ws.branch}>⑂{ws.branch.replace(/^coolie\//, "")}</span>
+      <span className="ws-branch" title={ws.branch}><GitBranchIcon size={11} className="ws-branch-icon" />{ws.branch.replace(/^coolie\//, "")}</span>
       {ws.status === "active" && <DiffCount wsId={ws.id} />}
       <button
         className="ws-more" title="更多动作" aria-label="更多动作"
@@ -129,6 +134,7 @@ export const Sidebar = () => {
   const projects = useData((s) => s.projects)
   const workspaces = useData((s) => s.workspaces)
   const query = useUi((s) => s.searchQuery)
+  const collapsedProjects = useUi((s) => s.collapsedProjects)
 
   // diff 计数轮询（spec §7.1：git diff --shortstat 轮询）：5s、窗口聚焦时才打
   useEffect(() => {
@@ -171,35 +177,68 @@ export const Sidebar = () => {
     <div className="sidebar">
       <div className="side-actions">
         <button className="side-new" onClick={() => useUi.getState().setDispatchMode(true, projects[0]?.id ?? null)}>
-          ＋ New Workspace <kbd>⌘N</kbd>
+          <PlusIcon size={15} /> New Workspace <kbd>⌘N</kbd>
         </button>
-        <input
-          className="side-search" placeholder="🔍 搜索 workspace…"
-          value={query} onChange={(e) => useUi.getState().setSearch(e.target.value)}
-        />
+        <div className="side-search-wrap">
+          <SearchIcon size={13} />
+          <input
+            className="side-search" placeholder="搜索 workspace…"
+            value={query} onChange={(e) => useUi.getState().setSearch(e.target.value)}
+          />
+        </div>
       </div>
       <div className="side-list">
         {projects.map((p) => {
           const rows = ordered.filter((w) => w.projectId === p.id)
           if (rows.length === 0 && query !== "") return null
+          const collapsed = collapsedProjects[p.id] === true
           return (
             <section key={p.id}>
-              <h3 className="proj-h">▾ {p.name} <button className="dim" onClick={() => void adopt(p.id)}>采用 worktree…</button></h3>
-              {rows.map((w) => <WsRow key={w.id} ws={w} />)}
-              {rows.length === 0 && <div className="dim empty-hint">⌘N 创建第一个 workspace</div>}
+              <div className="proj-h">
+                <button
+                  className="proj-chev" aria-label={collapsed ? "展开" : "折叠"}
+                  onClick={() => useUi.getState().toggleProjectCollapsed(p.id)}
+                >
+                  {collapsed ? <CaretRightIcon size={12} /> : <ChevronDownIcon size={12} />}
+                </button>
+                <span className="repo-m">{monogram(p.name)}</span>
+                <span className="proj-name">{p.name}</span>
+                <button className="proj-add" title="采用已有 worktree…" aria-label="采用 worktree" onClick={() => void adopt(p.id)}>
+                  <FolderPlusIcon size={13} />
+                </button>
+                <button className="proj-add" title="新建 workspace" aria-label="新建 workspace" onClick={() => useUi.getState().setDispatchMode(true, p.id)}>
+                  <PlusIcon size={13} />
+                </button>
+              </div>
+              {!collapsed && rows.map((w) => <WsRow key={w.id} ws={w} />)}
+              {!collapsed && rows.length === 0 && <div className="dim empty-hint">⌘N 创建第一个 workspace</div>}
             </section>
           )
         })}
         {archived.length > 0 && (
           <section>
-            <h3 className="proj-h">▸ 已归档（{archived.length}）</h3>
-            {archived.map((w) => <WsRow key={w.id} ws={w} />)}
+            <div className="proj-h">
+              <button
+                className="proj-chev" aria-label={collapsedProjects.__archived ? "展开" : "折叠"}
+                onClick={() => useUi.getState().toggleProjectCollapsed("__archived")}
+              >
+                {collapsedProjects.__archived ? <CaretRightIcon size={12} /> : <ChevronDownIcon size={12} />}
+              </button>
+              <span className="proj-name">已归档（{archived.length}）</span>
+            </div>
+            {!collapsedProjects.__archived && archived.map((w) => <WsRow key={w.id} ws={w} />)}
           </section>
         )}
         {projects.length === 0 && <div className="dim empty-hint side-onboard-hint">还没有项目 —— 中间面板可打开目录或 clone 仓库。</div>}
       </div>
       <div className="side-footer">
-        <button className="dim" onClick={() => useUi.getState().setSettings(true)}>⚙ 快捷键设置 <kbd>⌘,</kbd></button>
+        <span className="side-foot-sp" />
+        <button className="icobtn" title={`帮助 · 快捷键 ⌘/`} aria-label="帮助" onClick={() => useUi.getState().setCheatsheet(true)}>
+          <HelpIcon size={16} />
+        </button>
+        <button className="icobtn" title="设置（⌘,）" aria-label="设置" onClick={() => useUi.getState().setSettings(true)}>
+          <SettingsIcon size={16} />
+        </button>
       </div>
     </div>
   )

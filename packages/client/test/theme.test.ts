@@ -38,6 +38,6 @@ describe("theme", () => {
   it("provides readable xterm colors for both themes", () => {
     expect(terminalTheme("dark").foreground).not.toBe(terminalTheme("dark").background)
     expect(terminalTheme("light").foreground).not.toBe(terminalTheme("light").background)
-    expect(terminalTheme("light").background).toBe("#f8f8fa")
+    expect(terminalTheme("light").background).toBe("#fcfcfb")
   })
 })

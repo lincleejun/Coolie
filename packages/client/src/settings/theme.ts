@@ -14,18 +14,18 @@ export const resolveTheme = (pref: ThemePref, systemDark: boolean): ResolvedThem
 export const terminalTheme = (theme: ResolvedTheme): ITheme =>
   theme === "light"
     ? {
-        background: "#f8f8fa",
-        foreground: "#1c1c1f",
-        cursor: "#315fae",
-        cursorAccent: "#f8f8fa",
-        selectionBackground: "#3b6fd440",
+        background: "#fcfcfb",
+        foreground: "#2b2826",
+        cursor: "#2b2826",
+        cursorAccent: "#fcfcfb",
+        selectionBackground: "#2b282626",
       }
     : {
-        background: "#1e1e22",
-        foreground: "#e6e6e9",
-        cursor: "#7aa2f7",
-        cursorAccent: "#1e1e22",
-        selectionBackground: "#7aa2f740",
+        background: "#191817",
+        foreground: "#ece8e3",
+        cursor: "#ece8e3",
+        cursorAccent: "#191817",
+        selectionBackground: "#ece8e326",
       }
 
 export const applyResolvedTheme = (theme: ResolvedTheme): void => {

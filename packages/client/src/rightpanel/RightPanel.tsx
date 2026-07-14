@@ -6,6 +6,7 @@ import type { DiffSection, FileChange } from "../stores/types"
 import { DiffView } from "./DiffView"
 import { injectComment } from "./comment"
 import { useT } from "../i18n"
+import { CaretRightIcon, ChevronDownIcon, FolderIcon, PanelRightIcon } from "../chrome/icons"
 
 // node 测试环境（filetree.test）会 import 本模块取 buildTree；此处不能裸引 localStorage（node 无此全局会 ReferenceError）。
 const storage: DraftStorage =
@@ -55,7 +56,10 @@ const Tree = ({ node, wsId, depth }: { node: TreeNode; wsId: string; depth: numb
         <div className="tree-row" style={{ paddingLeft: depth * 14 }}
           onClick={() => (isDir ? setOpen(!open) : injectAt(wsId, node.path))}
           title={isDir ? node.path : `@${node.path} 注入 composer`}>
-          {isDir ? (open ? "▾ " : "▸ ") : "· "}{node.name}
+          {isDir
+            ? <>{open ? <ChevronDownIcon size={11} className="tree-chev" /> : <CaretRightIcon size={11} className="tree-chev" />}<FolderIcon size={14} className="tree-folder" /></>
+            : <span className="tree-dot">·</span>}
+          <span className="tree-name">{node.name}</span>
         </div>
       )}
       {open && node.children.map((c) => <Tree key={c.path} node={c} wsId={wsId} depth={depth + 1} />)}
@@ -123,7 +127,9 @@ export const RightPanel = ({ wsId }: { wsId: string }) => {
         <button className={panel === "changes" ? "active" : ""} onClick={() => useUi.getState().setRightPanel("changes")}>{tr("right.changes")}</button>
         <button className={panel === "files" ? "active" : ""} onClick={() => useUi.getState().setRightPanel("files")}>{tr("right.files")}</button>
         <span className="tabsbar-spacer" />
-        <button onClick={() => useUi.getState().setRightPanel("collapsed")}>»</button>
+        <button className="icobtn" title={tr("titlebar.toggleRight")} aria-label={tr("titlebar.toggleRight")} onClick={() => useUi.getState().setRightPanel("collapsed")}>
+          <PanelRightIcon />
+        </button>
       </div>
       <div className="right-body">
         {panel === "changes" && (

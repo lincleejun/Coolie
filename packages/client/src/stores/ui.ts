@@ -4,6 +4,8 @@ interface UiState {
   selectedWs: string | null
   selectedTabByWs: Record<string, string>
   rightPanel: "collapsed" | "changes" | "files"
+  sidebarCollapsed: boolean        // 标题栏「折叠侧栏」图标切换（隐藏左列）
+  collapsedProjects: Record<string, boolean> // 侧栏项目分组的折叠态（chevron）
   dispatchMode: boolean            // Cmd+N：composer 变新 workspace 首条 prompt 输入
   dispatchProjectId: string | null
   cheatsheetOpen: boolean
@@ -16,6 +18,8 @@ interface UiState {
   clearWsIfSelected(id: string): void
   selectTab(wsId: string, tabId: string): void
   setRightPanel(p: UiState["rightPanel"]): void
+  toggleSidebar(): void
+  toggleProjectCollapsed(projectId: string): void
   setDispatchMode(on: boolean, projectId?: string | null): void
   setCheatsheet(open: boolean): void
   setPalette(open: boolean): void
@@ -34,6 +38,8 @@ export const useUi = create<UiState>((set) => ({
   selectedWs: storage.getItem(LS_KEY),
   selectedTabByWs: {},
   rightPanel: "collapsed",
+  sidebarCollapsed: false,
+  collapsedProjects: {},
   dispatchMode: false,
   dispatchProjectId: null,
   cheatsheetOpen: false,
@@ -52,6 +58,9 @@ export const useUi = create<UiState>((set) => ({
   }),
   selectTab: (wsId, tabId) => set((s) => ({ selectedTabByWs: { ...s.selectedTabByWs, [wsId]: tabId } })),
   setRightPanel: (rightPanel) => set({ rightPanel }),
+  toggleSidebar: () => set((s) => ({ sidebarCollapsed: !s.sidebarCollapsed })),
+  toggleProjectCollapsed: (projectId) =>
+    set((s) => ({ collapsedProjects: { ...s.collapsedProjects, [projectId]: !s.collapsedProjects[projectId] } })),
   setDispatchMode: (on, projectId = null) =>
     set((s) => ({ dispatchMode: on, dispatchProjectId: projectId, composerFocusNonce: s.composerFocusNonce + 1 })),
   setCheatsheet: (cheatsheetOpen) => set({

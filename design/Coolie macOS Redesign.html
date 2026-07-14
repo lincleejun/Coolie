@@ -1,0 +1,566 @@
+<!doctype html>
+<html lang="zh">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Coolie · Conductor-style</title>
+<style>
+/* ============================================================
+   Coolie — 1:1 Conductor look.
+   Palette sampled directly from the live Conductor.app:
+   warm off-white chrome, pure-white content, near-black text,
+   near-monochrome (no blue accent).
+   ============================================================ */
+:root {
+  --chrome:        #fcfcfb;   /* sidebar / toolbar */
+  --content:       #ffffff;   /* center + right body */
+  --card:          #fafaf9;   /* run-script card etc */
+  --composer:      #fdfdfc;
+  --row-hover:     #f4f3f1;
+  --row-sel:       #eeedeb;
+  --user-bubble:   #f2f1ef;
+  --code-bg:       #f2f1ee;
+
+  --text:          #2b2826;   /* warm near-black */
+  --text-2:        #6f6b66;   /* secondary */
+  --text-3:        #9a958f;   /* tertiary / placeholder / icons */
+  --text-4:        #b8b3ac;
+
+  --line:          #ececea;   /* hairline */
+  --line-2:        #e4e2df;   /* stronger divider */
+  --pill:          #efeeec;
+
+  --hot:           #b07d5e;   /* the "High" reasoning warm-taupe accent */
+  --danger:        #c0483c;
+  --ok:            #5a8f5a;
+
+  --shadow-win: 0 30px 90px rgba(40,36,32,0.34), 0 2px 8px rgba(40,36,32,0.20);
+  --shadow-pop: 0 10px 30px rgba(40,36,32,0.16);
+
+  --font: -apple-system, BlinkMacSystemFont, "SF Pro Text", "SF Pro Display", "Helvetica Neue", "PingFang SC", sans-serif;
+  --mono: "SF Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, monospace;
+
+  --sidebar-w: 236px;
+  --right-w: 300px;
+  --top-h: 44px;
+  --radius: 12px;
+}
+html[data-theme="dark"] {
+  --chrome:        #1d1c1a;
+  --content:       #191817;
+  --card:          #201f1d;
+  --composer:      #201f1d;
+  --row-hover:     #262523;
+  --row-sel:       #2e2c29;
+  --user-bubble:   #262523;
+  --code-bg:       #242220;
+
+  --text:          #ece8e3;
+  --text-2:        #a7a29b;
+  --text-3:        #7c7770;
+  --text-4:        #605b55;
+
+  --line:          #2b2926;
+  --line-2:        #333029;
+  --pill:          #2a2825;
+  --shadow-win: 0 30px 90px rgba(0,0,0,0.6), 0 2px 8px rgba(0,0,0,0.45);
+}
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body {
+  font-family: var(--font); font-size: 13px; color: var(--text);
+  background: linear-gradient(155deg,#c9c2b8,#b4a89c 55%,#c7bcc0);
+  min-height: 100vh; display: flex; align-items: center; justify-content: center;
+  padding: 30px; cursor: default; user-select: none; -webkit-font-smoothing: antialiased;
+}
+html[data-theme="dark"] body { background: linear-gradient(155deg,#3b3733,#2a2622 55%,#3a3237); }
+button { font: inherit; color: inherit; background: none; border: none; cursor: pointer; }
+svg { display: block; }
+
+/* ---------- window ---------- */
+.win {
+  width: min(1280px,100%); height: min(812px, calc(100vh - 60px));
+  background: var(--content); border-radius: 13px; overflow: hidden;
+  box-shadow: var(--shadow-win);
+  display: grid;
+  grid-template-columns: var(--sidebar-w) 1fr var(--right-w);
+  grid-template-rows: var(--top-h) 1fr;
+  grid-template-areas: "tbL tbC tbR" "side center right";
+}
+.win.right-off { grid-template-columns: var(--sidebar-w) 1fr 0; }
+
+/* ---------- top bar (unified, 3 segments) ---------- */
+.tbL, .tbC, .tbR { display: flex; align-items: center; border-bottom: 1px solid var(--line); background: var(--chrome); }
+.tbL { grid-area: tbL; padding: 0 12px; gap: 10px; }
+.tbC { grid-area: tbC; padding: 0 12px; gap: 10px; background: var(--content); }
+.tbR { grid-area: tbR; padding: 0 14px; background: var(--content); overflow: hidden; }
+.win.right-off .tbR { display: none; }
+
+.traffic { display: flex; gap: 8px; }
+.tlx { width: 12px; height: 12px; border-radius: 50%; border: .5px solid rgba(0,0,0,.14); }
+.tlx.c{background:#ff5f57}.tlx.m{background:#febc2e}.tlx.x{background:#28c840}
+.icobtn { width: 26px; height: 26px; border-radius: 6px; display: grid; place-items: center; color: var(--text-3); }
+.icobtn:hover { background: var(--row-hover); color: var(--text-2); }
+.icobtn svg { width: 16px; height: 16px; }
+.tb-navs { display: flex; gap: 2px; margin-left: auto; }
+
+.crumb { display: flex; align-items: center; gap: 6px; min-width: 0; color: var(--text-2); font-size: 12.5px; }
+.crumb .repo-m { width: 15px; height: 15px; border-radius: 4px; background: var(--pill); color: var(--text-2); font-size: 9px; font-weight: 800; display: grid; place-items: center; }
+.crumb .sep { color: var(--text-4); }
+.crumb .cur { color: var(--text); font-weight: 550; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.crumb .more { color: var(--text-4); }
+.tbC-spacer { flex: 1; }
+.branch-pill {
+  display: inline-flex; align-items: center; gap: 5px; height: 25px; padding: 0 9px;
+  background: var(--pill); border-radius: 7px; color: var(--text-2); font-size: 12px; font-weight: 550;
+}
+.branch-pill svg { width: 12px; height: 12px; opacity: .8; }
+.branch-pill .chev { width: 11px; height: 11px; color: var(--text-3); }
+.pr-info { display: flex; align-items: center; gap: 7px; color: var(--text-3); font-size: 12px; white-space: nowrap; }
+.pr-info .spin { width: 12px; height: 12px; border: 2px solid var(--line-2); border-top-color: var(--text-3); border-radius: 50%; animation: spin 1s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+
+/* ---------- sidebar ---------- */
+.side { grid-area: side; background: var(--chrome); border-right: 1px solid var(--line); display: flex; flex-direction: column; min-height: 0; }
+.side-scroll { flex: 1; overflow-y: auto; padding: 4px 8px 8px; }
+.side-scroll::-webkit-scrollbar{width:8px}.side-scroll::-webkit-scrollbar-thumb{background:transparent;border-radius:8px}
+.side-scroll:hover::-webkit-scrollbar-thumb{background:rgba(120,115,108,.28)}
+
+.nav-row { display: flex; align-items: center; gap: 8px; height: 30px; padding: 0 8px; border-radius: 7px; color: var(--text); font-size: 13px; }
+.nav-row:hover { background: var(--row-hover); }
+.nav-row svg { width: 15px; height: 15px; color: var(--text-3); flex: none; }
+
+.sec-h { display: flex; align-items: center; gap: 6px; height: 30px; padding: 0 8px; margin-top: 6px; color: var(--text-2); font-size: 12px; font-weight: 600; }
+.sec-h .grow { flex: 1; }
+.sec-h .mini { width: 22px; height: 22px; border-radius: 5px; display: grid; place-items: center; color: var(--text-3); }
+.sec-h .mini:hover { background: var(--row-hover); color: var(--text-2); }
+.sec-h .mini svg { width: 14px; height: 14px; }
+
+.proj { display: flex; align-items: center; gap: 8px; height: 30px; padding: 0 8px; border-radius: 7px; color: var(--text); }
+.proj:hover { background: var(--row-hover); }
+.proj:hover .proj-add { opacity: 1; }
+.proj .repo-m { width: 17px; height: 17px; border-radius: 5px; background: var(--pill); color: var(--text-2); font-size: 9.5px; font-weight: 800; display: grid; place-items: center; flex: none; }
+.proj .pn { flex: 1; font-size: 13px; font-weight: 550; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.proj-add { opacity: 0; width: 20px; height: 20px; border-radius: 5px; display: grid; place-items: center; color: var(--text-3); }
+.proj-add:hover { background: var(--line-2); color: var(--text); }
+.proj-add svg { width: 13px; height: 13px; }
+
+.ws { display: flex; align-items: center; gap: 7px; height: 29px; padding: 0 8px 0 22px; border-radius: 7px; color: var(--text-2); }
+.ws:hover { background: var(--row-hover); }
+.ws.sel { background: var(--row-sel); }
+.ws.sel .wn { color: var(--text); }
+.ws .wicon { width: 13px; height: 13px; color: var(--text-3); flex: none; }
+.ws .wn { flex: 1; font-size: 12.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+.side-foot { border-top: 1px solid var(--line); height: 40px; display: flex; align-items: center; padding: 0 10px; gap: 4px; }
+.side-foot .icobtn { width: 24px; height: 24px; }
+.side-foot .grow { flex: 1; }
+
+/* ---------- center ---------- */
+.center { grid-area: center; background: var(--content); display: flex; flex-direction: column; min-width: 0; min-height: 0; }
+.tabrow { flex: none; display: flex; align-items: center; gap: 2px; height: 40px; padding: 0 10px; border-bottom: 1px solid var(--line); }
+.ctab { display: inline-flex; align-items: center; gap: 7px; height: 28px; padding: 0 12px 0 10px; border-radius: 7px; color: var(--text); font-size: 12.5px; font-weight: 550; }
+.ctab.active { background: var(--row-sel); }
+.ctab .mk { color: var(--text); }
+.ctab .x { color: var(--text-4); width: 14px; height: 14px; border-radius: 3px; display: grid; place-items: center; margin-left: 2px; }
+.ctab .x:hover { background: var(--line-2); color: var(--text-2); }
+.ctab-add { width: 26px; height: 26px; border-radius: 6px; display: grid; place-items: center; color: var(--text-3); }
+.ctab-add:hover { background: var(--row-hover); }
+.ctab-add svg { width: 14px; height: 14px; }
+
+.convo { flex: 1; overflow-y: auto; padding: 20px 28px 8px; }
+.convo::-webkit-scrollbar{width:9px}.convo::-webkit-scrollbar-thumb{background:rgba(120,115,108,.26);border-radius:9px}
+.convo-inner { max-width: 720px; margin: 0 auto; }
+
+.msg-user { display: flex; justify-content: flex-end; margin-bottom: 20px; }
+.msg-user .bubble { max-width: 78%; background: var(--user-bubble); border-radius: 13px; padding: 9px 14px; font-size: 13.5px; color: var(--text); line-height: 1.5; }
+
+.think { margin-bottom: 16px; }
+.think-h { display: inline-flex; align-items: center; gap: 7px; color: var(--text-3); font-size: 12.5px; }
+.think-h svg { width: 13px; height: 13px; }
+.think-h .chev { transition: transform .15s; }
+.think.open .think-h .chev { transform: rotate(90deg); }
+.think-body { margin-top: 6px; padding-left: 20px; border-left: 2px solid var(--line-2); color: var(--text-3); font-size: 12.5px; line-height: 1.6; display: none; }
+.think.open .think-body { display: block; }
+
+.md { font-size: 13.5px; line-height: 1.68; color: var(--text); text-wrap: pretty; }
+.md p { margin: 0 0 12px; }
+.md strong, .md .b { font-weight: 650; }
+.md ul, .md ol { margin: 0 0 12px; padding-left: 22px; }
+.md li { margin: 3px 0; }
+.md ul { list-style: none; padding-left: 4px; }
+.md ul > li { position: relative; padding-left: 18px; }
+.md ul > li::before { content: "•"; position: absolute; left: 4px; color: var(--text-3); }
+.md ol { counter-reset: n; list-style: none; padding-left: 4px; }
+.md ol > li { position: relative; padding-left: 22px; counter-increment: n; }
+.md ol > li::before { content: counter(n) "."; position: absolute; left: 2px; color: var(--text-3); font-variant-numeric: tabular-nums; }
+.md code { font-family: var(--mono); font-size: 12px; background: var(--code-bg); padding: 1.5px 5px; border-radius: 5px; color: var(--text); }
+.msg-foot { display: flex; align-items: center; gap: 10px; margin: 4px 0 20px; color: var(--text-4); font-size: 11.5px; font-variant-numeric: tabular-nums; }
+.msg-foot .icobtn { width: 20px; height: 20px; }
+.msg-foot .icobtn svg { width: 13px; height: 13px; }
+
+/* composer */
+.composer { flex: none; padding: 8px 20px 16px; }
+.composer-inner { max-width: 720px; margin: 0 auto; }
+.cbox { background: var(--composer); border: 1px solid var(--line-2); border-radius: var(--radius); box-shadow: 0 1px 2px rgba(40,36,32,.05); }
+.cbox:focus-within { border-color: var(--text-4); }
+.cbox-top { display: flex; align-items: flex-start; padding: 14px 14px 8px; min-height: 50px; }
+.cbox-ph { flex: 1; color: var(--text-3); font-size: 13.5px; line-height: 1.5; }
+.cbox-hint { color: var(--text-4); font-size: 11.5px; white-space: nowrap; padding-left: 12px; }
+.cbox-bar { display: flex; align-items: center; gap: 4px; padding: 6px 8px 8px; }
+.cchip { display: inline-flex; align-items: center; gap: 6px; height: 26px; padding: 0 8px; border-radius: 7px; color: var(--text-2); font-size: 12px; font-weight: 550; }
+.cchip:hover { background: var(--row-hover); }
+.cchip .mk { color: var(--text); }
+.cchip .chev { width: 10px; height: 10px; color: var(--text-4); }
+.cchip.effort svg.bars { width: 13px; height: 13px; color: var(--hot); }
+.cchip .book { width: 15px; height: 15px; color: var(--text-3); }
+.cbar-sp { flex: 1; }
+.csend { width: 30px; height: 30px; border-radius: 8px; background: var(--pill); color: var(--text-3); display: grid; place-items: center; }
+.csend:hover { background: var(--text); color: var(--content); }
+.csend svg { width: 16px; height: 16px; }
+
+/* ---------- right panel ---------- */
+.right { grid-area: right; background: var(--content); border-left: 1px solid var(--line); display: flex; flex-direction: column; min-height: 0; }
+.win.right-off .right { display: none; }
+.rtabs { flex: none; display: flex; align-items: center; gap: 4px; height: 40px; padding: 0 8px 0 14px; border-bottom: 1px solid var(--line); }
+.rtab { height: 40px; display: inline-flex; align-items: center; padding: 0 6px; color: var(--text-3); font-size: 12.5px; font-weight: 550; border-bottom: 2px solid transparent; margin-bottom: -1px; }
+.rtab:hover { color: var(--text-2); }
+.rtab.active { color: var(--text); border-bottom-color: var(--text); }
+.rtab .z { color: var(--text-4); margin-left: 5px; font-weight: 500; font-variant-numeric: tabular-nums; }
+.rtabs-sp { flex: 1; }
+
+.rfiles { flex: 1; overflow-y: auto; padding: 6px 6px; }
+.rfiles::-webkit-scrollbar{width:8px}.rfiles::-webkit-scrollbar-thumb{background:transparent}.rfiles:hover::-webkit-scrollbar-thumb{background:rgba(120,115,108,.26);border-radius:8px}
+.frow { display: flex; align-items: center; gap: 8px; height: 28px; padding: 0 8px; border-radius: 6px; color: var(--text-2); font-size: 12.5px; }
+.frow:hover { background: var(--row-hover); color: var(--text); }
+.frow svg { width: 15px; height: 15px; color: var(--text-4); flex: none; }
+
+.rbottom { flex: none; border-top: 1px solid var(--line); }
+.rseg { display: flex; align-items: center; gap: 2px; height: 38px; padding: 0 8px; }
+.rseg .col { width: 24px; height: 24px; border-radius: 5px; display: grid; place-items: center; color: var(--text-3); }
+.rseg .col svg { width: 13px; height: 13px; }
+.stab { height: 38px; display: inline-flex; align-items: center; padding: 0 9px; color: var(--text-3); font-size: 12.5px; font-weight: 550; border-bottom: 2px solid transparent; }
+.stab.active { color: var(--text); border-bottom-color: var(--text); }
+.stab:hover { color: var(--text-2); }
+.rseg-sp { flex: 1; }
+.run-card-wrap { padding: 16px 16px 22px; }
+.run-card { border: 1px solid var(--line-2); border-radius: 11px; background: var(--card); padding: 26px 20px; text-align: center; }
+.run-card .rc-btn { display: inline-flex; align-items: center; gap: 6px; height: 30px; padding: 0 14px; border: 1px solid var(--line-2); border-radius: 8px; background: var(--content); color: var(--text); font-size: 12.5px; font-weight: 550; }
+.run-card .rc-btn:hover { background: var(--row-hover); }
+.run-card .rc-btn svg { width: 13px; height: 13px; color: var(--text-2); }
+.run-card .rc-sub { margin-top: 12px; color: var(--text-3); font-size: 12px; line-height: 1.5; }
+
+/* ---------- settings (own window) ---------- */
+.settings { position: absolute; inset: 0; background: var(--content); display: none; grid-template-columns: 210px 1fr; grid-template-rows: var(--top-h) 1fr; grid-template-areas: "sbar-top sbar-top" "snav sbody"; z-index: 40; }
+.win.settings-on .settings { display: grid; }
+.sbar-top { grid-area: sbar-top; display: flex; align-items: center; padding: 0 14px; gap: 10px; background: var(--chrome); border-bottom: 1px solid var(--line); }
+.snav { grid-area: snav; background: var(--chrome); border-right: 1px solid var(--line); padding: 8px 8px 12px; overflow-y: auto; }
+.sbody { grid-area: sbody; overflow-y: auto; padding: 26px 34px 40px; }
+.sbody::-webkit-scrollbar{width:9px}.sbody::-webkit-scrollbar-thumb{background:rgba(120,115,108,.26);border-radius:9px}
+
+.sback { display: inline-flex; align-items: center; gap: 8px; height: 30px; padding: 0 8px; border-radius: 7px; color: var(--text-2); font-size: 13px; }
+.sback:hover { background: var(--row-hover); color: var(--text); }
+.sback svg { width: 15px; height: 15px; }
+.snav-item { display: flex; align-items: center; gap: 9px; height: 31px; padding: 0 9px; border-radius: 7px; color: var(--text); font-size: 13px; margin-top: 1px; }
+.snav-item:hover { background: var(--row-hover); }
+.snav-item.on { background: var(--row-sel); }
+.snav-item svg { width: 15px; height: 15px; color: var(--text-3); flex: none; }
+.snav-sec { padding: 0 9px; margin: 14px 0 4px; color: var(--text-3); font-size: 11px; font-weight: 600; letter-spacing: .3px; }
+.snav-repo { display: flex; align-items: center; gap: 9px; height: 30px; padding: 0 9px; border-radius: 7px; color: var(--text-2); font-size: 12.5px; }
+.snav-repo:hover { background: var(--row-hover); }
+.snav-repo .repo-m { width: 16px; height: 16px; border-radius: 4px; background: var(--pill); color: var(--text-2); font-size: 9px; font-weight: 800; display: grid; place-items: center; }
+
+.sbody h1 { font-size: 22px; font-weight: 700; letter-spacing: -.2px; margin-bottom: 18px; text-wrap: balance; }
+.srow { display: flex; align-items: flex-start; gap: 24px; padding: 17px 0; border-top: 1px solid var(--line); }
+.srow:first-of-type { border-top: none; }
+.srow .l { flex: 1; min-width: 0; }
+.srow .st { font-size: 13.5px; font-weight: 550; color: var(--text); }
+.srow .sd { font-size: 12.5px; color: var(--text-3); line-height: 1.5; margin-top: 3px; }
+.srow .sh { font-size: 12px; color: var(--text-4); margin-top: 3px; }
+.srow .r { flex: none; display: flex; align-items: center; gap: 10px; padding-top: 1px; }
+.sdd { display: inline-flex; align-items: center; gap: 10px; height: 30px; padding: 0 10px; border: 1px solid var(--line-2); border-radius: 8px; background: var(--content); color: var(--text); font-size: 12.5px; font-weight: 500; }
+.sdd:hover { background: var(--row-hover); }
+.sdd svg { width: 12px; height: 12px; color: var(--text-3); }
+.stest { display: inline-flex; align-items: center; gap: 5px; color: var(--text-2); font-size: 12.5px; }
+.stest:hover { color: var(--text); }
+.stest svg { width: 14px; height: 14px; }
+.sw { width: 38px; height: 23px; border-radius: 12px; background: var(--line-2); position: relative; transition: background .16s; flex: none; }
+.sw::after { content: ""; position: absolute; top: 2.5px; left: 2.5px; width: 18px; height: 18px; border-radius: 50%; background: #fff; box-shadow: 0 1px 2px rgba(0,0,0,.28); transition: transform .16s; }
+.sw.on { background: var(--text); }
+.sw.on::after { transform: translateX(15px); }
+
+/* ---------- tweaks ---------- */
+#tw-toggle { position: fixed; bottom: 20px; right: 20px; z-index: 9999; width: 42px; height: 42px; border-radius: 50%; background: #2b2826; color: #fff; display: grid; place-items: center; box-shadow: 0 6px 18px rgba(0,0,0,.3); font-size: 18px; }
+#tw-panel { position: fixed; bottom: 72px; right: 20px; z-index: 9998; width: 216px; background: rgba(43,40,38,.94); -webkit-backdrop-filter: blur(18px); backdrop-filter: blur(18px); color: #eee; border-radius: 13px; padding: 14px; display: none; box-shadow: 0 16px 40px rgba(0,0,0,.45); font-size: 12.5px; }
+#tw-panel.show { display: block; }
+#tw-panel h3 { font-size: 11px; text-transform: uppercase; letter-spacing: .6px; color: #a29c96; margin-bottom: 11px; }
+.tw-row { margin-bottom: 12px; }
+.tw-row > span { display: block; margin-bottom: 6px; color: #cfc9c3; font-weight: 550; }
+.tw-seg { display: flex; background: rgba(255,255,255,.08); border-radius: 8px; padding: 2px; }
+.tw-seg button { flex: 1; padding: 5px 0; border-radius: 6px; color: #b7b1ab; font-size: 11.5px; font-weight: 600; }
+.tw-seg button.on { background: rgba(255,255,255,.16); color: #fff; }
+</style>
+</head>
+<body>
+
+<div class="win" id="win">
+
+  <!-- top bar : sidebar segment -->
+  <div class="tbL">
+    <div class="traffic"><span class="tlx c"></span><span class="tlx m"></span><span class="tlx x"></span></div>
+    <div class="tb-navs">
+      <button class="icobtn" title="折叠侧栏"><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="3" y="4" width="14" height="12" rx="2"/><path d="M8 4v12"/></svg></button>
+      <button class="icobtn" title="后退"><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M12 5l-5 5 5 5"/></svg></button>
+      <button class="icobtn" title="前进"><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M8 5l5 5-5 5"/></svg></button>
+    </div>
+  </div>
+
+  <!-- top bar : center segment -->
+  <div class="tbC">
+    <div class="crumb">
+      <span class="repo-m">M</span>
+      <span>MAG-v1</span><span class="sep">›</span>
+      <span class="cur">explain-mag-project-purpose</span>
+      <span class="more">···</span>
+    </div>
+    <div class="tbC-spacer"></div>
+    <span class="branch-pill">
+      <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><circle cx="4" cy="3.5" r="1.5"/><circle cx="4" cy="12.5" r="1.5"/><circle cx="12" cy="6" r="1.5"/><path d="M4 5v6M4 10.5C4 8 8 8.5 10.5 6.8"/></svg>
+      la-paz <svg class="chev" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M4 6l4 4 4-4"/></svg>
+    </span>
+    <button class="icobtn" title="切换右侧面板" onclick="toggleRight()"><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="3" y="4" width="14" height="12" rx="2"/><path d="M13 4v12"/></svg></button>
+  </div>
+
+  <!-- top bar : right segment -->
+  <div class="tbR">
+    <span class="pr-info"><span class="spin"></span>Loading PR info…</span>
+  </div>
+
+  <!-- sidebar -->
+  <aside class="side">
+    <div class="side-scroll">
+      <div class="nav-row"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><circle cx="8" cy="8" r="6"/><path d="M8 4.5V8l2.5 1.6"/></svg>History</div>
+
+      <div class="sec-h">
+        <span class="grow">Projects</span>
+        <button class="mini" title="筛选"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M2.5 4h11M4.5 8h7M6.5 12h3"/></svg></button>
+        <button class="mini" title="新建项目"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M2.2 4.4a1 1 0 0 1 1-1h3l1.4 1.5h4.2a1 1 0 0 1 1 1v5.7a1 1 0 0 1-1 1H3.2a1 1 0 0 1-1-1z"/><path d="M8 7v3.2M6.4 8.6h3.2"/></svg></button>
+      </div>
+
+      <div id="tree"></div>
+    </div>
+    <div class="side-foot">
+      <span class="grow"></span>
+      <button class="icobtn" title="帮助"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><circle cx="8" cy="8" r="6"/><path d="M6.3 6.2a1.7 1.7 0 1 1 2.4 1.6c-.5.3-.7.6-.7 1.1M8 11.2v.1"/></svg></button>
+      <button class="icobtn" title="设置" onclick="openSettings()"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3"><circle cx="8" cy="8" r="2.1"/><path d="M8 1.6v1.7M8 12.7v1.7M14.4 8h-1.7M3.3 8H1.6M12.5 3.5l-1.2 1.2M4.7 11.3l-1.2 1.2M12.5 12.5l-1.2-1.2M4.7 4.7 3.5 3.5"/></svg></button>
+    </div>
+  </aside>
+
+  <!-- center -->
+  <main class="center">
+    <div class="tabrow">
+      <div class="ctab active">
+        <svg class="mk" width="14" height="14" viewBox="0 0 16 16" fill="currentColor"><path d="M8 1l1.2 4.1L13.5 4l-2.9 3.3L15 8l-4.4.7 2.9 3.3-4.3-1.1L8 15l-1.2-4.1L2.5 12l2.9-3.3L1 8l4.4-.7L2.5 4l4.3 1.1z"/></svg>
+        Explain project
+        <span class="x">✕</span>
+      </div>
+      <button class="ctab-add"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M8 3.5v9M3.5 8h9"/></svg></button>
+    </div>
+
+    <div class="convo">
+      <div class="convo-inner">
+
+        <div class="msg-user"><div class="bubble">当前项目是干什么的</div></div>
+
+        <div class="think" id="think">
+          <button class="think-h" onclick="document.getElementById('think').classList.toggle('open')">
+            <svg class="chev" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M5.5 3.5 10 8l-4.5 4.5"/></svg>
+            Thought for 11s
+          </button>
+          <div class="think-body">The user is asking about what the current project does. I can answer by reading CLAUDE.md and the top-level directory structure, then summarize the architecture and dev workflow.</div>
+        </div>
+
+        <div class="md">
+          <p>根据项目的 <code>CLAUDE.md</code>，这个项目是 <span class="b">MAG（Multi-Agent Generation）</span>，一个智能视频模板生成系统。</p>
+          <p class="b">核心功能：</p>
+          <ul>
+            <li>接收用户素材（图片、视频等），自动生成专业视频模板</li>
+            <li>使用多个 AI Agent 协同工作，通过 LangGraph 进行编排</li>
+            <li>底层跑多个 LLM（Gemini / OpenAI / 字节 ARK）</li>
+          </ul>
+          <p class="b">技术栈：</p>
+          <ul>
+            <li>后端：Python / FastAPI，Agent 自动发现机制，<code>WorkflowPipeline</code> 驱动执行</li>
+            <li>前端：React 19 + TypeScript，Rush.js monorepo</li>
+            <li>存储：TOS（字节对象存储）</li>
+            <li>监控：LangSmith + Fornax</li>
+          </ul>
+          <p>部署架构上有两个独立 FaaS 服务：</p>
+          <ol>
+            <li><code>lib/mag-http2rpc-gateway/</code> — HTTP 总入口（ <code>/mae/generate</code> 等）</li>
+            <li><code>project_mag/microservice/</code> — 内网 SDK / Thrift 封装层，供本地开发调用</li>
+          </ol>
+          <p>开发方法论以 Eval-Driven Development 为核心：用 eval 定义问题，AI 跑修复循环，CLI 是 <code>uv run mae eval/submit</code>。</p>
+        </div>
+
+        <div class="msg-foot">
+          <span>11s</span>
+          <button class="icobtn" title="复制"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><rect x="5" y="5" width="8" height="9" rx="1.4"/><path d="M3 11V3a1 1 0 0 1 1-1h6"/></svg></button>
+          <button class="icobtn" title="重试"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M13 7a5 5 0 1 0-.5 3M13 3.5V7h-3.5"/></svg></button>
+        </div>
+
+      </div>
+    </div>
+
+    <div class="composer">
+      <div class="composer-inner">
+        <div class="cbox">
+          <div class="cbox-top">
+            <div class="cbox-ph">Ask to make changes, @mention files, reference PRs with #, run /commands</div>
+            <div class="cbox-hint">⌘L to focus</div>
+          </div>
+          <div class="cbox-bar">
+            <button class="cchip"><svg class="mk" width="13" height="13" viewBox="0 0 16 16" fill="currentColor"><path d="M8 1l1.2 4.1L13.5 4l-2.9 3.3L15 8l-4.4.7 2.9 3.3-4.3-1.1L8 15l-1.2-4.1L2.5 12l2.9-3.3L1 8l4.4-.7L2.5 4l4.3 1.1z"/></svg>Sonnet 4.6<svg class="chev" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M4 6l4 4 4-4"/></svg></button>
+            <button class="cchip effort"><svg class="bars" viewBox="0 0 16 16" fill="currentColor"><rect x="2" y="9" width="2.6" height="5" rx="1"/><rect x="6.7" y="6" width="2.6" height="8" rx="1"/><rect x="11.4" y="3" width="2.6" height="11" rx="1" opacity=".4"/></svg>High</button>
+            <button class="cchip"><svg class="book" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3"><path d="M8 3.4C6.7 2.6 4.8 2.4 3 2.6v9c1.8-.2 3.7 0 5 .8 1.3-.8 3.2-1 5-.8v-9c-1.8-.2-3.7 0-5 .8z"/><path d="M8 3.4v9.2"/></svg></button>
+            <div class="cbar-sp"></div>
+            <button class="icobtn" title="附加"><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M10 5v10M5 10h10"/></svg></button>
+            <button class="csend" title="发送"><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M10 15.5V5M5.5 9.5 10 5l4.5 4.5"/></svg></button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </main>
+
+  <!-- right panel -->
+  <aside class="right">
+    <div class="rtabs">
+      <button class="rtab active">All files</button>
+      <button class="rtab">Changes <span class="z">0</span></button>
+      <button class="rtab">Checks</button>
+      <div class="rtabs-sp"></div>
+      <button class="icobtn" title="树/列表"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M3 4h2M3 8h2M3 12h2M7 4h6M7 8h6M7 12h6"/></svg></button>
+      <button class="icobtn" title="搜索"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><circle cx="7" cy="7" r="4.3"/><path d="M10.2 10.2 13.5 13.5"/></svg></button>
+    </div>
+
+    <div class="rfiles" id="rfiles"></div>
+  </aside>
+
+  <!-- settings (own window) -->
+  <div class="settings">
+    <div class="sbar-top">
+      <div class="traffic"><span class="tlx c"></span><span class="tlx m"></span><span class="tlx x"></span></div>
+      <button class="sback" onclick="closeSettings()"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M9.5 4 5.5 8l4 4"/></svg>Back to app</button>
+    </div>
+    <nav class="snav">
+      <div class="snav-item on"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M2.5 5h11M2.5 11h11"/><circle cx="6" cy="5" r="1.6" fill="var(--chrome)"/><circle cx="10.5" cy="11" r="1.6" fill="var(--chrome)"/></svg>General</div>
+      <div class="snav-item"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><rect x="3" y="3" width="10" height="10" rx="2.4"/><path d="M6 6h4v4H6z"/></svg>Models</div>
+      <div class="snav-item"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M6 2v3M10 2v3M5 5h6v3a3 3 0 0 1-6 0zM8 11v3"/></svg>Providers</div>
+      <div class="snav-item"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M8 2.5S3.5 7 3.5 10a4.5 4.5 0 0 0 9 0C12.5 7 8 2.5 8 2.5z"/></svg>Appearance</div>
+      <div class="snav-item"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><circle cx="4" cy="3.5" r="1.5"/><circle cx="4" cy="12.5" r="1.5"/><circle cx="12" cy="6" r="1.5"/><path d="M4 5v6M4 10.5C4 8 8 8.5 10.5 6.8"/></svg>Git</div>
+      <div class="snav-item"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><circle cx="8" cy="6" r="2.6"/><path d="M3.2 13c.6-2.3 2.5-3.6 4.8-3.6S12.2 10.7 12.8 13"/></svg>Account</div>
+      <div class="snav-sec">More</div>
+      <div class="snav-item"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M6.5 2v4L3 12a1.4 1.4 0 0 0 1.2 2h7.6A1.4 1.4 0 0 0 13 12L9.5 6V2M5.5 2h5"/></svg>Experimental</div>
+      <div class="snav-item"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M2.5 5.5 8 2.5l5.5 3v5L8 13.5l-5.5-3z"/><path d="M2.5 5.5 8 8.5l5.5-3M8 8.5v5"/></svg>Advanced</div>
+      <div class="snav-sec">Repositories</div>
+      <div class="snav-repo"><span class="repo-m">M</span>MAG</div>
+      <div class="snav-repo"><span class="repo-m">M</span>MAG-v1</div>
+    </nav>
+    <div class="sbody">
+      <h1>General</h1>
+      <div class="srow">
+        <div class="l"><div class="st">Send messages with</div><div class="sd">Choose which key combination sends messages</div><div class="sh">Use ⇧↵ for new lines</div></div>
+        <div class="r"><button class="sdd">Enter<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M4 6l4 4 4-4"/></svg></button></div>
+      </div>
+      <div class="srow">
+        <div class="l"><div class="st">Follow-up behavior</div><div class="sd">Queue messages to send after the agent finishes, or steer the agent mid-turn.</div><div class="sh">Use ⌘↵ to queue</div></div>
+        <div class="r"><button class="sdd">Steer<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M4 6l4 4 4-4"/></svg></button></div>
+      </div>
+      <div class="srow">
+        <div class="l"><div class="st">Desktop notifications</div><div class="sd">Get notified when AI finishes working in a chat.</div></div>
+        <div class="r"><span class="sw" onclick="this.classList.toggle('on')"></span></div>
+      </div>
+      <div class="srow">
+        <div class="l"><div class="st">Completion sound</div><div class="sd">Choose what plays when AI finishes working in a chat.</div></div>
+        <div class="r"><button class="sdd">Chime<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M4 6l4 4 4-4"/></svg></button><button class="stest"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M3 6v4h2.5L9 13V3L5.5 6z"/><path d="M11 5.5a3.5 3.5 0 0 1 0 5"/></svg>Test</button></div>
+      </div>
+      <div class="srow">
+        <div class="l"><div class="st">Auto-convert long text</div><div class="sd">Convert pasted text over 5000 characters into text attachments</div></div>
+        <div class="r"><span class="sw on" onclick="this.classList.toggle('on')"></span></div>
+      </div>
+      <div class="srow">
+        <div class="l"><div class="st">I'm not absolutely right, thank you very much</div><div class="sd">Strip "You're absolutely right!" from AI messages</div></div>
+        <div class="r"><span class="sw" onclick="this.classList.toggle('on')"></span></div>
+      </div>
+      <div class="srow">
+        <div class="l"><div class="st">Always show context usage</div><div class="sd">Always show context usage. By default, it is only shown when more than 70% is used.</div></div>
+        <div class="r"><span class="sw" onclick="this.classList.toggle('on')"></span></div>
+      </div>
+    </div>
+  </div>
+
+</div>
+
+<!-- tweaks -->
+<button id="tw-toggle" title="Tweaks">⚙</button>
+<div id="tw-panel">
+  <h3>Tweaks</h3>
+  <div class="tw-row"><span>外观</span>
+    <div class="tw-seg" id="twTheme"><button data-v="light">浅色</button><button data-v="dark">深色</button></div>
+  </div>
+  <div class="tw-row"><span>右侧面板</span>
+    <div class="tw-seg" id="twRight"><button data-v="on">显示</button><button data-v="off">隐藏</button></div>
+  </div>
+</div>
+
+<script>
+/* ----- sidebar tree (Conductor: project → workspaces) ----- */
+const TREE = [
+  { name: "MAG",    mono: "M", ws: [ { name: "Tacoma" } ] },
+  { name: "MAG-v1", mono: "M", ws: [ { name: "Explain mag project purpose", sel: true } ] },
+];
+const wsIcon = '<svg class="wicon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><circle cx="4" cy="3.5" r="1.5"/><circle cx="4" cy="12.5" r="1.5"/><circle cx="12" cy="6" r="1.5"/><path d="M4 5v6M4 10.5C4 8 8 8.5 10.5 6.8"/></svg>';
+document.getElementById('tree').innerHTML = TREE.map(p => `
+  <div class="proj">
+    <span class="repo-m">${p.mono}</span>
+    <span class="pn">${p.name}</span>
+    <button class="proj-add"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M8 3.5v9M3.5 8h9"/></svg></button>
+  </div>
+  ${p.ws.map(w => `<div class="ws ${w.sel?'sel':''}">${wsIcon}<span class="wn">${w.name}</span></div>`).join('')}
+`).join('');
+
+/* ----- right file tree ----- */
+const FILES = [".agents",".bits",".claude",".codebase",".context","3PGW","bytedance","docs","lib","project_mag","resources"];
+const folder = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3"><path d="M2 4.6a1 1 0 0 1 1-1h3.1l1.3 1.4H13a1 1 0 0 1 1 1v5.4a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1z"/></svg>';
+document.getElementById('rfiles').innerHTML = FILES.map(f => `<div class="frow">${folder}<span>${f}</span></div>`).join('');
+
+/* ----- right toggle ----- */
+function toggleRight(){ document.getElementById('win').classList.toggle('right-off'); syncTw(); }
+
+/* ----- settings ----- */
+function openSettings(){ document.getElementById('win').classList.add('settings-on'); }
+function closeSettings(){ document.getElementById('win').classList.remove('settings-on'); }
+
+/* ----- tweaks ----- */
+const D = /*EDITMODE-BEGIN*/{ "theme": "light", "right": "on" }/*EDITMODE-END*/;
+const tw = { ...D, ...JSON.parse(localStorage.getItem('coolie-cond')||'{}') };
+function apply(){
+  document.documentElement.dataset.theme = tw.theme;
+  document.getElementById('win').classList.toggle('right-off', tw.right==='off');
+  syncTw(); localStorage.setItem('coolie-cond', JSON.stringify(tw));
+}
+function syncTw(){
+  document.querySelectorAll('#twTheme button').forEach(b=>b.classList.toggle('on',b.dataset.v===tw.theme));
+  const off = document.getElementById('win').classList.contains('right-off');
+  tw.right = off?'off':'on';
+  document.querySelectorAll('#twRight button').forEach(b=>b.classList.toggle('on',b.dataset.v===tw.right));
+}
+document.getElementById('twTheme').addEventListener('click',e=>{if(e.target.dataset.v){tw.theme=e.target.dataset.v;apply();}});
+document.getElementById('twRight').addEventListener('click',e=>{if(e.target.dataset.v){tw.right=e.target.dataset.v;apply();}});
+const tg=document.getElementById('tw-toggle'),pn=document.getElementById('tw-panel');
+if(localStorage.getItem('coolie-cond-vis')==='true')pn.classList.add('show');
+tg.addEventListener('click',()=>{pn.classList.toggle('show');localStorage.setItem('coolie-cond-vis',pn.classList.contains('show'));});
+apply();
+</script>
+</body>
+</html>

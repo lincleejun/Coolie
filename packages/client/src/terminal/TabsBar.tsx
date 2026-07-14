@@ -8,6 +8,8 @@ import { TerminalView } from "./Terminal"
 import { buildAttachCommand, buildTerminalLaunch, type TerminalId } from "./terminals"
 import { openRunTab } from "./run"
 import { capabilities } from "../platform"
+import { CloseIcon, PlusIcon } from "../chrome/icons"
+import { Dropdown } from "../chrome/Dropdown"
 
 export const openInTerminal = async (
   tmuxSocket: string,
@@ -90,25 +92,26 @@ export const CenterArea = ({ wsId }: { wsId: string }) => {
             {t.kind === "engine" && <span className={`badge b-${t.status}`}>●</span>}
             <span>{tabLabel(t, engineName(t.engineId))}</span>
             {t.kind === "shell" && (
-              <span className="tab-close" onClick={(e) => { e.stopPropagation(); void closeTab(t) }}>×</span>
+              <span className="tab-close" onClick={(e) => { e.stopPropagation(); void closeTab(t) }}><CloseIcon size={12} /></span>
             )}
           </button>
         ))}
         <button className="tab tab-run" title="运行 .coolie/run.sh" onClick={() => void run().catch((e) => alert(e.message))}>Run</button>
-        <button className="tab tab-new" title="新 shell tab（⌘T）" onClick={() => void newShell()}>＋</button>
+        <button className="tab tab-new" title="新 shell tab（⌘T）" aria-label="新 shell tab" onClick={() => void newShell()}><PlusIcon size={14} /></button>
         <div className="tabsbar-spacer" />
         {capabilities.externalTerminal && (
           <>
-            <select
-              className="term-picker"
-              value={terminalApp}
-              onChange={(event) => useTerminal.getState().setTerminalApp(event.target.value as TerminalId)}
+            <Dropdown
+              className="term-picker-chip"
               title="选择外部终端"
-            >
-              <option value="iterm2">iTerm2</option>
-              <option value="terminal">Terminal.app</option>
-              <option value="custom">自定义 argv</option>
-            </select>
+              value={terminalApp}
+              onChange={(v) => useTerminal.getState().setTerminalApp(v as TerminalId)}
+              options={[
+                { value: "iterm2", label: "iTerm2" },
+                { value: "terminal", label: "Terminal.app" },
+                { value: "custom", label: "自定义 argv" },
+              ]}
+            />
             <button
               className="iterm-btn"
               title={`在 ${terminalLabel} 中打开同一 tmux 会话`}

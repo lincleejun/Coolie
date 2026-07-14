@@ -164,6 +164,7 @@ export const App = () => {
   }, [])
 
   const rightPanel = useUi((s) => s.rightPanel)
+  const sidebarCollapsed = useUi((s) => s.sidebarCollapsed)
   const selectedWs = useUi((s) => s.selectedWs)
   const dispatchMode = useUi((s) => s.dispatchMode)
   const needsYou = useAttention((s) => s.needsYou)
@@ -215,7 +216,7 @@ export const App = () => {
         </button>
       )}
       <div className="columns">
-        <aside className="col-left"><Sidebar /></aside>
+        {!sidebarCollapsed && <aside className="col-left"><Sidebar /></aside>}
         <main className="col-center">
           {status === "offline" && <div className="offline-banner">{tr("offline.banner")}</div>}
           {dispatchMode ? (

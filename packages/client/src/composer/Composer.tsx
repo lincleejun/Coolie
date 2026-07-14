@@ -8,6 +8,8 @@ import { Picker } from "./Picker"
 import type { SlashCommand } from "../stores/types"
 import { useT } from "../i18n"
 import { collectSupportedImages, insertAttachmentPaths, uploadImageFiles } from "./attachments"
+import { Dropdown } from "../chrome/Dropdown"
+import { AttachIcon, SendIcon, SparkleIcon, StopIcon } from "../chrome/icons"
 
 const draftStorage: DraftStorage =
   typeof localStorage !== "undefined"
@@ -44,6 +46,7 @@ export interface ComposerProps {
 export const Composer = ({ wsId, onSubmitOverride, placeholder, disabled = false }: ComposerProps) => {
   const tr = useT()
   const ta = useRef<HTMLTextAreaElement>(null)
+  const fileInput = useRef<HTMLInputElement>(null)
   const [text, setText] = useState(() => drafts.load(wsId))
   const textRef = useRef(text)
   const workspaceRef = useRef(wsId)
@@ -196,6 +199,17 @@ export const Composer = ({ wsId, onSubmitOverride, placeholder, disabled = false
     void useData.getState().sendInput(wsId, { text: "", mode: "interrupt", skipStable: true }).catch(() => {})
   }
 
+  /** Click-to-send (mirrors ⏎): dispatch flow when in dispatch mode, else deliver. */
+  const submit = (): void => {
+    if (disabled) return
+    if (onSubmitOverride) {
+      const body = text.trim()
+      if (body !== "") { onSubmitOverride(body); update("") }
+      return
+    }
+    void deliver("send", engineWorking === true)
+  }
+
   const switchModel = (m: string): void => {
     setModel(m)
     if (m === "default") return
@@ -205,6 +219,7 @@ export const Composer = ({ wsId, onSubmitOverride, placeholder, disabled = false
 
   return (
     <div className="composer">
+      <div className="composer-inner">
       <QueueIndicator wsId={wsId} />
       {attachmentStatus && (
         <div className={attachmentStatus.error ? "attachment-status attachment-error" : "attachment-status"} role="status">
@@ -254,17 +269,47 @@ export const Composer = ({ wsId, onSubmitOverride, placeholder, disabled = false
             onKeyDown(e)
           }}
         />
-        <div className="composer-side">
-          {engineWorking && (
-            <button className="stop-btn" title="打断（⌘.）" onClick={interrupt}>■</button>
-          )}
+        <div className="cbox-bar">
           {engine && engine.capabilities.midSessionModelSwitch && !onSubmitOverride && (
-            <select className="model-sel" value={model} onChange={(e) => switchModel(e.target.value)} title="模型（投 /model）">
-              {engine.models.map((m) => <option key={m} value={m}>{engine.displayName}·{m}</option>)}
-            </select>
+            <Dropdown
+              className="model-chip"
+              title="模型（投 /model）"
+              leading={<SparkleIcon size={13} className="mk" />}
+              value={model}
+              onChange={switchModel}
+              options={[
+                { value: "default", label: engine.displayName },
+                ...engine.models.map((m) => ({ value: m, label: `${engine.displayName}·${m}` })),
+              ]}
+            />
           )}
           {/* effort 选择器：engine.capabilities.effort=false（claude）→ 不渲染（Noop 降级，M2 codex 启用） */}
+          <div className="cbar-sp" />
+          {engineWorking && (
+            <button className="cchip stop-chip" title="打断（⌘.）" aria-label="打断" onClick={interrupt}>
+              <StopIcon size={12} />
+            </button>
+          )}
+          <input
+            ref={fileInput}
+            type="file"
+            accept="image/*"
+            multiple
+            hidden
+            onChange={(e) => {
+              const files = Array.from(e.target.files ?? [])
+              if (files.length > 0) handleImages(files)
+              e.target.value = ""
+            }}
+          />
+          <button className="icobtn" title={tr("composer.attach")} aria-label={tr("composer.attach")} onClick={() => fileInput.current?.click()} disabled={disabled}>
+            <AttachIcon />
+          </button>
+          <button className="csend" title={tr("composer.send")} aria-label={tr("composer.send")} onClick={submit} disabled={disabled}>
+            <SendIcon />
+          </button>
         </div>
+      </div>
       </div>
     </div>
   )
