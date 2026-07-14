@@ -34,12 +34,21 @@ describe("protocol domain", () => {
     const raw = {
       id: "w1", projectId: "p1", name: "usa-yellowstone", path: "/tmp/ws",
       branch: "coolie/fix-x", baseBranch: "main", baseRef: "abc123", status: "creating",
-      pinned: false, createdAt: 1, archivedAt: null, portBase: 40000,
+      ownership: "adopted", pinned: false, createdAt: 1, archivedAt: null, portBase: 40000,
     }
     const w = decodeWorkspace(raw)
     expect(w.branch).toBe("coolie/fix-x")
+    expect(w.ownership).toBe("adopted")
     expect(w.portBase).toBe(40000)
     expect(w.archivedAt).toBeNull()
+  })
+  it("decodes legacy Workspace payloads as managed", () => {
+    const raw = {
+      id: "w1", projectId: "p1", name: "legacy", path: "/tmp/ws",
+      branch: "coolie/legacy", baseBranch: "main", baseRef: "abc123", status: "active",
+      pinned: false, createdAt: 1, archivedAt: null, portBase: 40000,
+    }
+    expect(decodeWorkspace(raw).ownership).toBe("managed")
   })
   it("rejects a bad workspace status", () => {
     expect(() => decodeWorkspace({

@@ -17,11 +17,9 @@ describe("name pool", () => {
     expect(pickName(new Set(), NATIONAL_PARKS, () => 0)).toBe(first)
     expect(pickName(new Set([first]), NATIONAL_PARKS, () => 0)).toBe(NATIONAL_PARKS.names[1]!)
   })
-  it("pickName suffixes when the whole pool is taken", () => {
+  it("pickName reports when the whole pool is taken", () => {
     const taken = new Set(NATIONAL_PARKS.names)
-    expect(pickName(taken, NATIONAL_PARKS, () => 0)).toBe(`${NATIONAL_PARKS.names[0]!}-2`)
-    const taken2 = new Set([...NATIONAL_PARKS.names, ...NATIONAL_PARKS.names.map((n) => `${n}-2`)])
-    expect(pickName(taken2, NATIONAL_PARKS, () => 0)).toBe(`${NATIONAL_PARKS.names[0]!}-3`)
+    expect(() => pickName(taken, NATIONAL_PARKS, () => 0)).toThrow("national-parks")
   })
   it("sanitizeSlug normalizes arbitrary input", () => {
     expect(sanitizeSlug("Fix Login!!")).toBe("fix-login")

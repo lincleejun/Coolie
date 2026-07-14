@@ -84,7 +84,7 @@ describe("installDeepLinkHandlers", () => {
       return unlisten
     })
 
-    const cleanup = await installDeepLinkHandlers(router)
+    const cleanup = await installDeepLinkHandlers(router, true)
     runningHandler?.(["coolie://project/hot"])
     expect(router.selectWs).toHaveBeenCalledWith("cold")
     expect(router.openProjectDispatch).toHaveBeenCalledWith("hot")
@@ -96,7 +96,7 @@ describe("installDeepLinkHandlers", () => {
     const router = actions()
     plugin.getCurrent.mockRejectedValueOnce(new Error("not in Tauri"))
     plugin.onOpenUrl.mockRejectedValueOnce(new Error("not in Tauri"))
-    const cleanup = await installDeepLinkHandlers(router)
+    const cleanup = await installDeepLinkHandlers(router, true)
     expect(() => cleanup()).not.toThrow()
     expect(router.selectWs).not.toHaveBeenCalled()
   })

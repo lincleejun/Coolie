@@ -11,5 +11,6 @@ refs/tux/
 # Node/TypeScript
 node_modules/
 dist/
+dist-web/
 *.tsbuildinfo
 .worktrees/

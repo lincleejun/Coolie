@@ -6,6 +6,8 @@ import { makeDrafts, type DraftStorage } from "./drafts"
 import { fuzzyFilter, detectToken, type TokenHit } from "./fuzzy"
 import { Picker } from "./Picker"
 import type { SlashCommand } from "../stores/types"
+import { useT } from "../i18n"
+import { collectSupportedImages, insertAttachmentPaths, uploadImageFiles } from "./attachments"
 
 const draftStorage: DraftStorage =
   typeof localStorage !== "undefined"
@@ -40,8 +42,17 @@ export interface ComposerProps {
 }
 
 export const Composer = ({ wsId, onSubmitOverride, placeholder, disabled = false }: ComposerProps) => {
+  const tr = useT()
   const ta = useRef<HTMLTextAreaElement>(null)
   const [text, setText] = useState(() => drafts.load(wsId))
+  const textRef = useRef(text)
+  const workspaceRef = useRef(wsId)
+  workspaceRef.current = wsId
+  const [attachmentStatus, setAttachmentStatus] = useState<{
+    done: number
+    total: number
+    error: string | null
+  } | null>(null)
   const focusNonce = useUi((s) => s.composerFocusNonce)
   const tabs = useData((s) => s.tabsByWs[wsId])
   const config = useData((s) => s.config)
@@ -91,11 +102,61 @@ export const Composer = ({ wsId, onSubmitOverride, placeholder, disabled = false
     })
   }
 
-  useEffect(() => { setText(drafts.load(wsId)) }, [wsId])
+  useEffect(() => {
+    const next = drafts.load(wsId)
+    textRef.current = next
+    setText(next)
+    setAttachmentStatus(null)
+  }, [wsId])
   // T14-handoff：右栏 @注入 走 drafts.save + focusNonce bump——聚焦时重载草稿使注入立即上屏
-  useEffect(() => { setText(drafts.load(wsId)); ta.current?.focus() }, [focusNonce])
+  useEffect(() => {
+    const next = drafts.load(wsId)
+    textRef.current = next
+    setText(next)
+    ta.current?.focus()
+  }, [focusNonce])
 
-  const update = (v: string): void => { setText(v); drafts.save(wsId, v) }
+  const update = (v: string): void => {
+    textRef.current = v
+    setText(v)
+    drafts.save(wsId, v)
+  }
+
+  const handleImages = (incoming: Iterable<File>): boolean => {
+    const images = collectSupportedImages(incoming)
+    if (images.length === 0) return false
+    const api = useData.getState().getApi()
+    if (!api) {
+      setAttachmentStatus({ done: 0, total: images.length, error: tr("composer.attachments.noApi") })
+      return true
+    }
+    setAttachmentStatus({ done: 0, total: images.length, error: null })
+    void uploadImageFiles(api, wsId, images, {
+      onProgress: (done, total) => {
+        if (workspaceRef.current === wsId) setAttachmentStatus({ done, total, error: null })
+      },
+    }).then(({ paths, errors }) => {
+      // Workspace switches can race a large upload; never inject an old workspace's
+      // absolute attachment path into the newly selected workspace draft.
+      if (workspaceRef.current !== wsId) return
+      if (paths.length > 0) {
+        const current = textRef.current
+        const start = ta.current?.selectionStart ?? current.length
+        const end = ta.current?.selectionEnd ?? start
+        const inserted = insertAttachmentPaths(current, start, end, paths)
+        update(inserted.text)
+        requestAnimationFrame(() => {
+          ta.current?.setSelectionRange(inserted.caret, inserted.caret)
+          ta.current?.focus()
+        })
+      }
+      const error = errors.length > 0
+        ? `${tr("composer.attachments.failed")}: ${errors.map((item) => `${item.name} (${item.message})`).join("; ")}`
+        : null
+      setAttachmentStatus({ done: images.length, total: images.length, error })
+    })
+    return true
+  }
 
   const deliver = async (mode: "send" | "interrupt-send" | "insert", skipStable: boolean): Promise<void> => {
     const body = text.trim()
@@ -145,6 +206,14 @@ export const Composer = ({ wsId, onSubmitOverride, placeholder, disabled = false
   return (
     <div className="composer">
       <QueueIndicator wsId={wsId} />
+      {attachmentStatus && (
+        <div className={attachmentStatus.error ? "attachment-status attachment-error" : "attachment-status"} role="status">
+          {attachmentStatus.error ??
+            `${attachmentStatus.done === attachmentStatus.total
+              ? tr("composer.attachments.complete")
+              : tr("composer.attachments.uploading")} ${attachmentStatus.done}/${attachmentStatus.total}`}
+        </div>
+      )}
       {token && pickerItems.length > 0 && (
         <Picker
           items={pickerItems}
@@ -158,8 +227,27 @@ export const Composer = ({ wsId, onSubmitOverride, placeholder, disabled = false
           disabled={disabled}
           value={text}
           rows={Math.min(8, Math.max(1, text.split("\n").length))}
-          placeholder={placeholder ?? "给 engine 的话… Enter 发送 · ⌘Enter 打断并发送 · ⌥Enter 仅插入 · ⇧Enter 换行"}
+          placeholder={placeholder ?? tr("composer.placeholder")}
           onChange={(e) => { update(e.target.value); refreshToken(e.target.value, e.target.selectionStart) }}
+          onPaste={(e) => {
+            const files = Array.from(e.clipboardData.items)
+              .map((item) => item.getAsFile())
+              .filter((file): file is File => file !== null)
+            if (collectSupportedImages(files).length > 0) {
+              e.preventDefault()
+              handleImages(files)
+            }
+          }}
+          onDragOver={(e) => {
+            if (collectSupportedImages(e.dataTransfer.files).length > 0) e.preventDefault()
+          }}
+          onDrop={(e) => {
+            const files = Array.from(e.dataTransfer.files)
+            if (collectSupportedImages(files).length > 0) {
+              e.preventDefault()
+              handleImages(files)
+            }
+          }}
           onKeyDown={(e) => {
             if (token && pickerItems.length > 0 && ["ArrowUp", "ArrowDown", "Enter", "Tab", "Escape"].includes(e.key))
               return // PickerKeys 在 document capture 层接管

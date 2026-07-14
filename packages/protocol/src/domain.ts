@@ -2,6 +2,8 @@ import { Schema } from "effect"
 
 export const WorkspaceStatus = Schema.Literal("creating", "active", "archived", "error")
 export type WorkspaceStatus = typeof WorkspaceStatus.Type
+export const WorkspaceOwnership = Schema.Literal("managed", "adopted")
+export type WorkspaceOwnership = typeof WorkspaceOwnership.Type
 
 export class Workspace extends Schema.Class<Workspace>("Workspace")({
   id: Schema.String,
@@ -12,6 +14,7 @@ export class Workspace extends Schema.Class<Workspace>("Workspace")({
   baseBranch: Schema.String,
   baseRef: Schema.String,
   status: WorkspaceStatus,
+  ownership: Schema.optionalWith(WorkspaceOwnership, { default: () => "managed" as const }),
   pinned: Schema.Boolean,
   createdAt: Schema.Number,
   archivedAt: Schema.NullOr(Schema.Number),

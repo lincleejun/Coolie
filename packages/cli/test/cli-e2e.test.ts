@@ -39,6 +39,21 @@ describe("coolie CLI e2e", () => {
     expect(coolie("project", "list")).toContain(repo)
     expect(coolie("server", "status")).toContain("running")
   })
+  it("lists and adopts an existing linked branch worktree", () => {
+    const source = fs.mkdtempSync(path.join(os.tmpdir(), "coolie-cli-adopt-repo-"))
+    execFileSync("git", ["init", "-b", "main"], { cwd: source })
+    execFileSync("git", ["-c", "user.email=t@t", "-c", "user.name=t", "commit", "--allow-empty", "-m", "init"], { cwd: source })
+    const linked = fs.mkdtempSync(path.join(os.tmpdir(), "coolie-cli-adopt-wt-"))
+    fs.rmdirSync(linked)
+    execFileSync("git", ["worktree", "add", "-b", "feature/adopt-e2e", linked, "main"], { cwd: source })
+    coolie("project", "add", source)
+    const listed = coolie("adopt", source, "--list")
+    expect(listed).toContain("\tfeature/adopt-e2e")
+    const exactListedPath = listed.trim().split("\t")[0]!
+    const adopted = coolie("adopt", source, "--path", exactListedPath, "--name", "adopted-e2e")
+    expect(adopted).toContain("adopted adopted-e2e")
+    expect(adopted).toContain(`path=${exactListedPath}`)
+  })
   it("project add with a relative path resolves against the CLI's cwd, not the daemon's", () => {
     // The daemon backing `home` is already running (spawned by the previous
     // test) with its own cwd — wherever it was first auto-spawned from (the
@@ -113,6 +128,33 @@ describe("coolie CLI e2e", () => {
     db = new Database(path.join(home, "coolie.db"), { readonly: true })
     expect((db.prepare("SELECT pinned FROM workspaces WHERE id = ?").get(id) as { pinned: number }).pinned).toBe(0)
     db.close()
+    coolie("delete", id, "--force")
+  })
+  it("creates, lists and deletes checkpoint refs through the CLI", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "coolie-cli-checkpoint-"))
+    execFileSync("git", ["init", "-b", "main"], { cwd: dir })
+    fs.writeFileSync(path.join(dir, "tracked.txt"), "base\n")
+    execFileSync("git", ["add", "."], { cwd: dir })
+    execFileSync("git", ["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-m", "init"], { cwd: dir })
+    const id = /\(([^)]+)\)/.exec(coolie("create", dir, "--name", "checkpoint-cli"))![1]!
+    const worktree = (coolie("list").split("\n").find((line) => line.startsWith(`${id}\t`)) ?? "").split("\t")[4]!
+    fs.writeFileSync(path.join(worktree, "tracked.txt"), "checkpoint content\n")
+    fs.writeFileSync(path.join(worktree, "new.txt"), "untracked\n")
+
+    const created = coolie("checkpoint", "create", id, "--label", "CLI safe point")
+    const [checkpointId, oid, ref] = created.trim().split("\t")
+    expect(ref).toBe(`refs/coolie-checkpoints/${id}/${checkpointId}`)
+    expect(execFileSync("git", ["show", `${oid}:new.txt`], { cwd: dir, encoding: "utf8" })).toBe("untracked\n")
+    expect(coolie("checkpoint", "list", id)).toContain("CLI safe point")
+
+    coolie("archive", id, "--force")
+    expect(() => coolie("checkpoint", "create", id)).toThrow()
+    expect(coolie("checkpoint", "list", id)).toContain(checkpointId)
+    expect(coolie("checkpoint", "delete", id, checkpointId!)).toContain(`deleted checkpoint ${checkpointId}`)
+    expect(coolie("checkpoint", "list", id)).not.toContain(checkpointId)
+    const events = coolie("events", "tail", "--after", "0")
+    expect(events).toContain("checkpoint.created")
+    expect(events).toContain("checkpoint.deleted")
     coolie("delete", id, "--force")
   })
   it("create --agents creates each instance independently with unique slugs", () => {

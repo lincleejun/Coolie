@@ -12,6 +12,7 @@ describe("终端三层仲裁（spec §7.3，Superset 原样）", () => {
   it("① 注册表命中的 Cmd chord → bubble", () => {
     expect(arbitrateTerminalKey(ev({ metaKey: true, code: "KeyT", key: "t" }))).toEqual({ action: "bubble" })
     expect(arbitrateTerminalKey(ev({ metaKey: true, code: "Digit5", key: "5" }))).toEqual({ action: "bubble" })
+    expect(arbitrateTerminalKey(ev({ metaKey: true, code: "KeyK", key: "k" }))).toEqual({ action: "bubble" })
   })
   it("② 行编辑翻译", () => {
     expect(arbitrateTerminalKey(ev({ metaKey: true, key: "ArrowLeft" }))).toEqual({ action: "write", bytes: CTRL_A })

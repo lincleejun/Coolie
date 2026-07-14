@@ -1,11 +1,12 @@
-import { HOTKEYS_REGISTRY } from "../hotkeys/registry"
+import { prettyChord } from "../hotkeys/registry"
+import { useSettings } from "../settings/settings"
 import { useUi } from "../stores/ui"
 
 export const Cheatsheet = () => {
   const open = useUi((s) => s.cheatsheetOpen)
+  const registry = useSettings((state) => state.effectiveHotkeys)
   if (!open) return null
-  const cats = [...new Set(HOTKEYS_REGISTRY.map((h) => h.category))]
-  const pretty = (chord: string) => chord.replace("meta+", "⌘").replace("alt+", "⌥").replace("shift+", "⇧").toUpperCase()
+  const cats = [...new Set(registry.map((h) => h.category))]
   return (
     <div className="modal-backdrop" onClick={() => useUi.getState().setCheatsheet(false)}>
       <div className="modal cheatsheet" onClick={(e) => e.stopPropagation()}>
@@ -13,8 +14,8 @@ export const Cheatsheet = () => {
         {cats.map((c) => (
           <section key={c}>
             <h3>{c}</h3>
-            {HOTKEYS_REGISTRY.filter((h) => h.category === c).map((h) => (
-              <div className="hk-row" key={h.id}><kbd>{pretty(h.chord)}</kbd><span>{h.label}</span></div>
+            {registry.filter((h) => h.category === c).map((h) => (
+              <div className="hk-row" key={h.id}><kbd>{prettyChord(h.chord)}</kbd><span>{h.label}</span></div>
             ))}
           </section>
         ))}

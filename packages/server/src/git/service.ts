@@ -13,6 +13,7 @@ export interface WorktreeInfo {
   readonly head: string
   /** 全 ref 名（refs/heads/x）；detached 时为 null */
   readonly branch: string | null
+  readonly bare: boolean
 }
 
 export interface GitServiceShape {
@@ -20,6 +21,8 @@ export interface GitServiceShape {
   readonly fetchOrigin: (repoRoot: string) => Effect.Effect<void, GitError>
   readonly refExists: (repoRoot: string, ref: string) => Effect.Effect<boolean, GitError>
   readonly revParse: (repoRoot: string, ref: string) => Effect.Effect<string, GitError>
+  /** git merge-base <a> <b>；所有参数均经 execFile argv 传递。 */
+  readonly mergeBase: (repoRoot: string, a: string, b: string) => Effect.Effect<string, GitError>
   /** git worktree add --no-track -b <branch> <path> <startPoint> */
   readonly worktreeAdd: (repoRoot: string, path: string, branch: string, startPoint: string) => Effect.Effect<void, GitError>
   /** git worktree add <path> <branch>（unarchive/retry：branch 已存在） */
@@ -55,14 +58,15 @@ const runGit = (op: string, args: readonly string[], cwd: string): Effect.Effect
 
 export const parseWorktreeList = (porcelain: string): WorktreeInfo[] =>
   porcelain.trim().split("\n\n").filter((b) => b.trim() !== "").map((block) => {
-    let p = "", head = ""
+    let p = "", head = "", bare = false
     let branch: string | null = null
     for (const line of block.split("\n")) {
       if (line.startsWith("worktree ")) p = line.slice("worktree ".length)
       else if (line.startsWith("HEAD ")) head = line.slice("HEAD ".length)
       else if (line.startsWith("branch ")) branch = line.slice("branch ".length)
+      else if (line === "bare") bare = true
     }
-    return { path: p, head, branch }
+    return { path: p, head, branch, bare }
   })
 
 export const GitServiceLive = Layer.succeed(GitService, {
@@ -78,6 +82,8 @@ export const GitServiceLive = Layer.succeed(GitService, {
     ),
   revParse: (repoRoot, ref) =>
     runGit("rev-parse", ["rev-parse", "--verify", ref], repoRoot).pipe(Effect.map((s) => s.trim())),
+  mergeBase: (repoRoot, a, b) =>
+    runGit("merge-base", ["merge-base", "--", a, b], repoRoot).pipe(Effect.map((s) => s.trim())),
   worktreeAdd: (repoRoot, p, branch, startPoint) =>
     runGit("worktree add", ["worktree", "add", "--no-track", "-b", branch, p, startPoint], repoRoot).pipe(Effect.asVoid),
   worktreeAddExisting: (repoRoot, p, branch) =>

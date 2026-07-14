@@ -3,6 +3,7 @@ import { FitAddon } from "@xterm/addon-fit"
 import "@xterm/xterm/css/xterm.css"
 import { arbitrateTerminalKey } from "./arbitrate"
 import type { Api } from "../api/client"
+import { terminalTheme, type ResolvedTheme } from "../settings/theme"
 
 export type TermState = "connecting" | "open" | "exited" | "dead"
 
@@ -20,6 +21,12 @@ export interface TermSession {
 }
 
 const enc = new TextEncoder()
+let activeTheme: ResolvedTheme = "dark"
+
+export const syncTerminalTheme = (theme: ResolvedTheme): void => {
+  activeTheme = theme
+  for (const session of sessions.values()) session.term.options.theme = terminalTheme(theme)
+}
 
 export const createTermSession = (api: Api, workspaceId: string, windowIdx: number): TermSession => {
   const el = document.createElement("div")
@@ -29,7 +36,7 @@ export const createTermSession = (api: Api, workspaceId: string, windowIdx: numb
     fontSize: 13,
     scrollback: 10_000,
     allowProposedApi: true,
-    theme: { background: "#00000000" }, // vibrancy 透出；xterm 6 支持 alpha 背景
+    theme: terminalTheme(activeTheme),
   })
   const fit = new FitAddon()
   term.loadAddon(fit)

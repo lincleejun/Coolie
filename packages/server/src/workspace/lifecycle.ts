@@ -9,13 +9,13 @@ import { EventsRepo } from "../repo/events.js"
 import { ValidationError, ConflictError, NotFoundError } from "../repo/errors.js"
 import { GitService, GitError } from "../git/service.js"
 import { SetupRunner, SetupScriptError, makeSetupPane, resolveSetupScripts } from "./setup.js"
-import { pickName, sanitizeSlug } from "./names.js"
+import { customNamePool, getNamePool, pickName, sanitizeSlug } from "./names.js"
 import { allocatePortBase, portEnv } from "./ports.js"
 import { injectInfoExclude, readWorktreeIncludePatterns, copyIncludedFiles } from "./include.js"
 import { TmuxService } from "../tmux/service.js"
 import { TabsRepo } from "../repo/tabs.js"
 import { QueueRepo } from "../repo/queue.js"
-import { SessionEnsurer } from "./heal.js"
+import { SessionEnsurer, type EnsureError } from "./heal.js"
 
 /** Plan 3 插拔点落地：tmux session / engine 启动 / 首条 prompt 投递以 hook 形式挂进 create 流水线末尾。 */
 export class HookError extends Data.TaggedError("HookError")<{ readonly message: string }> {}
@@ -31,14 +31,15 @@ export class PostCreateHooks extends Context.Tag("PostCreateHooks")<PostCreateHo
 export const PostCreateHooksEmpty = Layer.succeed(PostCreateHooks, [])
 
 export type CreateError = ValidationError | NotFoundError | ConflictError | GitError | SetupScriptError | HookError
+export type RetryError = CreateError | EnsureError
 export type LifecycleError = NotFoundError | ConflictError | GitError
 
 export interface WorkspaceLifecycleShape {
   readonly create: (opts: {
     projectId: string; branchSlug?: string; name?: string; initialPrompt?: string; engineId?: string
-    model?: string; effort?: string; fanoutGroup?: string
+    model?: string; effort?: string; fanoutGroup?: string; namePool?: string; customNames?: readonly string[]
   }) => Effect.Effect<Workspace, CreateError>
-  readonly retry: (id: string) => Effect.Effect<Workspace, CreateError>
+  readonly retry: (id: string) => Effect.Effect<Workspace, RetryError>
   readonly archive: (id: string, opts?: { force?: boolean }) => Effect.Effect<Workspace, LifecycleError>
   readonly unarchive: (id: string) => Effect.Effect<Workspace, LifecycleError>
   readonly delete: (id: string, opts?: { force?: boolean }) => Effect.Effect<void, LifecycleError>
@@ -204,7 +205,19 @@ export const WorkspaceLifecycleLive = Layer.effect(
         const project = yield* projects.get(opts.projectId)
         const existing = yield* repo.list({}) // 跨项目全量：同名项目共享路径名字空间，name 必须全局唯一（ledger carry-over）
         const taken = new Set(existing.map((w) => w.name))
-        const name = opts.name !== undefined ? sanitizeSlug(opts.name) : pickName(taken)
+        const generatedName = (): Effect.Effect<string, ValidationError> =>
+          Effect.try({
+            try: () => pickName(
+              taken,
+              opts.namePool === "custom" ? customNamePool(opts.customNames ?? []) : getNamePool(opts.namePool),
+            ),
+            catch: (error) => new ValidationError({
+              message: error instanceof Error ? error.message : String(error),
+            }),
+          })
+        // Resolve a pool only when generation is needed. Explicit names therefore
+        // remain authoritative even if stale pool preferences accompany a request.
+        const name = opts.name !== undefined ? sanitizeSlug(opts.name) : yield* generatedName()
         if (name === "") return yield* new ValidationError({ message: "name 消毒后为空" })
         const slug = sanitizeSlug(opts.branchSlug ?? name)
         if (slug === "") return yield* new ValidationError({ message: "branchSlug 消毒后为空" })
@@ -243,6 +256,19 @@ export const WorkspaceLifecycleLive = Layer.effect(
         const project = yield* projects.get(ws0.projectId)
         const ws = yield* repo.setStatus(id, "creating")
         yield* emit(id, "workspace.creating", { id, retry: true, name: ws.name, branch: ws.branch, path: ws.path, portBase: ws.portBase })
+        if (ws.ownership === "adopted") {
+          if (!Option.isSome(ensurerOpt))
+            return yield* new ConflictError({ message: "adopted workspace runtime ensure 服务不可用" })
+          const active = yield* repo.setStatus(id, "active")
+          return yield* ensurerOpt.value.ensure(id).pipe(
+            Effect.as(active),
+            Effect.tapError((e) => Effect.gen(function* () {
+              yield* repo.setLastError(id, { tag: e._tag, message: e.message }).pipe(Effect.ignore)
+              yield* repo.setStatus(id, "error").pipe(Effect.ignore)
+              yield* emit(id, "workspace.error", { id, error: { tag: e._tag, message: e.message } }).pipe(Effect.ignore)
+            })),
+          )
+        }
         // C2：回填 create 时存下的 ctx（首条 prompt + 原引擎），而非丢成 {}
         const ctx = yield* repo.getCreateCtx(id)
         return yield* provision(ws, project.repoRoot, ctx).pipe(
@@ -287,6 +313,12 @@ export const WorkspaceLifecycleLive = Layer.effect(
           return yield* new ConflictError({ message: `只能归档 active 的 workspace（当前 ${ws.status}）` })
         const project = yield* projects.get(ws.projectId)
         const force = opts?.force === true
+        if (ws.ownership === "adopted") {
+          yield* teardownRuntime(ws, "archive")
+          const out = yield* repo.setStatus(id, "archived")
+          yield* emit(id, "workspace.archived", { id, force: false, ownership: ws.ownership })
+          return out
+        }
         // 顺序：先守卫（脏树 409 时 session 不能已被杀）→ 拆 tmux/tabs → 删 worktree。
         // 守卫与删除之间 engine 理论上可再写文件——窗口极小，且 removeWorktreeGuarded 内层守卫兜底（二次 409 可重试）。
         yield* guardClean(project.repoRoot, ws, force, "归档")
@@ -303,13 +335,17 @@ export const WorkspaceLifecycleLive = Layer.effect(
         if (ws.status !== "archived")
           return yield* new ConflictError({ message: `只能恢复 archived 的 workspace（当前 ${ws.status}）` })
         const project = yield* projects.get(ws.projectId)
+        if (ws.ownership === "adopted" && !(yield* worktreePresent(project.repoRoot, ws.path)))
+          return yield* new ConflictError({
+            message: `外部 worktree 已不在 git worktree list 中，无法恢复 adopted workspace；请重新创建后再采用：${ws.path}`,
+          })
         if (!(yield* git.refExists(project.repoRoot, `refs/heads/${ws.branch}`)))
           return yield* new ConflictError({ message: `branch ${ws.branch} 已不存在，无法恢复` })
         // resume path for partial unarchive：worktree 若已在（上次 worktreeAddExisting 成功但紧接着的
         // setStatus("active") 崩溃/DB 错误导致 row 卡在 archived），跳过 mkdir/prune/add，直接前进到 active——
         // 否则重试会再调一次 worktreeAddExisting，真实 git 因路径已注册而报 already exists，永久卡死。
         // 与 removeWorktreeGuarded 对称的存在性检查（同以 worktreeList 为真源）。
-        if (!(yield* worktreePresent(project.repoRoot, ws.path))) {
+        if (ws.ownership === "managed" && !(yield* worktreePresent(project.repoRoot, ws.path))) {
           // 与 provision 同款：fs 步骤走 typed error，失败留在可恢复的 archived 态而非 defect
           yield* Effect.try({
             try: () => fs.mkdirSync(path.dirname(ws.path), { recursive: true }),
@@ -341,10 +377,26 @@ export const WorkspaceLifecycleLive = Layer.effect(
         const ws = yield* repo.get(id)
         const project = yield* projects.get(ws.projectId)
         const force = opts?.force === true
+        if (ws.ownership === "adopted") {
+          yield* teardownRuntime(ws, "delete")
+          yield* repo.remove(id)
+          yield* Effect.sync(() => {
+            try { fs.rmSync(path.join(cfg.home, "attachments", ws.id), { recursive: true, force: true }) }
+            catch { /* best-effort */ }
+          })
+          yield* emit(id, "workspace.deleted", { id, branch: ws.branch, ownership: ws.ownership })
+          return
+        }
         yield* guardClean(project.repoRoot, ws, force, "删除")
         yield* teardownRuntime(ws, "delete")
         yield* removeWorktreeGuarded(project.repoRoot, ws, force, "删除")
         yield* repo.remove(id)
+        // 附件随 workspace 永久删除；archive 必须保留以便 unarchive/resume。
+        // 清理失败不回滚已经完成的 worktree/DB 删除，后续可由人工或维护任务回收。
+        yield* Effect.sync(() => {
+          try { fs.rmSync(path.join(cfg.home, "attachments", ws.id), { recursive: true, force: true }) }
+          catch { /* best-effort: workspace delete remains successful */ }
+        })
         yield* emit(id, "workspace.deleted", { id, branch: ws.branch }) // branch 保留，事件记下名字便于追溯
       })
 

@@ -2,6 +2,7 @@ import { useEffect, useState } from "react"
 import { useData } from "../stores/data"
 import type { DiffSection, FileDiff } from "../stores/types"
 import { parseUnifiedDiff, type DiffLine } from "./diff"
+import { useT } from "../i18n"
 
 export interface LineSelection {
   path: string
@@ -17,6 +18,7 @@ export const DiffView = ({ wsId, section, path, onComment }: {
   path: string
   onComment: (selection: LineSelection) => void
 }) => {
+  const tr = useT()
   const [lines, setLines] = useState<DiffLine[] | null>(null)
   const [binary, setBinary] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -48,8 +50,8 @@ export const DiffView = ({ wsId, section, path, onComment }: {
   }, [wsId, section, path])
 
   if (error) return <div className="diff-err">diff 加载失败：{error}</div>
-  if (binary) return <div className="dim">二进制文件，无行级 diff</div>
-  if (lines === null) return <div className="dim">加载 diff…</div>
+  if (binary) return <div className="dim">{tr("diff.binary")}</div>
+  if (lines === null) return <div className="dim">{tr("diff.loading")}</div>
 
   const selectable = (index: number): boolean =>
     lines[index]?.kind === "add" || lines[index]?.kind === "del" || lines[index]?.kind === "ctx"
@@ -76,7 +78,7 @@ export const DiffView = ({ wsId, section, path, onComment }: {
     <div className="diff-view">
       <div className="diff-toolbar">
         <span className="diff-file">{path}</span>
-        <button className="btn-sm" disabled={anchor === null} onClick={comment}>评论选中行</button>
+        <button className="btn-sm" disabled={anchor === null} onClick={comment}>{tr("diff.commentSelected")}</button>
       </div>
       <div className="diff-body">
         {lines.map((line, index) => (

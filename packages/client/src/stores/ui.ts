@@ -7,6 +7,8 @@ interface UiState {
   dispatchMode: boolean            // Cmd+N：composer 变新 workspace 首条 prompt 输入
   dispatchProjectId: string | null
   cheatsheetOpen: boolean
+  paletteOpen: boolean
+  settingsOpen: boolean
   searchQuery: string
   composerFocusNonce: number       // 递增触发 composer focus（Cmd+L / 创建流）
   selectWs(id: string | null): void
@@ -16,6 +18,8 @@ interface UiState {
   setRightPanel(p: UiState["rightPanel"]): void
   setDispatchMode(on: boolean, projectId?: string | null): void
   setCheatsheet(open: boolean): void
+  setPalette(open: boolean): void
+  setSettings(open: boolean): void
   setSearch(q: string): void
   focusComposer(): void
 }
@@ -33,6 +37,8 @@ export const useUi = create<UiState>((set) => ({
   dispatchMode: false,
   dispatchProjectId: null,
   cheatsheetOpen: false,
+  paletteOpen: false,
+  settingsOpen: false,
   searchQuery: "",
   composerFocusNonce: 0,
   selectWs: (id) => {
@@ -48,7 +54,18 @@ export const useUi = create<UiState>((set) => ({
   setRightPanel: (rightPanel) => set({ rightPanel }),
   setDispatchMode: (on, projectId = null) =>
     set((s) => ({ dispatchMode: on, dispatchProjectId: projectId, composerFocusNonce: s.composerFocusNonce + 1 })),
-  setCheatsheet: (cheatsheetOpen) => set({ cheatsheetOpen }),
+  setCheatsheet: (cheatsheetOpen) => set({
+    cheatsheetOpen,
+    ...(cheatsheetOpen ? { paletteOpen: false, settingsOpen: false } : {}),
+  }),
+  setPalette: (paletteOpen) => set({
+    paletteOpen,
+    ...(paletteOpen ? { cheatsheetOpen: false, settingsOpen: false } : {}),
+  }),
+  setSettings: (settingsOpen) => set({
+    settingsOpen,
+    ...(settingsOpen ? { cheatsheetOpen: false, paletteOpen: false } : {}),
+  }),
   setSearch: (searchQuery) => set({ searchQuery }),
   focusComposer: () => set((s) => ({ composerFocusNonce: s.composerFocusNonce + 1 })),
 }))

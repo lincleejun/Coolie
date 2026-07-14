@@ -1,4 +1,5 @@
 import { parseCoolieUrl } from "@coolie/protocol"
+import { capabilities } from "./platform"
 
 export interface DeepLinkRouter {
   readonly selectWs: (workspaceId: string) => void
@@ -48,7 +49,9 @@ export const routeCoolieUrl = (raw: string, router: DeepLinkRouter): boolean => 
  */
 export const installDeepLinkHandlers = async (
   router: DeepLinkRouter,
+  enabled = capabilities.deepLinks,
 ): Promise<() => void> => {
+  if (!enabled) return () => {}
   try {
     const { getCurrent, onOpenUrl } = await import("@tauri-apps/plugin-deep-link")
     const handle = (urls: string[] | null): void => {

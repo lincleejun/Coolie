@@ -5,13 +5,16 @@
   "scripts": {
     "dev": "tauri dev",
     "dev:vite": "vite",
+    "dev:web": "vite --config vite.web.config.ts",
     "build:vite": "vite build",
+    "build:web": "vite build --config vite.web.config.ts",
     "tauri": "tauri"
   },
   "dependencies": {
     "@coolie/protocol": "workspace:*",
     "@tauri-apps/api": "^2.9.0",
     "@tauri-apps/plugin-deep-link": "2",
+    "@tauri-apps/plugin-dialog": "2",
     "@xterm/addon-fit": "^0.11.0",
     "@xterm/addon-webgl": "0.20.0-beta.287",
     "@xterm/xterm": "^6.0.0",

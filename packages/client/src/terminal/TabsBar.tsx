@@ -1,5 +1,4 @@
 import { useEffect, useState } from "react"
-import { invoke } from "@tauri-apps/api/core"
 import type { Tab } from "@coolie/protocol"
 import { useData } from "../stores/data"
 import { useUi } from "../stores/ui"
@@ -8,6 +7,7 @@ import { pushHotkeyLayer } from "../hotkeys/dispatch"
 import { TerminalView } from "./Terminal"
 import { buildAttachCommand, buildTerminalLaunch, type TerminalId } from "./terminals"
 import { openRunTab } from "./run"
+import { capabilities } from "../platform"
 
 export const openInTerminal = async (
   tmuxSocket: string,
@@ -15,7 +15,9 @@ export const openInTerminal = async (
   id: TerminalId,
   customTemplate?: string,
 ): Promise<void> => {
+  if (!capabilities.externalTerminal) throw new Error("Web 模式不支持外部终端")
   const { program, args } = buildTerminalLaunch(id, tmuxSocket, wsId, customTemplate)
+  const { invoke } = await import("@tauri-apps/api/core")
   await invoke("spawn_detached", { program, args })
 }
 
@@ -32,7 +34,7 @@ export const CenterArea = ({ wsId }: { wsId: string }) => {
   const selected = tabs.find((t) => t.id === selectedId) ?? tabs[0]
   const terminalApp = useTerminal((s) => s.terminalApp)
   const customTemplate = useTerminal((s) => s.customTemplate)
-  const external = useTerminal((s) => s.externalByWs[wsId] === true)
+  const external = useTerminal((s) => capabilities.externalTerminal && s.externalByWs[wsId] === true)
   const terminalLabel = terminalApp === "iterm2" ? "iTerm2" : terminalApp === "terminal" ? "Terminal.app" : "自定义终端"
   const openExternal = (): void => {
     if (!config) return
@@ -96,28 +98,32 @@ export const CenterArea = ({ wsId }: { wsId: string }) => {
         <button className="tab tab-run" title="运行 .coolie/run.sh" onClick={() => void run().catch((e) => alert(e.message))}>Run</button>
         <button className="tab tab-new" title="新 shell tab（⌘T）" onClick={() => void newShell()}>＋</button>
         <div className="tabsbar-spacer" />
-        <select
-          className="term-picker"
-          value={terminalApp}
-          onChange={(event) => useTerminal.getState().setTerminalApp(event.target.value as TerminalId)}
-          title="选择外部终端"
-        >
-          <option value="iterm2">iTerm2</option>
-          <option value="terminal">Terminal.app</option>
-          <option value="custom">自定义 argv</option>
-        </select>
-        <button
-          className="iterm-btn"
-          title={`在 ${terminalLabel} 中打开同一 tmux 会话`}
-          onClick={openExternal}
-        >↗ {terminalLabel}</button>
-        <button
-          className="term-mode-toggle"
-          title="切换外部终端模式"
-          onClick={() => useTerminal.getState().toggleExternal(wsId)}
-        >{external ? "回内嵌" : "外部模式"}</button>
+        {capabilities.externalTerminal && (
+          <>
+            <select
+              className="term-picker"
+              value={terminalApp}
+              onChange={(event) => useTerminal.getState().setTerminalApp(event.target.value as TerminalId)}
+              title="选择外部终端"
+            >
+              <option value="iterm2">iTerm2</option>
+              <option value="terminal">Terminal.app</option>
+              <option value="custom">自定义 argv</option>
+            </select>
+            <button
+              className="iterm-btn"
+              title={`在 ${terminalLabel} 中打开同一 tmux 会话`}
+              onClick={openExternal}
+            >↗ {terminalLabel}</button>
+            <button
+              className="term-mode-toggle"
+              title="切换外部终端模式"
+              onClick={() => useTerminal.getState().toggleExternal(wsId)}
+            >{external ? "回内嵌" : "外部模式"}</button>
+          </>
+        )}
       </div>
-      {terminalApp === "custom" && (
+      {capabilities.externalTerminal && terminalApp === "custom" && (
         <label className="term-custom-editor">
           <span>自定义 JSON argv 模板</span>
           <input

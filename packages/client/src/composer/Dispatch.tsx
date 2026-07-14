@@ -5,6 +5,8 @@ import { Composer } from "./Composer"
 import { makeDrafts, type DraftStorage } from "./drafts"
 import { MAX_FANOUT } from "@coolie/protocol"
 import type { EngineInfo } from "../stores/types"
+import { useT } from "../i18n"
+import { useSettings } from "../settings/settings"
 
 const draftStorage: DraftStorage =
   typeof localStorage !== "undefined"
@@ -18,14 +20,18 @@ export interface CreateBodyInput {
   prompt: string
   model: string
   effort: string
+  namePool?: string
+  customNames?: readonly string[]
 }
 
-export const buildCreateBody = (i: CreateBodyInput): Record<string, string> => ({
+export const buildCreateBody = (i: CreateBodyInput): Record<string, unknown> => ({
   projectId: i.projectId,
   engineId: i.engineId,
   initialPrompt: i.prompt,
   ...(i.model !== "default" ? { model: i.model } : {}),
   ...(i.effort !== "default" ? { effort: i.effort } : {}),
+  ...(i.namePool ? { namePool: i.namePool } : {}),
+  ...(i.namePool === "custom" ? { customNames: [...(i.customNames ?? [])] } : {}),
 })
 
 export const fanoutTotal = (counts: Readonly<Record<string, number>>): number =>
@@ -37,8 +43,8 @@ export const buildFanoutRequests = (
   counts: Readonly<Record<string, number>>,
   engines: readonly EngineInfo[],
   groupId: string,
-): Array<Record<string, string>> => {
-  const requests: Array<Record<string, string>> = []
+): Array<Record<string, unknown>> => {
+  const requests: Array<Record<string, unknown>> = []
   for (const engine of engines) {
     const count = Math.max(0, Math.floor(counts[engine.id] ?? 0))
     const selected = engine.id === base.engineId
@@ -54,6 +60,8 @@ export const buildFanoutRequests = (
           effort: selected && engine.capabilities.effort && engine.efforts?.includes(base.effort)
             ? base.effort
             : "default",
+          ...(base.namePool !== undefined ? { namePool: base.namePool } : {}),
+          ...(base.customNames !== undefined ? { customNames: base.customNames } : {}),
         }),
         fanoutGroup: groupId,
       })
@@ -67,12 +75,12 @@ export type FanoutCreateResult =
   | { readonly engineId: string; readonly ok: false; readonly error: string }
 
 export const submitFanoutRequests = async (
-  requests: readonly Record<string, string>[],
-  create: (body: Record<string, string>) => Promise<{ id: string }>,
+  requests: readonly Record<string, unknown>[],
+  create: (body: Record<string, unknown>) => Promise<{ id: string }>,
 ): Promise<FanoutCreateResult[]> => {
   const results: FanoutCreateResult[] = []
   for (const body of requests) {
-    const engineId = body.engineId ?? "unknown"
+    const engineId = typeof body.engineId === "string" ? body.engineId : "unknown"
     try {
       const workspace = await create(body)
       results.push({ engineId, ok: true, workspaceId: workspace.id })
@@ -88,6 +96,7 @@ export const submitFanoutRequests = async (
 }
 
 export const DispatchPanel = () => {
+  const tr = useT()
   const projects = useData((s) => s.projects)
   const engines = useData((s) => s.config?.engines ?? [])
   const projectId = useUi((s) => s.dispatchProjectId) ?? projects[0]?.id ?? null
@@ -100,6 +109,8 @@ export const DispatchPanel = () => {
   const [counts, setCounts] = useState<Record<string, number>>({})
   const total = fanoutTotal(counts)
   const overCap = total > MAX_FANOUT
+  const namePool = useSettings((state) => state.namePool)
+  const customNames = useSettings((state) => state.customNames)
 
   const submit = (prompt: string): void => {
     const api = useData.getState().getApi()
@@ -119,6 +130,8 @@ export const DispatchPanel = () => {
             prompt,
             model,
             effort,
+            namePool,
+            customNames,
           }, counts, engines, groupId)
           const results = await submitFanoutRequests(
             requests,
@@ -139,6 +152,8 @@ export const DispatchPanel = () => {
           prompt,
           model,
           effort,
+          namePool,
+          customNames,
         }))
         useUi.getState().selectWs(ws.id)
       } catch (e: any) {
@@ -152,11 +167,11 @@ export const DispatchPanel = () => {
   return (
     <div className="dispatch">
       <div className="dispatch-head">
-        <h2>新 Workspace</h2>
-        <button className="dim" onClick={() => useUi.getState().setDispatchMode(false)}>Esc 取消</button>
+        <h2>{tr("dispatch.title")}</h2>
+        <button className="dim" onClick={() => useUi.getState().setDispatchMode(false)}>{tr("dispatch.cancel")}</button>
       </div>
       <div className="dispatch-row">
-        <label>项目</label>
+        <label>{tr("dispatch.project")}</label>
         <select value={projectId ?? ""} onChange={(e) => {
           // Composer 把草稿键在 dispatch:<projectId> 上；切项目会换 wsId，先把已打的字搬过去再切，别丢
           drafts.carry(`dispatch:${projectId ?? "none"}`, `dispatch:${e.target.value}`)
@@ -164,7 +179,7 @@ export const DispatchPanel = () => {
         }}>
           {projects.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
         </select>
-        <label>引擎</label>
+        <label>{tr("dispatch.engine")}</label>
         <select value={engine?.id ?? ""} onChange={(e) => {
           setEngineId(e.target.value)
           setModel("default")
@@ -175,18 +190,18 @@ export const DispatchPanel = () => {
         </select>
         {engine && engine.models.length > 0 && (
           <>
-            <label>模型</label>
+            <label>{tr("dispatch.model")}</label>
             <select value={model} onChange={(e) => setModel(e.target.value)}>
-              <option value="default">默认</option>
+              <option value="default">{tr("dispatch.default")}</option>
               {engine.models.map((m) => <option key={m} value={m}>{engine.displayName}·{m}</option>)}
             </select>
           </>
         )}
         {engine?.capabilities.effort && engine.efforts && engine.efforts.length > 0 && (
           <>
-            <label>effort</label>
+            <label>{tr("dispatch.effort")}</label>
             <select value={effort} onChange={(e) => setEffort(e.target.value)}>
-              <option value="default">默认</option>
+              <option value="default">{tr("dispatch.default")}</option>
               {engine.efforts.map((value) => <option key={value} value={value}>{value}</option>)}
             </select>
           </>
@@ -222,7 +237,7 @@ export const DispatchPanel = () => {
         ? <div className="dispatch-busy">◌ 创建中…（fetch worktree → setup → tmux → engine → 投递首条 prompt）</div>
         : <Composer wsId={`dispatch:${projectId ?? "none"}`} onSubmitOverride={submit}
             disabled={overCap}
-            placeholder="描述任务… Enter 创建 workspace 并作为首条 prompt 投递" />}
+            placeholder={tr("dispatch.placeholder")} />}
     </div>
   )
 }

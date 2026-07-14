@@ -28,6 +28,7 @@ describe("WorkspacesRepo", () => {
       const repo = yield* WorkspacesRepo
       const ws = yield* repo.insertCreating(w1)
       expect(ws.status).toBe("creating")
+      expect(ws.ownership).toBe("managed")
       expect(ws.portBase).toBe(40000)
       expect(ws.baseRef).toBe("")
       expect(ws.archivedAt).toBeNull()
@@ -35,6 +36,22 @@ describe("WorkspacesRepo", () => {
     }))
     expect(Exit.isSuccess(exit)).toBe(true)
     if (Exit.isSuccess(exit)) expect(exit.value.name).toBe("usa-zion")
+  })
+  it("persists adopted ownership as durable row data", async () => {
+    const { db, run } = make()
+    const exit = await run(Effect.gen(function* () {
+      return yield* (yield* WorkspacesRepo).insertAdopted({
+        ...w1,
+        branch: "feature/existing",
+        baseRef: "abc123",
+      })
+    }))
+    expect(Exit.isSuccess(exit)).toBe(true)
+    if (Exit.isSuccess(exit)) {
+      expect(exit.value.ownership).toBe("adopted")
+      expect(JSON.parse((db.prepare("SELECT data FROM workspaces WHERE id = ?").get(exit.value.id) as any).data))
+        .toMatchObject({ ownership: "adopted" })
+    }
   })
   it("duplicate name in same project -> ConflictError (m0002 unique index)", async () => {
     const { run } = make()

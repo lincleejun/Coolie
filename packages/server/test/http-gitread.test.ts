@@ -72,6 +72,12 @@ describe("GET /config", () => {
     const claude = r.body.engines.find((e: any) => e.id === "claude")
     expect(claude.capabilities.nativeQueue).toBe(true)
     expect(claude.models).toContain("opus")
+    expect(r.body.namePools).toEqual([
+      { id: "national-parks", displayName: "National Parks" },
+      { id: "cities", displayName: "Cities" },
+      { id: "animals", displayName: "Animals" },
+      { id: "custom", displayName: "Custom" },
+    ])
   })
 })
 

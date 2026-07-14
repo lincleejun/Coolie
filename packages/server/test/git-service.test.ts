@@ -37,7 +37,7 @@ describe("parseWorktreeList (pure)", () => {
     ].join("\n")
     const wts = parseWorktreeList(out)
     expect(wts).toHaveLength(3)
-    expect(wts[1]).toEqual({ path: "/r-wt", head: "b".repeat(40), branch: "refs/heads/coolie/x" })
+    expect(wts[1]).toEqual({ path: "/r-wt", head: "b".repeat(40), branch: "refs/heads/coolie/x", bare: false })
     expect(wts[2]!.branch).toBeNull()
   })
 })
@@ -52,6 +52,15 @@ describe("GitService (real git)", () => {
       expect(yield* g.refExists(repo, "refs/heads/nope")).toBe(false)
     }))
     expect(Exit.isSuccess(exit)).toBe(true)
+  })
+  it("mergeBase uses safe argv and returns the common commit", async () => {
+    sh(repo, "branch", "feature", "main")
+    const exit = await run(Effect.gen(function* () {
+      const g = yield* git
+      return yield* g.mergeBase(repo, "feature", "main")
+    }))
+    expect(Exit.isSuccess(exit)).toBe(true)
+    if (Exit.isSuccess(exit)) expect(exit.value).toBe(sh(repo, "rev-parse", "main").trim())
   })
   it("worktreeAdd -b + list + setBranchBase", async () => {
     const wt = path.join(path.dirname(repo), path.basename(repo) + "-wt")

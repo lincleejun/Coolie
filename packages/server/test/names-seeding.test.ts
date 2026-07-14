@@ -43,8 +43,8 @@ const layer = () => WorkspaceLifecycleLive.pipe(
 )
 
 describe("名池跨项目 seeding（路径撞车防护）", () => {
-  it("project B 的自动命名避开 project A 已占用的全部园名", async () => {
-    const ws = await Effect.runPromise(Effect.provide(Effect.gen(function* () {
+  it("project B 的自动命名在全局池耗尽时给出可读错误", async () => {
+    const create = Effect.runPromise(Effect.provide(Effect.gen(function* () {
       const projects = yield* ProjectsRepo
       const wsRepo = yield* WorkspacesRepo
       const lc = yield* WorkspaceLifecycle
@@ -60,9 +60,6 @@ describe("名池跨项目 seeding（路径撞车防护）", () => {
       }
       return yield* lc.create({ projectId: pB.id })
     }), layer()) as Effect.Effect<any, never, never>)
-    // 修正前：pickName 只看 B 自己的（空）→ 撞 A 的路径 → ConflictError。
-    // 修正后：taken 全量 → 取 -2 后缀。
-    expect(ws.name).toMatch(/-2$/)
-    expect(ws.status).toBe("active")
+    await expect(create).rejects.toThrow("national-parks")
   })
 })

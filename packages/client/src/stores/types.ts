@@ -14,3 +14,4 @@ export interface EngineInfo {
   models: string[]
   efforts?: readonly string[]
 }
+export interface NamePoolInfo { id: string; displayName: string }

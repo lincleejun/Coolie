@@ -13,6 +13,7 @@ import { TabsRepo, TabsRepoLive } from "../src/repo/tabs.js"
 import { GitService } from "../src/git/service.js"
 import { SetupRunner, type SetupRunnerShape } from "../src/workspace/setup.js"
 import { WorkspaceLifecycle, WorkspaceLifecycleLive, PostCreateHooksEmpty } from "../src/workspace/lifecycle.js"
+import { SessionEnsurer } from "../src/workspace/heal.js"
 import { makeFakeGit } from "./helpers/fake-git.js"
 
 type AnyServices = WorkspaceLifecycle | WorkspacesRepo | ProjectsRepo | EventsRepo | QueueRepo | TabsRepo
@@ -26,11 +27,22 @@ const makeEnv = () => {
   const cfg = { home, dbPath: ":memory:", serverInfoPath: path.join(home, "server.json"), workspacesRoot: wsRoot }
   const fake = makeFakeGit()
   let setupRuns = 0
+  let ensureRuns = 0
+  let failEnsure = false
   const setup: SetupRunnerShape = { run: () => Effect.sync(() => { setupRuns++; return [] }) }
   const layer = WorkspaceLifecycleLive.pipe(
     Layer.provideMerge(Layer.mergeAll(
       Layer.succeed(GitService, fake.git),
       Layer.succeed(SetupRunner, setup),
+      Layer.succeed(SessionEnsurer, {
+        ensure: (id: string) => failEnsure
+          ? Effect.fail({ _tag: "TmuxError" as const, message: "ensure failed", exitCode: 1, stderr: "" })
+          : Effect.sync(() => {
+            ensureRuns++
+            return { action: "recreated" as const, resumed: false, sessionName: `coolie-${id}`, tabId: null, sessionId: null }
+          }),
+        resumeTab: null as any,
+      }),
       PostCreateHooksEmpty,
     )),
     Layer.provideMerge(Layer.mergeAll(ProjectsRepoLive, EventsRepoLive, WorkspacesRepoLive, QueueRepoLive, TabsRepoLive)),
@@ -39,7 +51,12 @@ const makeEnv = () => {
   )
   const run = <A, E>(eff: Effect.Effect<A, E, AnyServices>) =>
     Effect.runPromiseExit(Effect.provide(eff, layer) as Effect.Effect<A, E, never>)
-  return { fake, repoRoot, run, setupRuns: () => setupRuns }
+  return {
+    fake, repoRoot, run,
+    setupRuns: () => setupRuns,
+    ensureRuns: () => ensureRuns,
+    setFailEnsure: (value: boolean) => { failEnsure = value },
+  }
 }
 const ok = async <A, E>(env: ReturnType<typeof makeEnv>, eff: Effect.Effect<A, E, AnyServices>): Promise<A> => {
   const exit = await env.run(eff)
@@ -57,12 +74,40 @@ const setupActive = async (env: ReturnType<typeof makeEnv>) =>
     const p = yield* (yield* ProjectsRepo).add(env.repoRoot)
     return yield* (yield* WorkspaceLifecycle).create({ projectId: p.id, branchSlug: "work" })
   }))
+const setupAdopted = async (env: ReturnType<typeof makeEnv>) =>
+  ok(env, Effect.gen(function* () {
+    const p = yield* (yield* ProjectsRepo).add(env.repoRoot)
+    const wsPath = path.join(path.dirname(env.repoRoot), "external-worktree")
+    env.fake.state.refs.set("refs/heads/feature/external", "a".repeat(40))
+    env.fake.state.worktrees.set(wsPath, "feature/external")
+    return yield* (yield* WorkspacesRepo).insertAdopted({
+      projectId: p.id,
+      name: "external",
+      path: wsPath,
+      branch: "feature/external",
+      baseBranch: "main",
+      baseRef: "a".repeat(40),
+      portBase: 40100,
+    })
+  }))
 const eventTypes = (env: ReturnType<typeof makeEnv>) =>
   ok(env, Effect.gen(function* () {
     return (yield* (yield* EventsRepo).listAfter({ after: 0 })).map((e) => e.type)
   }))
 
 describe("archive", () => {
+  it("archives a dirty adopted workspace without removing or cleaning its external worktree", async () => {
+    const env = makeEnv()
+    const ws = await setupAdopted(env)
+    env.fake.state.dirty.add(ws.path)
+    const out = await ok(env, Effect.gen(function* () {
+      return yield* (yield* WorkspaceLifecycle).archive(ws.id)
+    }))
+    expect(out.status).toBe("archived")
+    expect(env.fake.state.worktrees.get(ws.path)).toBe(ws.branch)
+    expect(env.fake.state.dirty.has(ws.path)).toBe(true)
+    expect(env.fake.state.calls.some((call) => call[0] === "worktreeRemove")).toBe(false)
+  })
   it("removes non-engine tab rows while retaining the engine resume key", async () => {
     const env = makeEnv()
     const ws = await setupActive(env)
@@ -138,6 +183,25 @@ describe("delete queue cleanup", () => {
 })
 
 describe("unarchive", () => {
+  it("reactivates and heals an adopted workspace only while its external worktree remains registered", async () => {
+    const env = makeEnv()
+    const ws = await setupAdopted(env)
+    await ok(env, Effect.gen(function* () { yield* (yield* WorkspaceLifecycle).archive(ws.id) }))
+    const out = await ok(env, Effect.gen(function* () { return yield* (yield* WorkspaceLifecycle).unarchive(ws.id) }))
+    expect(out.status).toBe("active")
+    expect(env.ensureRuns()).toBe(1)
+    expect(env.fake.state.calls.some((call) => call[0] === "worktreeAddExisting")).toBe(false)
+  })
+  it("returns Conflict when an archived adopted worktree was externally removed and never recreates it", async () => {
+    const env = makeEnv()
+    const ws = await setupAdopted(env)
+    await ok(env, Effect.gen(function* () { yield* (yield* WorkspaceLifecycle).archive(ws.id) }))
+    env.fake.state.worktrees.delete(ws.path)
+    const exit = await env.run(Effect.gen(function* () { return yield* (yield* WorkspaceLifecycle).unarchive(ws.id) }))
+    expect(failTag(exit)).toBe("ConflictError")
+    expect(env.fake.state.calls.some((call) => call[0] === "worktreeAddExisting")).toBe(false)
+    expect((await ok(env, Effect.gen(function* () { return yield* (yield* WorkspacesRepo).get(ws.id) }))).status).toBe("archived")
+  })
   it("does not rerun setup scripts", async () => {
     const env = makeEnv()
     fs.mkdirSync(path.join(env.repoRoot, ".coolie"), { recursive: true })
@@ -218,6 +282,16 @@ describe("unarchive", () => {
 })
 
 describe("delete", () => {
+  it("deletes adopted registration while preserving a dirty external worktree and branch", async () => {
+    const env = makeEnv()
+    const ws = await setupAdopted(env)
+    env.fake.state.dirty.add(ws.path)
+    await ok(env, Effect.gen(function* () { yield* (yield* WorkspaceLifecycle).delete(ws.id, { force: true }) }))
+    expect(env.fake.state.worktrees.get(ws.path)).toBe(ws.branch)
+    expect(env.fake.state.dirty.has(ws.path)).toBe(true)
+    expect(env.fake.state.refs.has(`refs/heads/${ws.branch}`)).toBe(true)
+    expect(env.fake.state.calls.some((call) => call[0] === "worktreeRemove")).toBe(false)
+  })
   it("active + dirty: refuses without force; force removes worktree, row and keeps branch", async () => {
     const env = makeEnv()
     const ws = await setupActive(env)
@@ -245,5 +319,35 @@ describe("delete", () => {
     expect(after).toBe(before) // 没有 worktree 可删 → 不调 remove
     const gone = await env.run(Effect.gen(function* () { return yield* (yield* WorkspacesRepo).get(ws.id) }))
     expect(failTag(gone)).toBe("NotFoundError")
+  })
+})
+
+describe("adopted retry", () => {
+  it("retries only runtime ensure and never provisions or removes the external worktree", async () => {
+    const env = makeEnv()
+    const ws = await setupAdopted(env)
+    await ok(env, Effect.gen(function* () {
+      yield* (yield* WorkspacesRepo).setStatus(ws.id, "error")
+    }))
+    const callsBefore = env.fake.state.calls.length
+    const out = await ok(env, Effect.gen(function* () {
+      return yield* (yield* WorkspaceLifecycle).retry(ws.id)
+    }))
+    expect(out.status).toBe("active")
+    expect(env.ensureRuns()).toBe(1)
+    expect(env.fake.state.calls.slice(callsBefore).some((call) =>
+      ["fetchOrigin", "worktreeAdd", "worktreeAddExisting", "worktreeRemove"].includes(call[0]!))).toBe(false)
+    expect(env.fake.state.worktrees.get(ws.path)).toBe(ws.branch)
+  })
+  it("keeps adopted retry in error when ensure fails without touching the external worktree", async () => {
+    const env = makeEnv()
+    const ws = await setupAdopted(env)
+    await ok(env, Effect.gen(function* () { yield* (yield* WorkspacesRepo).setStatus(ws.id, "error") }))
+    env.setFailEnsure(true)
+    const exit = await env.run(Effect.gen(function* () { return yield* (yield* WorkspaceLifecycle).retry(ws.id) }))
+    expect(failTag(exit)).toBe("TmuxError")
+    expect((await ok(env, Effect.gen(function* () { return yield* (yield* WorkspacesRepo).get(ws.id) }))).status).toBe("error")
+    expect(env.fake.state.worktrees.get(ws.path)).toBe(ws.branch)
+    expect(env.fake.state.calls.some((call) => call[0] === "worktreeRemove")).toBe(false)
   })
 })

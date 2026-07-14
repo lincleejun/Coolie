@@ -5,8 +5,8 @@
 .composer { position: relative; }
 .picker {
   position: absolute; bottom: calc(100% - 4px); left: 12px; right: 12px; max-height: 240px; overflow-y: auto;
-  background: #26262b; border: 1px solid var(--border); border-radius: 8px; z-index: 50; padding: 4px;
+  background: var(--surface); border: 1px solid var(--border); border-radius: 8px; z-index: 50; padding: 4px;
 }
 .picker-row { padding: 5px 10px; border-radius: 5px; font-family: Menlo, monospace; font-size: 12px;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.picker-row.active { background: rgba(122,162,247,0.22); }
+.picker-row.active { background: var(--accent-soft); }

@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest"
-import { wsBadge } from "../src/sidebar/Sidebar.js"
+import { archiveForceConfirmation, deleteConfirmation, wsBadge } from "../src/sidebar/Sidebar.js"
 import type { Workspace, Tab } from "@coolie/protocol"
 
 const ws = (o: Partial<Workspace> & { id: string }): Workspace => ({
@@ -42,5 +42,19 @@ describe("wsBadge", () => {
     expect(wsBadge(ws({ id: "a" }), [tab({ kind: "shell", status: "working" })]).cls).toBe("b-idle")
     expect(wsBadge(ws({ id: "a" }), undefined).cls).toBe("b-idle")
     expect(wsBadge(ws({ id: "a" }), []).cls).toBe("b-idle")
+  })
+})
+
+describe("workspace destructive confirmations", () => {
+  it("warns managed workspaces that force operations permanently discard uncommitted changes", () => {
+    const managed = ws({ id: "managed", ownership: "managed" })
+    expect(archiveForceConfirmation(managed)).toContain("永久丢弃未提交改动")
+    expect(deleteConfirmation(managed)).toContain("永久丢弃未提交改动")
+  })
+
+  it("explains adopted operations only unregister Coolie and preserve the external worktree", () => {
+    const adopted = ws({ id: "external", ownership: "adopted" })
+    expect(archiveForceConfirmation(adopted)).toContain("只取消 Coolie 管理")
+    expect(deleteConfirmation(adopted)).toContain("保留外部 worktree")
   })
 })

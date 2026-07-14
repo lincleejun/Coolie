@@ -20,6 +20,16 @@ export const wsBadge = (ws: Workspace, tabs: Tab[] | undefined): { glyph: string
   }
 }
 
+export const archiveForceConfirmation = (ws: Workspace): string =>
+  ws.ownership === "adopted"
+    ? `归档「${ws.name}」只取消 Coolie 管理并停止运行时，保留外部 worktree 及其改动。`
+    : `「${ws.name}」有未提交改动。强制归档会永久丢弃未提交改动，确定继续？`
+
+export const deleteConfirmation = (ws: Workspace): string =>
+  ws.ownership === "adopted"
+    ? `删除 workspace「${ws.name}」只取消 Coolie 管理，保留外部 worktree、分支及未提交改动。`
+    : `删除 workspace「${ws.name}」？\n这会永久丢弃未提交改动并删除 worktree；branch ⑂${ws.branch} 保留。`
+
 const DiffCount = ({ wsId }: { wsId: string }) => {
   const d = useData((s) => s.diffstatByWs[wsId])
   if (!d || (d.insertions === 0 && d.deletions === 0)) return null
@@ -36,10 +46,11 @@ const WsRowMenu = ({ ws, onClose }: { ws: Workspace; onClose: () => void }) => {
   }
   const archive = (): void => run(async () => {
     const d = useData.getState()
+    if (ws.ownership === "adopted" && !window.confirm(archiveForceConfirmation(ws))) return
     try { await d.archiveWs(ws.id, false) }
     catch (e) {
       // 脏 worktree：server 以 409 ConflictError 拒绝无 force 归档 → 征得确认后强制
-      if (e instanceof ApiError && e.status === 409 && window.confirm(`「${ws.name}」有未提交改动。仍要归档吗？（改动留在 worktree）`))
+      if (e instanceof ApiError && e.status === 409 && window.confirm(archiveForceConfirmation(ws)))
         await d.archiveWs(ws.id, true)
       else if (!(e instanceof ApiError && e.status === 409)) throw e
     }
@@ -47,13 +58,34 @@ const WsRowMenu = ({ ws, onClose }: { ws: Workspace; onClose: () => void }) => {
   const togglePinned = (): void => run(() => useData.getState().setPinnedWs(ws.id, !ws.pinned))
   const unarchive = (): void => run(() => useData.getState().unarchiveWs(ws.id))
   const del = (): void => {
-    if (!window.confirm(`删除 workspace「${ws.name}」？\nworktree 会被删除，branch ⑂${ws.branch} 保留。`)) { onClose(); return }
+    if (!window.confirm(deleteConfirmation(ws))) { onClose(); return }
     run(() => useData.getState().deleteWs(ws.id, true))
+  }
+  const finishPr = (): void => run(async () => {
+    const api = useData.getState().getApi()
+    if (!api) throw new Error("api 未就绪")
+    const title = window.prompt("PR 标题（留空使用 branch 名）") ?? undefined
+    const out = await api.req("POST", `/workspaces/${ws.id}/finish`, { createPr: true, title })
+    if (out.prUrl) window.alert(`PR 已创建：${out.prUrl}`)
+    for (const warning of out.warnings ?? []) useData.getState().pushWarning("workspace.finish", warning)
+  })
+  const mergeBack = (): void => {
+    if (!window.confirm(`确认把「${ws.branch}」以 --no-ff 合回主 checkout 的 ${ws.baseBranch}？\n两边都必须 clean；冲突会原样保留。`)) {
+      onClose()
+      return
+    }
+    run(async () => {
+      const api = useData.getState().getApi()
+      if (!api) throw new Error("api 未就绪")
+      await api.req("POST", `/workspaces/${ws.id}/finish`, { mergeBack: true })
+    })
   }
   return (
     <div className="ws-menu" role="menu" onClick={(e) => e.stopPropagation()}>
       <button role="menuitem" disabled={busy} onClick={togglePinned}>{ws.pinned ? "取消置顶" : "置顶"}</button>
       {ws.status === "active" && <button role="menuitem" disabled={busy} onClick={archive}>归档</button>}
+      {ws.status === "active" && <button role="menuitem" disabled={busy} onClick={finishPr}>创建 PR…</button>}
+      {ws.status === "active" && <button role="menuitem" disabled={busy} onClick={mergeBack}>合回主 checkout…</button>}
       {ws.status === "archived" && <button role="menuitem" disabled={busy} onClick={unarchive}>恢复</button>}
       <button role="menuitem" className="danger" disabled={busy} onClick={del}>删除…</button>
     </div>
@@ -112,6 +144,28 @@ export const Sidebar = () => {
     query === "" || w.name.includes(query) || w.branch.includes(query)
   const ordered = orderedActiveWs().filter(match)
   const archived = pinnedFirst(workspaces.filter((w) => w.status === "archived" && match(w)))
+  const adopt = async (projectId: string): Promise<void> => {
+    const data = useData.getState()
+    const api = data.getApi()
+    if (!api) return
+    try {
+      const candidates: Array<{ path: string; branch: string; head: string }> =
+        await api.req("GET", `/projects/${projectId}/worktrees/adoptable`)
+      if (candidates.length === 0) return window.alert("没有可采用的 branch worktree")
+      const answer = window.prompt(
+        `输入要采用的编号：\n${candidates.map((item, index) => `${index + 1}. ${item.branch}\n   ${item.path}`).join("\n")}`,
+        "1",
+      )
+      if (answer === null) return
+      const chosen = candidates[Number(answer) - 1]
+      if (!chosen) throw new Error("编号无效")
+      const name = window.prompt("Workspace 名称（留空自动分配）") || undefined
+      await api.req("POST", `/projects/${projectId}/worktrees/adopt`, { path: chosen.path, ...(name ? { name } : {}) })
+      await data.refreshWorkspaces()
+    } catch (error) {
+      window.alert(error instanceof Error ? error.message : String(error))
+    }
+  }
 
   return (
     <div className="sidebar">
@@ -130,7 +184,7 @@ export const Sidebar = () => {
           if (rows.length === 0 && query !== "") return null
           return (
             <section key={p.id}>
-              <h3 className="proj-h">▾ {p.name}</h3>
+              <h3 className="proj-h">▾ {p.name} <button className="dim" onClick={() => void adopt(p.id)}>采用 worktree…</button></h3>
               {rows.map((w) => <WsRow key={w.id} ws={w} />)}
               {rows.length === 0 && <div className="dim empty-hint">⌘N 创建第一个 workspace</div>}
             </section>
@@ -145,7 +199,7 @@ export const Sidebar = () => {
         {projects.length === 0 && <div className="dim empty-hint side-onboard-hint">还没有项目 —— 中间面板可打开目录或 clone 仓库。</div>}
       </div>
       <div className="side-footer">
-        <button className="dim" onClick={() => useUi.getState().setCheatsheet(true)}>⚙ 设置 / ⌘/ 快捷键</button>
+        <button className="dim" onClick={() => useUi.getState().setSettings(true)}>⚙ 快捷键设置 <kbd>⌘,</kbd></button>
       </div>
     </div>
   )

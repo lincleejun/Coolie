@@ -9,7 +9,7 @@ import { appendEventRow } from "./events.js"
 /** 设计文档 §四 状态机：creating→active→archived→active；creating 失败→error；error 可重试回 creating */
 const ALLOWED_TRANSITIONS: Record<WorkspaceStatus, ReadonlyArray<WorkspaceStatus>> = {
   creating: ["active", "error"],
-  active: ["archived"],
+  active: ["archived", "error"],
   archived: ["active"],
   error: ["creating"],
 }
@@ -20,6 +20,7 @@ const rowToWorkspace = (r: any): Workspace => {
   return new Workspace({
     id: r.id, projectId: r.project_id, name: r.name, path: r.path, branch: r.branch,
     baseBranch: r.base_branch, baseRef: r.base_ref, status: r.status,
+    ownership: data.ownership === "adopted" ? "adopted" : "managed",
     pinned: !!r.pinned, createdAt: r.created_at, archivedAt: r.archived_at ?? null,
     portBase: typeof data.portBase === "number" ? data.portBase : 0,
   })
@@ -28,6 +29,10 @@ const rowToWorkspace = (r: any): Workspace => {
 export interface WorkspacesRepoShape {
   readonly insertCreating: (w: {
     projectId: string; name: string; path: string; branch: string; baseBranch: string; portBase: number
+  }) => Effect.Effect<Workspace, ConflictError>
+  /** Adopt 专用：active 行与 workspace.adopted 事件同一事务写入。 */
+  readonly insertAdopted: (w: {
+    projectId: string; name: string; path: string; branch: string; baseBranch: string; baseRef: string; portBase: number
   }) => Effect.Effect<Workspace, ConflictError>
   readonly get: (id: string) => Effect.Effect<Workspace, NotFoundError>
   readonly list: (filter?: { projectId?: string }) => Effect.Effect<Workspace[]>
@@ -67,12 +72,35 @@ export const WorkspacesRepoLive = Layer.effect(
             (id, project_id, name, path, branch, base_branch, base_ref, status, pinned, created_at, archived_at, data)
             VALUES (?,?,?,?,?,?,?,?,0,?,NULL,?)`)
             .run(id, w.projectId, w.name, w.path, w.branch, w.baseBranch, "", "creating",
-              Date.now(), JSON.stringify({ portBase: w.portBase }))
+              Date.now(), JSON.stringify({ portBase: w.portBase, ownership: "managed" }))
         } catch (e: any) {
           if (String(e?.code ?? "").startsWith("SQLITE_CONSTRAINT"))
             return yield* new ConflictError({ message: `workspace 名称/分支/路径已被占用（name=${w.name} branch=${w.branch}）` })
           throw e // 非约束错误 → defect
         }
+        return rowToWorkspace(getRow(id))
+      }),
+      insertAdopted: (w) => Effect.gen(function* () {
+        const id = ulid()
+        let ev!: CoolieEvent
+        try {
+          db.transaction(() => {
+            db.prepare(`INSERT INTO workspaces
+              (id, project_id, name, path, branch, base_branch, base_ref, status, pinned, created_at, archived_at, data)
+              VALUES (?,?,?,?,?,?,?,?,0,?,NULL,?)`)
+              .run(id, w.projectId, w.name, w.path, w.branch, w.baseBranch, w.baseRef, "active",
+                Date.now(), JSON.stringify({ portBase: w.portBase, ownership: "adopted" }))
+            ev = appendEventRow(db, {
+              workspaceId: id, type: "workspace.adopted",
+              payload: { id, projectId: w.projectId, path: w.path, branch: w.branch, head: w.baseRef },
+            })
+          })()
+        } catch (e: any) {
+          if (String(e?.code ?? "").startsWith("SQLITE_CONSTRAINT"))
+            return yield* new ConflictError({ message: `worktree 已登记或名称/分支冲突（path=${w.path} branch=${w.branch}）` })
+          throw e
+        }
+        broadcast(ev)
         return rowToWorkspace(getRow(id))
       }),
       get: (id) => mustGetRow(id).pipe(Effect.map(rowToWorkspace)),

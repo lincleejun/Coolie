@@ -17,12 +17,24 @@ export const pushHotkeyLayer = (handlers: Layer): (() => void) => {
 
 export const dispatchHotkey = (e: KeyEventLike): boolean => {
   const def = resolveHotkey(e)
-  if (!def) return false
+  return def ? dispatchHotkeyId(def.id) : false
+}
+
+/** 命令面板等非键盘入口按 action id 复用同一 LIFO 动作路由。 */
+export const dispatchHotkeyId = (id: HotkeyId): boolean => {
   for (let i = layers.length - 1; i >= 0; i--) {
-    const h = layers[i]![def.id]
+    const h = layers[i]![id]
     if (h) { h(); return true }
   }
   return false
+}
+
+export const getRunnableHotkeyIds = (): ReadonlySet<HotkeyId> => {
+  const ids = new Set<HotkeyId>()
+  for (const layer of layers)
+    for (const id of Object.keys(layer) as HotkeyId[])
+      if (layer[id]) ids.add(id)
+  return ids
 }
 
 /** 测试专用 */

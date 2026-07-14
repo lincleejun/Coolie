@@ -2,7 +2,7 @@ import { create } from "zustand"
 import type { Api } from "../api/client"
 import type { CoolieEventLike } from "../api/sse"
 import type { Project, Workspace, Tab } from "@coolie/protocol"
-import type { DiffStat, ChangesReport, EngineInfo } from "./types"
+import type { DiffStat, ChangesReport, EngineInfo, NamePoolInfo } from "./types"
 import { useUi } from "./ui"
 import { useAttention } from "./attention"
 import { notifyTurnComplete, setBadge } from "../chrome/notify"
@@ -14,7 +14,7 @@ export interface QueuedPrompt { id: number; text: string; position: number }
 
 interface DataState {
   status: "connecting" | "online" | "offline"
-  config: { tmuxSocket: string; engines: EngineInfo[] } | null
+  config: { tmuxSocket: string; engines: EngineInfo[]; namePools: NamePoolInfo[] } | null
   projects: Project[]
   workspaces: Workspace[]
   tabsByWs: Record<string, Tab[]>

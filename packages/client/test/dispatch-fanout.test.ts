@@ -60,10 +60,27 @@ describe("Dispatch fan-out request construction", () => {
     expect(fanoutTotal({ claude: MAX_FANOUT })).toBe(MAX_FANOUT)
     expect(fanoutTotal({ claude: MAX_FANOUT, codex: 1 })).toBeGreaterThan(MAX_FANOUT)
   })
+
+  it("sends the selected name pool safely to every fan-out request", () => {
+    const requests = buildFanoutRequests(
+      {
+        projectId: "p1", engineId: "codex", prompt: "ship", model: "default", effort: "default",
+        namePool: "custom", customNames: ["alpha", "beta"],
+      },
+      { claude: 1, codex: 1 },
+      engines,
+      "fo-x",
+    )
+    expect(requests).toHaveLength(2)
+    expect(requests.every((request) =>
+      request.namePool === "custom" &&
+      JSON.stringify(request.customNames) === JSON.stringify(["alpha", "beta"]),
+    )).toBe(true)
+  })
 })
 
 it("submits every request after failures and returns partial results without rollback", async () => {
-  const create = vi.fn(async (body: Record<string, string>) => {
+  const create = vi.fn(async (body: Record<string, unknown>) => {
     if (body.engineId === "claude") throw new Error("claude unavailable")
     return { id: "codex-ok" }
   })

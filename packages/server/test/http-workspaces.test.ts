@@ -94,6 +94,40 @@ describe("workspace HTTP API", () => {
     expect(missing.status).toBe(404)
     expect((await missing.json()).code).toBe("NotFound")
   })
+  it("creates from a selected built-in or sanitized custom name pool", async () => {
+    const pid = await addProject()
+    const city = await createWs(pid, { namePool: "cities" })
+    expect(city.status).toBe(201)
+    expect((await city.json()).name).toMatch(/^[a-z0-9-]+$/)
+
+    const custom = await createWs(pid, {
+      namePool: "custom",
+      customNames: [" My Feature ", "my-feature", "Other"],
+    })
+    expect(custom.status).toBe(201)
+    expect(["my-feature", "other"]).toContain((await custom.json()).name)
+  })
+  it("strictly validates namePool and customNames while explicit name wins", async () => {
+    const pid = await addProject()
+    for (const extra of [
+      { namePool: 3 },
+      { namePool: "unknown" },
+      { namePool: "cities", customNames: ["x"] },
+      { namePool: "custom" },
+      { namePool: "custom", customNames: "x" },
+      { namePool: "custom", customNames: [1] },
+      { namePool: "custom", customNames: ["!!!"] },
+      { customNames: ["x"] },
+    ]) expect((await createWs(pid, extra)).status).toBe(400)
+
+    const explicit = await createWs(pid, {
+      name: "Chosen Name",
+      namePool: "custom",
+      customNames: [],
+    })
+    expect(explicit.status).toBe(201)
+    expect((await explicit.json()).name).toBe("chosen-name")
+  })
   it("archive: dirty -> 409 Conflict; force -> 200 archived; unarchive -> 200 active", async () => {
     const pid = await addProject()
     const ws = await (await createWs(pid)).json()

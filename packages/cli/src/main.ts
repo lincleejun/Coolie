@@ -58,27 +58,41 @@ interface ConfigEngine {
   models: string[]
   efforts?: readonly string[]
 }
+interface ConfigNamePool { id: string; displayName: string }
 
 // ---------- workspace lifecycle（Plan 2） ----------
 program.command("create")
   .argument("<projectIdOrPath>", "项目 id，或 git 仓库路径（未注册时自动注册）")
   .option("--slug <slug>", "branch 语义名（branch = coolie/<slug>；缺省用目录名）")
   .option("--name <name>", "指定目录名（缺省从 national-parks 名池取）")
+  .option("--name-pool <id>", "自动命名池（由 server /config 提供）")
+  .option("--custom-names <comma>", "逗号分隔的自定义命名池（隐含 --name-pool custom）")
   .option("--prompt <text>", "workspace 就绪后投递给 engine 的首条 prompt")
   .option("--engine <id>", "coding engine（如 claude/codex）；不可与 --agents 同用")
   .option("--agents <spec>", "fan-out 规格，如 claude:2,codex:1；不可与 --engine 同用")
   .option("--model <model>", "创建时使用的模型")
   .option("--effort <effort>", "reasoning effort（如 low/medium/high/xhigh）")
   .action(async (arg: string, opts: {
-    slug?: string; name?: string; prompt?: string; engine?: string; agents?: string; model?: string; effort?: string
+    slug?: string; name?: string; namePool?: string; customNames?: string
+    prompt?: string; engine?: string; agents?: string; model?: string; effort?: string
   }) => {
     try {
       if (opts.agents !== undefined && opts.engine !== undefined)
         return fail("--agents 与 --engine 互斥：fan-out 的引擎请全部写在 --agents 中")
 
       const projectId = await resolveProjectId(arg)
-      const config = await api("GET", "/config") as { engines: ConfigEngine[] }
+      const config = await api("GET", "/config") as { engines: ConfigEngine[]; namePools: ConfigNamePool[] }
       const engines = new Map(config.engines.map((engine) => [engine.id, engine]))
+      const namePool = opts.customNames !== undefined ? "custom" : opts.namePool
+      const customNames = opts.customNames?.split(",")
+      if (namePool !== undefined && !config.namePools.some((pool) => pool.id === namePool))
+        return fail(`未知命名池 '${namePool}'，可用：${config.namePools.map((pool) => pool.id).join(", ")}`)
+      if (opts.customNames !== undefined && opts.namePool !== undefined && opts.namePool !== "custom")
+        return fail("--custom-names 只能与 --name-pool custom 一起使用")
+      const naming = {
+        ...(namePool !== undefined ? { namePool } : {}),
+        ...(customNames !== undefined ? { customNames } : {}),
+      }
 
       if (opts.agents === undefined) {
         const engineId = opts.engine ?? "claude"
@@ -88,6 +102,7 @@ program.command("create")
           projectId,
           ...(opts.slug ? { branchSlug: opts.slug } : {}),
           ...(opts.name ? { name: opts.name } : {}),
+          ...naming,
           ...(opts.prompt ? { initialPrompt: opts.prompt } : {}),
           engineId,
           ...(opts.model ? { model: opts.model } : {}),
@@ -113,6 +128,7 @@ program.command("create")
             fanoutGroup: groupId,
             ...(opts.slug ? { branchSlug: instances.length > 1 ? `${opts.slug}-${index + 1}` : opts.slug } : {}),
             ...(opts.name ? { name: instances.length > 1 ? `${opts.name}-${index + 1}` : opts.name } : {}),
+            ...naming,
             ...(opts.prompt ? { initialPrompt: opts.prompt } : {}),
             // --model/--effort 是单一选择，跨引擎时只向明确支持该值的引擎发送；其余使用引擎默认值。
             ...(opts.model && engine.models.includes(opts.model) ? { model: opts.model } : {}),
@@ -145,6 +161,45 @@ program.command("list").action(async () => {
   } catch (e) { fail(e) }
 })
 
+program.command("adopt")
+  .argument("<projectIdOrPath>", "项目 id 或已注册/待注册仓库路径")
+  .option("--path <exact>", "git worktree list 返回的精确绝对路径")
+  .option("--name <name>", "采用后的 workspace 名")
+  .option("--list", "只列出可采用 worktree")
+  .action(async (arg: string, opts: { path?: string; name?: string; list?: boolean }) => {
+    try {
+      const projectId = await resolveProjectId(arg)
+      if (opts.list || opts.path === undefined) {
+        const rows: any[] = await api("GET", `/projects/${projectId}/worktrees/adoptable`)
+        for (const row of rows) console.log(`${row.path}\t${row.branch}\t${row.head}`)
+        return
+      }
+      const ws = decodeWorkspace(await api("POST", `/projects/${projectId}/worktrees/adopt`, {
+        path: opts.path, ...(opts.name !== undefined ? { name: opts.name } : {}),
+      }))
+      console.log(`adopted ${ws.name} (${ws.id}) branch=${ws.branch} path=${ws.path}`)
+    } catch (e) { fail(e) }
+  })
+
+program.command("finish <wsId>")
+  .option("--create-pr", "push branch 并用 gh 创建 PR")
+  .option("--merge-back", "在 clean 主 checkout 上执行 git merge --no-ff")
+  .option("--title <title>", "PR 标题")
+  .option("--body <body>", "PR 正文（缺省读取 .coolie/pr-template.md）")
+  .action(async (id: string, opts: { createPr?: boolean; mergeBack?: boolean; title?: string; body?: string }) => {
+    try {
+      const out: any = await api("POST", `/workspaces/${id}/finish`, {
+        createPr: !!opts.createPr,
+        mergeBack: !!opts.mergeBack,
+        ...(opts.title !== undefined ? { title: opts.title } : {}),
+        ...(opts.body !== undefined ? { body: opts.body } : {}),
+      })
+      if (out.prUrl) console.log(`PR ${out.prUrl}`)
+      if (out.mergedBack) console.log(`merged ${id} back`)
+      for (const warning of out.warnings ?? []) console.error(`warning: ${warning}`)
+    } catch (e) { fail(e) }
+  })
+
 program.command("archive <wsId>")
   .option("--force", "脏树也归档（丢弃未提交改动）")
   .action(async (id: string, opts: { force?: boolean }) => {
@@ -173,6 +228,35 @@ program.command("delete <wsId>")
     try { await api("DELETE", `/workspaces/${id}${opts.force ? "?force=1" : ""}`); console.log(`deleted ${id}`) }
     catch (e) { fail(e) }
   })
+
+const checkpoint = program.command("checkpoint")
+  .description("用私有 git ref 管理非破坏性 checkpoint（不提供 restore）")
+
+checkpoint.command("create <wsId>")
+  .option("--label <label>", "可选标签（仅写入 checkpoint commit message）")
+  .action(async (wsId: string, opts: { label?: string }) => {
+    try {
+      const item: any = await api("POST", `/workspaces/${wsId}/checkpoints`, {
+        ...(opts.label !== undefined ? { label: opts.label } : {}),
+      })
+      console.log(`${item.checkpointId}\t${item.oid}\t${item.ref}${item.label ? `\t${item.label}` : ""}`)
+    } catch (e) { fail(e) }
+  })
+
+checkpoint.command("list <wsId>").action(async (wsId: string) => {
+  try {
+    const items: any[] = await api("GET", `/workspaces/${wsId}/checkpoints`)
+    for (const item of items)
+      console.log(`${item.checkpointId}\t${item.oid}\t${item.ref}${item.label ? `\t${item.label}` : ""}`)
+  } catch (e) { fail(e) }
+})
+
+checkpoint.command("delete <wsId> <checkpointId>").action(async (wsId: string, checkpointId: string) => {
+  try {
+    await api("DELETE", `/workspaces/${wsId}/checkpoints/${checkpointId}`)
+    console.log(`deleted checkpoint ${checkpointId} from ${wsId}`)
+  } catch (e) { fail(e) }
+})
 
 const tmuxSocketName = () => process.env.COOLIE_TMUX_SOCKET ?? "coolie"
 

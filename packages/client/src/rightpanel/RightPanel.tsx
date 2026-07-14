@@ -5,6 +5,7 @@ import { makeDrafts, type DraftStorage } from "../composer/drafts"
 import type { DiffSection, FileChange } from "../stores/types"
 import { DiffView } from "./DiffView"
 import { injectComment } from "./comment"
+import { useT } from "../i18n"
 
 // node 测试环境（filetree.test）会 import 本模块取 buildTree；此处不能裸引 localStorage（node 无此全局会 ReferenceError）。
 const storage: DraftStorage =
@@ -84,6 +85,7 @@ const ChangeSection = ({ title, section, list, onOpen }: {
 }
 
 export const RightPanel = ({ wsId }: { wsId: string }) => {
+  const tr = useT()
   const panel = useUi((s) => s.rightPanel)
   const changes = useData((s) => s.changesByWs[wsId])
   const stat = useData((s) => s.diffstatByWs[wsId])
@@ -109,17 +111,17 @@ export const RightPanel = ({ wsId }: { wsId: string }) => {
     return (
       <div className="right-collapsed">
         <button className="right-entry" onClick={() => useUi.getState().setRightPanel("changes")}>
-          Changes{stat && (stat.insertions > 0 || stat.deletions > 0) ? ` +${stat.insertions}−${stat.deletions}` : ""}
+          {tr("right.changes")}{stat && (stat.insertions > 0 || stat.deletions > 0) ? ` +${stat.insertions}−${stat.deletions}` : ""}
         </button>
-        <button className="right-entry" onClick={() => useUi.getState().setRightPanel("files")}>Files</button>
+        <button className="right-entry" onClick={() => useUi.getState().setRightPanel("files")}>{tr("right.files")}</button>
       </div>
     )
 
   return (
     <div className="right-open">
       <div className="right-head">
-        <button className={panel === "changes" ? "active" : ""} onClick={() => useUi.getState().setRightPanel("changes")}>Changes</button>
-        <button className={panel === "files" ? "active" : ""} onClick={() => useUi.getState().setRightPanel("files")}>Files</button>
+        <button className={panel === "changes" ? "active" : ""} onClick={() => useUi.getState().setRightPanel("changes")}>{tr("right.changes")}</button>
+        <button className={panel === "files" ? "active" : ""} onClick={() => useUi.getState().setRightPanel("files")}>{tr("right.files")}</button>
         <span className="tabsbar-spacer" />
         <button onClick={() => useUi.getState().setRightPanel("collapsed")}>»</button>
       </div>
@@ -127,7 +129,7 @@ export const RightPanel = ({ wsId }: { wsId: string }) => {
         {panel === "changes" && (
           openDiff ? (
             <div className="diff-pane">
-              <button className="diff-back" onClick={() => setOpenDiff(null)}>‹ 返回变更列表</button>
+              <button className="diff-back" onClick={() => setOpenDiff(null)}>{tr("diff.back")}</button>
               <DiffView
                 wsId={wsId}
                 section={openDiff.section}

@@ -56,6 +56,10 @@ export const makeFakeGit = (init?: {
       const sha = state.refs.get(ref)
       return sha ? Effect.succeed(sha) : Effect.fail(gitErr("rev-parse", `unknown ref ${ref}`))
     },
+    mergeBase: (repoRoot, a, b) => {
+      rec("mergeBase", repoRoot, a, b)
+      return guard("mergeBase", () => state.refs.get(b) ?? state.refs.get(a) ?? FAKE_SHA)
+    },
     worktreeAdd: (repoRoot, p, branch, startPoint) => {
       rec("worktreeAdd", repoRoot, p, branch, startPoint)
       return guard("worktreeAdd", () => {
@@ -81,7 +85,7 @@ export const makeFakeGit = (init?: {
     worktreeList: (repoRoot) => {
       rec("worktreeList", repoRoot)
       return guard("worktreeList", (): WorktreeInfo[] =>
-        [...state.worktrees.entries()].map(([p, b]) => ({ path: p, head: FAKE_SHA, branch: `refs/heads/${b}` })))
+        [...state.worktrees.entries()].map(([p, b]) => ({ path: p, head: FAKE_SHA, branch: `refs/heads/${b}`, bare: false })))
     },
     isDirty: (p) => { rec("isDirty", p); return guard("isDirty", () => state.dirty.has(p)) },
     setBranchBase: (repoRoot, branch, base) => {

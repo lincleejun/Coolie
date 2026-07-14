@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest"
 import { HOTKEYS_REGISTRY, normalizeChord, resolveHotkey } from "../src/hotkeys/registry.js"
-import { pushHotkeyLayer, dispatchHotkey, _resetLayers } from "../src/hotkeys/dispatch.js"
+import { pushHotkeyLayer, dispatchHotkey, dispatchHotkeyId, getRunnableHotkeyIds, _resetLayers } from "../src/hotkeys/dispatch.js"
 
 const ev = (o: Partial<{ metaKey: boolean; shiftKey: boolean; altKey: boolean; ctrlKey: boolean; code: string; key: string }>) =>
   ({ metaKey: false, shiftKey: false, altKey: false, ctrlKey: false, code: "", key: "", ...o })
@@ -41,5 +41,16 @@ describe("LIFO binding stack", () => {
   it("未命中任何 layer → false", () => {
     _resetLayers()
     expect(dispatchHotkey(ev({ metaKey: true, code: "KeyN" }))).toBe(false)
+  })
+  it("按 action id 路由同样遵守 LIFO，且可枚举当前动作", () => {
+    _resetLayers()
+    const hits: string[] = []
+    pushHotkeyLayer({ "workspace.new": () => hits.push("base") })
+    const pop = pushHotkeyLayer({ "workspace.new": () => hits.push("modal"), "app.cheatsheet": () => {} })
+    expect(dispatchHotkeyId("workspace.new")).toBe(true)
+    expect(getRunnableHotkeyIds()).toEqual(new Set(["workspace.new", "app.cheatsheet"]))
+    pop()
+    expect(dispatchHotkeyId("workspace.new")).toBe(true)
+    expect(hits).toEqual(["modal", "base"])
   })
 })

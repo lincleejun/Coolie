@@ -4,6 +4,7 @@ import { useData } from "../stores/data"
 import { setExternalModeDisposer } from "../stores/terminal"
 import { createTermSession, getOrCreateSession, sessionKey, disposeWorkspaceSessions, type TermState } from "./session"
 import { createTerminalRecovery, planTerminalRecoveryUi, readableRecoveryError } from "./resume"
+import { useT } from "../i18n"
 import "./terminal.css"
 
 // F2：Terminal 模块一加载就把真实的会话回收器注入 data store。
@@ -21,6 +22,7 @@ interface TerminalViewProps {
 }
 
 export const TerminalView = ({ wsId, tabId, kind, tabStatus, windowIdx, active }: TerminalViewProps) => {
+  const tr = useT()
   const host = useRef<HTMLDivElement>(null)
   const [state, setState] = useState<TermState>("connecting")
   const [resuming, setResuming] = useState(false)
@@ -73,10 +75,10 @@ export const TerminalView = ({ wsId, tabId, kind, tabStatus, windowIdx, active }
 
   const recoveryUi = planTerminalRecoveryUi(kind, state, tabStatus)
   const interruptedLabel = state === "exited"
-    ? "进程已退出"
+    ? tr("terminal.exited")
     : state === "dead"
-      ? "连接已断开（server 重启/会话丢失）"
-      : "engine 运行错误"
+      ? tr("terminal.disconnected")
+      : tr("terminal.engineError")
 
   return (
     <div className="term-wrap" style={{ visibility: active ? "visible" : "hidden", zIndex: active ? 1 : 0 }}>
@@ -86,10 +88,10 @@ export const TerminalView = ({ wsId, tabId, kind, tabStatus, windowIdx, active }
           <span>{resumeError ?? interruptedLabel}</span>
           {recoveryUi.showResume && (
             <button className="btn" disabled={resuming} onClick={() => void resumeEngine()}>
-              {resuming ? "恢复中…" : "Resume"}
+              {resuming ? tr("terminal.resuming") : tr("terminal.resume")}
             </button>
           )}
-          <button className="btn" onClick={reconnect}>重新连接</button>
+          <button className="btn" onClick={reconnect}>{tr("terminal.reconnect")}</button>
         </div>
       )}
     </div>

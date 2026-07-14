@@ -22,6 +22,9 @@ import { makeComposerOps } from "./tmux/ops.js"
 import { EngineRegistry, EngineRegistryLive, engineHome } from "./engine/registry.js"
 import { EngineBootstrapHookLive } from "./engine/bootstrap.js"
 import { SessionEnsurerLive } from "./workspace/heal.js"
+import { WorkspaceAdopterLive } from "./workspace/adopt.js"
+import { FinishOpsLive, WorkspaceFinisherLive } from "./workspace/finish.js"
+import { WorkspaceCheckpointsLive } from "./workspace/checkpoint.js"
 import { ensureHookScript } from "./engine/claude/hooks.js"
 import { startTranscriptPoller } from "./engine/monitor.js"
 import { createWorkspaceSerial, resumeQueuedWorkspaces, startQueueDrainer, type DrainDeps } from "./engine/queue-drain.js"
@@ -64,10 +67,11 @@ const cmdStart = async (): Promise<void> => {
   if (existing) fs.rmSync(cfg.serverInfoPath, { force: true }) // 陈旧文件
 
   const scope = Effect.runSync(Scope.make())
-  const appLayer = WorkspaceLifecycleLive.pipe(
+  const appLayer = Layer.mergeAll(WorkspaceLifecycleLive, WorkspaceAdopterLive, WorkspaceFinisherLive, WorkspaceCheckpointsLive).pipe(
     Layer.provideMerge(Layer.mergeAll(EngineBootstrapHookLive, SessionEnsurerLive)),
     Layer.provideMerge(Layer.mergeAll(
       GitServiceLive,
+      FinishOpsLive,
       makeSetupRunnerLive((chunk) => logger.info(`setup: ${chunk.trimEnd()}`)),
       TmuxServiceLive,
       EngineRegistryLive,
@@ -209,6 +213,7 @@ const cmdStart = async (): Promise<void> => {
     runtime, token, bus, claudeHome: cfg.claudeHome, codexHome: cfg.codexHome, clients,
     gitRead: realGitRead,
     config: { tmuxSocket: cfg.tmuxSocket, reposRoot },
+    attachmentsDir: path.join(cfg.home, "attachments"),
     composerOps,
     workspaceSerial,
     cloneRepo,

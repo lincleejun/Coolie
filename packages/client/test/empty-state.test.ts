@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest"
-import { onboardingPlan } from "../src/chrome/EmptyState"
+import { onboardingPlan, registerPickedDirectory } from "../src/chrome/EmptyState"
 
 describe("onboardingPlan（B2 空态 onboarding 提交计划）", () => {
   it("open 模式 → POST /projects（repoRoot，两端去空白）", () => {
@@ -16,5 +16,14 @@ describe("onboardingPlan（B2 空态 onboarding 提交计划）", () => {
     expect(onboardingPlan("open", "")).toBeNull()
     expect(onboardingPlan("clone", "   ")).toBeNull()
     expect(onboardingPlan("none", "/some/path")).toBeNull()
+  })
+})
+
+describe("native directory onboarding", () => {
+  it("registers the selected directory and treats cancellation as a no-op", async () => {
+    const calls: string[] = []
+    expect(await registerPickedDirectory(async () => "/repo", async (path) => { calls.push(path) })).toBe(true)
+    expect(await registerPickedDirectory(async () => null, async (path) => { calls.push(path) })).toBe(false)
+    expect(calls).toEqual(["/repo"])
   })
 })

@@ -1,5 +1,6 @@
 import type { IncomingMessage, ServerResponse } from "node:http"
 import type { EventEmitter } from "node:events"
+import { randomUUID } from "node:crypto"
 import * as fs from "node:fs"
 import * as path from "node:path"
 import { Effect, Exit, Cause, Option } from "effect"
@@ -20,6 +21,10 @@ import { isDiffSection, isSafeRelPath, type DiffSection, type GitReadOps } from 
 import type { WorkspaceSerial } from "../engine/queue-drain.js"
 import { scanSlashCommands } from "../engine/claude/commands.js"
 import { SessionEnsurer } from "../workspace/heal.js"
+import { WorkspaceAdopter } from "../workspace/adopt.js"
+import { WorkspaceFinisher } from "../workspace/finish.js"
+import { MAX_CHECKPOINT_LABEL_LENGTH, WorkspaceCheckpoints } from "../workspace/checkpoint.js"
+import { CUSTOM_NAMES_MAX, NAME_MAX_LENGTH, NAME_POOLS } from "../workspace/names.js"
 import { tokenEquals } from "./token.js"
 import { handleEventsStream } from "./sse.js"
 export { newToken } from "./token.js"
@@ -30,7 +35,7 @@ export { newToken } from "./token.js"
 // on it is not a reliable way to recover the original TaggedError. Running via
 // `Effect.runPromiseExit` and unwrapping with `Exit.match` + `Cause.failureOption`
 // (mirrors the pattern already used in test/projects-repo.test.ts) is robust.
-export type AppServices = ProjectsRepo | EventsRepo | WorkspacesRepo | WorkspaceLifecycle | TabsRepo | QueueRepo | EngineRegistry | SessionEnsurer
+export type AppServices = ProjectsRepo | EventsRepo | WorkspacesRepo | WorkspaceLifecycle | TabsRepo | QueueRepo | EngineRegistry | SessionEnsurer | WorkspaceAdopter | WorkspaceFinisher | WorkspaceCheckpoints
 export type Runtime = <A, E>(eff: Effect.Effect<A, E, AppServices>) => Promise<Exit.Exit<A, E>>
 export interface AppDeps {
   readonly runtime: Runtime
@@ -59,6 +64,8 @@ export interface AppDeps {
   readonly composerOps?: ComposerOps
   /** Serializes queue decisions and delivery for one workspace without blocking others. */
   readonly workspaceSerial?: WorkspaceSerial
+  /** 图片附件根目录；生产为 COOLIE_HOME/attachments，测试可注入临时目录。 */
+  readonly attachmentsDir?: string
 }
 
 const send = (res: ServerResponse, status: number, body?: unknown) => {
@@ -81,18 +88,24 @@ export class BadJsonError extends Error {
 
 export const MAX_BODY_BYTES = 1_048_576
 export class BodyTooLargeError extends Error {
-  constructor() { super(`request body exceeds ${MAX_BODY_BYTES} bytes`); this.name = "BodyTooLargeError" }
+  constructor(readonly limit = MAX_BODY_BYTES) {
+    super(`request body exceeds ${limit} bytes`)
+    this.name = "BodyTooLargeError"
+  }
 }
 
-const readJson = (req: IncomingMessage): Promise<any> =>
+export const MAX_ATTACHMENT_BYTES = 10 * 1024 * 1024
+export const MAX_ATTACHMENT_BODY_BYTES = Math.ceil(MAX_ATTACHMENT_BYTES / 3) * 4 + 64 * 1024
+
+const readJson = (req: IncomingMessage, limit = MAX_BODY_BYTES): Promise<any> =>
   new Promise((resolve, reject) => {
     req.setEncoding("utf8")
     let buf = ""
     let bytes = 0
     req.on("data", (c: string) => {
       bytes += Buffer.byteLength(c)
-      if (bytes > MAX_BODY_BYTES) {
-        reject(new BodyTooLargeError())
+      if (bytes > limit) {
+        reject(new BodyTooLargeError(limit))
         // T1：不能 req.destroy()——撕掉 socket 后 413 无处可写（客户端只见 ECONNRESET）。
         // 卸掉 data 监听并 resume 排空余量；之后 end 的 resolve 在已 reject 的 promise 上是 no-op。
         req.removeAllListeners("data")
@@ -107,6 +120,62 @@ const readJson = (req: IncomingMessage): Promise<any> =>
     })
     req.on("error", reject) // 传输层错误：已 reject 后的二次 reject 为 no-op
   })
+
+const IMAGE_EXT: Readonly<Record<string, string>> = {
+  "image/png": "png",
+  "image/jpeg": "jpg",
+  "image/gif": "gif",
+  "image/webp": "webp",
+}
+
+const hasPrefix = (data: Buffer, prefix: readonly number[]): boolean =>
+  data.length >= prefix.length && prefix.every((byte, index) => data[index] === byte)
+
+export const imageMimeFromMagic = (data: Buffer): string | null => {
+  if (hasPrefix(data, [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])) return "image/png"
+  if (hasPrefix(data, [0xff, 0xd8, 0xff])) return "image/jpeg"
+  const gif = data.subarray(0, 6).toString("ascii")
+  if (gif === "GIF87a" || gif === "GIF89a") return "image/gif"
+  if (data.length >= 12 && data.subarray(0, 4).toString("ascii") === "RIFF" && data.subarray(8, 12).toString("ascii") === "WEBP")
+    return "image/webp"
+  return null
+}
+
+export const decodeAttachmentBase64 = (encoded: unknown): Buffer | null => {
+  if (typeof encoded !== "string" || encoded === "" || encoded.length % 4 !== 0) return null
+  // Avoid nested/repeated regexp groups here: multi-megabyte valid inputs can
+  // overflow V8's regexp stack. Canonical re-encoding below enforces padding.
+  if (!/^[A-Za-z0-9+/]*={0,2}$/.test(encoded)) return null
+  const decoded = Buffer.from(encoded, "base64")
+  return decoded.toString("base64") === encoded ? decoded : null
+}
+
+const writeAttachmentAtomic = (root: string, workspaceId: string, mime: string, data: Buffer): string => {
+  fs.mkdirSync(root, { recursive: true, mode: 0o700 })
+  const dir = path.join(root, workspaceId)
+  fs.mkdirSync(dir, { recursive: true, mode: 0o700 })
+  if (fs.lstatSync(dir).isSymbolicLink()) throw new Error("attachment workspace directory must not be a symlink")
+
+  const id = randomUUID()
+  const destination = path.join(dir, `${id}.${IMAGE_EXT[mime]}`)
+  const temporary = path.join(dir, `.${id}.tmp`)
+  let fd: number | undefined
+  try {
+    fd = fs.openSync(temporary, "wx", 0o600)
+    fs.writeFileSync(fd, data)
+    fs.fsyncSync(fd)
+    fs.closeSync(fd)
+    fd = undefined
+    fs.renameSync(temporary, destination)
+    return path.resolve(destination)
+  } catch (error) {
+    if (fd !== undefined) {
+      try { fs.closeSync(fd) } catch { /* best-effort temp cleanup below */ }
+    }
+    try { fs.rmSync(temporary, { force: true }) } catch { /* original write error wins */ }
+    throw error
+  }
+}
 
 const errorFromCause = (
   cause: Cause.Cause<unknown>,
@@ -124,6 +193,8 @@ const errorFromCause = (
     if (e._tag === "HookError") return { status: 500, body: { code: "Internal", message } }
     if (e._tag === "TmuxError") return { status: 500, body: { code: "TmuxError", message } }
     if (e._tag === "EngineError") return { status: 500, body: { code: "EngineError", message } }
+    if (e._tag === "FinishOpsError") return { status: 500, body: { code: "GitError", message } }
+    if (e._tag === "MergeConflictError") return { status: 409, body: { code: "Conflict", message } }
     return { status: 500, body: { code: "Internal", message } }
   }
   // defect / interruption: no typed failure to recover, fall back to a pretty cause dump
@@ -165,7 +236,7 @@ export const deriveRepoName = (url: string): string | null => {
   return name === "" || name === "." || name === ".." ? null : name
 }
 
-export const createApp = ({ runtime, token, onShutdown, onError, bus, sseHeartbeatMs, claudeHome, codexHome, gitRead, config, clients, composerOps, workspaceSerial, cloneRepo }: AppDeps) =>
+export const createApp = ({ runtime, token, onShutdown, onError, bus, sseHeartbeatMs, claudeHome, codexHome, gitRead, config, clients, composerOps, workspaceSerial, cloneRepo, attachmentsDir }: AppDeps) =>
 
   (req: IncomingMessage, res: ServerResponse): void => {
     void (async () => {
@@ -417,6 +488,32 @@ export const createApp = ({ runtime, token, onShutdown, onError, bus, sseHeartbe
             onError,
           )
         }
+        const adoptable = url.pathname.match(/^\/projects\/([^/]+)\/worktrees\/adoptable$/)
+        if (req.method === "GET" && adoptable) {
+          return await runRoute(
+            res, runtime,
+            Effect.gen(function* () { return yield* (yield* WorkspaceAdopter).list(adoptable[1]!) }),
+            (items) => send(res, 200, items),
+            onError,
+          )
+        }
+        const adopt = url.pathname.match(/^\/projects\/([^/]+)\/worktrees\/adopt$/)
+        if (req.method === "POST" && adopt) {
+          const body = await readJson(req)
+          if (typeof body.path !== "string") return err(res, 400, "Validation", "path required")
+          if (body.name !== undefined && typeof body.name !== "string")
+            return err(res, 400, "Validation", "name must be a string")
+          return await runRoute(
+            res, runtime,
+            Effect.gen(function* () {
+              return yield* (yield* WorkspaceAdopter).adopt({
+                projectId: adopt[1]!, path: body.path, ...(body.name !== undefined ? { name: body.name } : {}),
+              })
+            }),
+            (ws) => send(res, 201, ws),
+            onError,
+          )
+        }
         const del = url.pathname.match(/^\/projects\/([^/]+)$/)
         if (req.method === "DELETE" && del) {
           return await runRoute(
@@ -454,6 +551,21 @@ export const createApp = ({ runtime, token, onShutdown, onError, bus, sseHeartbe
             return err(res, 400, "Validation", "effort must be a string")
           if (body.fanoutGroup !== undefined && typeof body.fanoutGroup !== "string")
             return err(res, 400, "Validation", "fanoutGroup must be a string")
+          const poolIds = new Set([...NAME_POOLS.map((pool) => pool.id), "custom"])
+          if (body.namePool !== undefined && (typeof body.namePool !== "string" || !poolIds.has(body.namePool)))
+            return err(res, 400, "Validation", `namePool must be one of ${[...poolIds].join("|")}`)
+          if (body.customNames !== undefined && body.namePool !== "custom")
+            return err(res, 400, "Validation", "customNames is only valid with namePool=custom")
+          if (body.namePool === "custom" && body.customNames === undefined && body.name === undefined)
+            return err(res, 400, "Validation", "customNames is required with namePool=custom")
+          if (body.customNames !== undefined) {
+            if (!Array.isArray(body.customNames) || body.customNames.some((value: unknown) => typeof value !== "string"))
+              return err(res, 400, "Validation", "customNames must be an array of strings")
+            if (body.customNames.length > CUSTOM_NAMES_MAX)
+              return err(res, 400, "Validation", `customNames may contain at most ${CUSTOM_NAMES_MAX} items`)
+            if (body.customNames.some((value: string) => value.length > NAME_MAX_LENGTH))
+              return err(res, 400, "Validation", `custom names may contain at most ${NAME_MAX_LENGTH} characters`)
+          }
           return await runRoute(
             res, runtime,
             Effect.gen(function* () {
@@ -466,6 +578,8 @@ export const createApp = ({ runtime, token, onShutdown, onError, bus, sseHeartbe
                 ...(body.model ? { model: body.model } : {}),
                 ...(body.effort ? { effort: body.effort } : {}),
                 ...(body.fanoutGroup ? { fanoutGroup: body.fanoutGroup } : {}),
+                ...(body.namePool ? { namePool: body.namePool } : {}),
+                ...(body.customNames !== undefined ? { customNames: body.customNames } : {}),
               })
             }),
             (ws) => send(res, 201, ws),
@@ -519,6 +633,66 @@ export const createApp = ({ runtime, token, onShutdown, onError, bus, sseHeartbe
             onError,
           )
         }
+        const wsFinish = url.pathname.match(/^\/workspaces\/([^/]+)\/finish$/)
+        if (req.method === "POST" && wsFinish) {
+          const body = await readJson(req)
+          if (body.createPr !== undefined && typeof body.createPr !== "boolean")
+            return err(res, 400, "Validation", "createPr must be boolean")
+          if (body.mergeBack !== undefined && typeof body.mergeBack !== "boolean")
+            return err(res, 400, "Validation", "mergeBack must be boolean")
+          if (body.title !== undefined && typeof body.title !== "string")
+            return err(res, 400, "Validation", "title must be string")
+          if (body.body !== undefined && typeof body.body !== "string")
+            return err(res, 400, "Validation", "body must be string")
+          return await runRoute(
+            res, runtime,
+            Effect.gen(function* () { return yield* (yield* WorkspaceFinisher).finish(wsFinish[1]!, body) }),
+            (outcome) => send(res, 200, outcome),
+            onError,
+          )
+        }
+        const checkpointCollection = url.pathname.match(/^\/workspaces\/([^/]+)\/checkpoints$/)
+        if (checkpointCollection && (req.method === "GET" || req.method === "POST")) {
+          const workspaceId = checkpointCollection[1]!
+          if (req.method === "GET")
+            return await runRoute(
+              res, runtime,
+              Effect.gen(function* () { return yield* (yield* WorkspaceCheckpoints).list(workspaceId) }),
+              (items) => send(res, 200, items),
+              onError,
+            )
+          const body = await readJson(req)
+          if (body === null || typeof body !== "object" || Array.isArray(body))
+            return err(res, 400, "Validation", "body must be an object")
+          if (body.label !== undefined && typeof body.label !== "string")
+            return err(res, 400, "Validation", "label must be a string")
+          if (typeof body.label === "string" && body.label.length > MAX_CHECKPOINT_LABEL_LENGTH)
+            return err(res, 400, "Validation", `label 最长 ${MAX_CHECKPOINT_LABEL_LENGTH} 字符`)
+          if (typeof body.label === "string" && /[\x00-\x1f\x7f]/.test(body.label))
+            return err(res, 400, "Validation", "label 不能包含控制字符")
+          return await runRoute(
+            res, runtime,
+            Effect.gen(function* () {
+              return yield* (yield* WorkspaceCheckpoints).create(
+                workspaceId,
+                body.label as string | undefined,
+              )
+            }),
+            (item) => send(res, 201, item),
+            onError,
+          )
+        }
+        const checkpointItem = url.pathname.match(/^\/workspaces\/([^/]+)\/checkpoints\/([^/]+)$/)
+        if (req.method === "DELETE" && checkpointItem) {
+          return await runRoute(
+            res, runtime,
+            Effect.gen(function* () {
+              yield* (yield* WorkspaceCheckpoints).delete(checkpointItem[1]!, checkpointItem[2]!)
+            }),
+            () => send(res, 204),
+            onError,
+          )
+        }
         const tabResume = url.pathname.match(/^\/workspaces\/([^/]+)\/tabs\/([^/]+)\/resume$/)
         if (req.method === "POST" && tabResume) {
           const handleResume = () => runRoute(
@@ -542,6 +716,42 @@ export const createApp = ({ runtime, token, onShutdown, onError, bus, sseHeartbe
             onError,
           )
         }
+        const attachmentRoute = url.pathname.match(/^\/workspaces\/([^/]+)\/attachments$/)
+        if (req.method === "POST" && attachmentRoute) {
+          if (!attachmentsDir) return err(res, 501, "Internal", "attachments unavailable")
+          const body = await readJson(req, MAX_ATTACHMENT_BODY_BYTES)
+          if (body === null || typeof body !== "object" || Array.isArray(body))
+            return err(res, 400, "Validation", "body must describe one attachment")
+          if (typeof body.name !== "string" || typeof body.mime !== "string" || typeof body.dataBase64 !== "string")
+            return err(res, 400, "Validation", "name, mime and dataBase64 are required strings")
+          if (!Object.hasOwn(IMAGE_EXT, body.mime)) return err(res, 400, "Validation", "unsupported image mime")
+          const data = decodeAttachmentBase64(body.dataBase64)
+          if (data === null) return err(res, 400, "Validation", "dataBase64 is not canonical base64")
+          if (data.byteLength > MAX_ATTACHMENT_BYTES)
+            return err(res, 413, "Validation", `attachment exceeds ${MAX_ATTACHMENT_BYTES} decoded bytes`)
+          const detectedMime = imageMimeFromMagic(data)
+          if (detectedMime === null || detectedMime !== body.mime)
+            return err(res, 400, "Validation", "image magic bytes do not match mime")
+          return await runRoute(
+            res,
+            runtime,
+            Effect.gen(function* () {
+              const ws = yield* (yield* WorkspacesRepo).get(attachmentRoute[1]!)
+              if (ws.status !== "active")
+                return yield* new ConflictError({ message: `workspace 非 active（当前 ${ws.status}）` })
+              return ws
+            }),
+            async (ws) => {
+              try {
+                const attachmentPath = writeAttachmentAtomic(attachmentsDir, ws.id, detectedMime, data)
+                send(res, 201, { path: attachmentPath, mime: detectedMime, size: data.byteLength })
+              } catch (error) {
+                if (!res.headersSent) err(res, 500, "Internal", error instanceof Error ? error.message : String(error))
+              }
+            },
+            onError,
+          )
+        }
         if (route === "GET /config") {
           if (!config) return err(res, 500, "Internal", "config unavailable")
           return await runRoute(
@@ -555,7 +765,14 @@ export const createApp = ({ runtime, token, onShutdown, onError, bus, sseHeartbe
                 models: e.models ?? [], // F4：models 可选，缺省下发空数组（fake 引擎无 models）
                 ...(e.efforts !== undefined ? { efforts: e.efforts } : {}),
               }))
-              return { tmuxSocket: config.tmuxSocket, engines }
+              return {
+                tmuxSocket: config.tmuxSocket,
+                engines,
+                namePools: [
+                  ...NAME_POOLS.map(({ id, displayName }) => ({ id, displayName })),
+                  { id: "custom", displayName: "Custom" },
+                ],
+              }
             }),
             (body) => send(res, 200, body),
             onError,
