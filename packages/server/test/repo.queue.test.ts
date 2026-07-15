@@ -41,12 +41,18 @@ describe("QueueRepo", () => {
       ] as const
     }))
     expect([a.position, b.position]).toEqual([1, 2])
+    expect(a).toMatchObject({
+      id: a.queueId,
+      messageId: `queue:${a.queueId}`,
+      deliveryGuarantee: "at-least-once",
+    })
     const listed = await run(Effect.gen(function* () { return yield* (yield* QueueRepo).listQueued("w1") }))
     expect(listed.map((q) => q.text)).toEqual(["一", "二"])
     expect((await run(Effect.gen(function* () { return yield* (yield* QueueRepo).peekNext("w1") })))?.id).toBe(a.id)
     expect((db.prepare("SELECT type FROM events ORDER BY seq").all() as any[]).map((r) => r.type))
       .toEqual(["prompt.queued", "prompt.queued"])
     expect(live.map((e) => e.type)).toEqual(["prompt.queued", "prompt.queued"])
+    expect(live[0]?.payload).toMatchObject({ queueId: a.queueId, messageId: a.messageId })
   })
 
   it("keeps positions and restart targets isolated per engine tab", async () => {
@@ -85,6 +91,10 @@ describe("QueueRepo", () => {
     expect((await run(Effect.gen(function* () { return yield* (yield* QueueRepo).withdraw(queued.id, "w1") }))).status)
       .toBe("inflight")
     expect(await run(Effect.gen(function* () { return yield* (yield* QueueRepo).delivered(queued.id) }))).toBe(true)
+    expect(live.at(-1)).toMatchObject({
+      type: "prompt.delivered",
+      payload: { queueId: queued.queueId, messageId: queued.messageId },
+    })
   })
 
   it("releases a failed inflight prompt and durably records the failure", async () => {
@@ -98,16 +108,22 @@ describe("QueueRepo", () => {
     expect((await run(Effect.gen(function* () { return yield* (yield* QueueRepo).peekNext("w1") })))?.id).toBe(queued.id)
     expect((db.prepare("SELECT type FROM events ORDER BY seq DESC LIMIT 1").get() as any).type)
       .toBe("prompt.delivery.failed")
+    expect(live.at(-1)?.payload).toMatchObject({ queueId: queued.queueId, messageId: queued.messageId })
   })
 
   it("recovers daemon-crash inflight prompts back to queued", async () => {
-    await run(Effect.gen(function* () {
+    const queued = await run(Effect.gen(function* () {
       const queue = yield* QueueRepo
-      yield* queue.enqueue({ workspaceId: "w1", tabId: "t1", text: "一" })
+      const item = yield* queue.enqueue({ workspaceId: "w1", tabId: "t1", text: "一" })
       yield* queue.claimNext("w1")
+      return item
     }))
     expect(await run(Effect.gen(function* () { return yield* (yield* QueueRepo).recoverInflight() }))).toBe(1)
     expect((await run(Effect.gen(function* () { return yield* (yield* QueueRepo).peekNext("w1") })))?.state).toBe("queued")
     expect(await run(Effect.gen(function* () { return yield* (yield* QueueRepo).listWorkspaceIds() }))).toEqual(["w1"])
+    expect(live.at(-1)).toMatchObject({
+      type: "prompt.delivery.recovered",
+      payload: { queueId: queued.queueId, messageId: queued.messageId },
+    })
   })
 })

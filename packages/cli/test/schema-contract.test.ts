@@ -81,4 +81,23 @@ describe("coolie api schema contract", () => {
     expect(output).toContain("创建 engine/shell")
     expect(output).toContain("POST /workspaces/:id/pin")
   })
+
+  it("documents the queue at-least-once DTO contract and CLI delivery help", () => {
+    const schema = execFileSync(
+      TSX,
+      [CLI, "api", "schema", "--group", "workspaces", "--all"],
+      { encoding: "utf8" },
+    )
+    expect(schema).toContain("SQLite queue 为 at-least-once")
+    expect(schema).toContain("receipt 前 crash 可重投同一 messageId")
+    expect(schema).toContain("response: {ok:true} | QueueAcceptedResponse")
+    expect(schema).toContain("QueueListResponse {deliveryGuarantee:'at-least-once',queue:QueuedPromptDto[]}")
+    expect(schema).toContain("id/queueId/messageId 标识同一消息")
+
+    for (const command of ["send", "dispatch"]) {
+      const help = execFileSync(TSX, [CLI, command, "--help"], { encoding: "utf8" })
+      expect(help).toContain("at-least-once")
+      expect(help).toContain("receipt 前 crash 可能重投")
+    }
+  })
 })
