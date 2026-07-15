@@ -35,4 +35,31 @@ describe("settings preferences", () => {
     expect(values.get("coolie.namePool")).toBe("custom")
     expect(values.get("coolie.customNames")).toBe(JSON.stringify([" Alpha ", "beta"]))
   })
+
+  it("persists dispatch defaults and drops retired inert preferences on reload", async () => {
+    values.set("coolie.preferences", JSON.stringify({
+      defaultEngine: "codex",
+      defaultModel: "gpt-5",
+      notifications: false,
+      turnSound: true,
+      initTimeoutSeconds: 10,
+      hooksDiagnostics: true,
+    }))
+    vi.resetModules()
+    const { useSettings } = await import("../src/settings/settings.js")
+    expect(useSettings.getState().preferences).toEqual({
+      defaultEngine: "codex",
+      defaultModel: "gpt-5",
+      notifications: false,
+      turnSound: true,
+    })
+
+    useSettings.getState().setPreference("defaultModel", "gpt-5.1")
+    expect(JSON.parse(values.get("coolie.preferences")!)).toEqual({
+      defaultEngine: "codex",
+      defaultModel: "gpt-5.1",
+      notifications: false,
+      turnSound: true,
+    })
+  })
 })

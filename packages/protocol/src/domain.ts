@@ -4,6 +4,10 @@ export const WorkspaceStatus = Schema.Literal("creating", "active", "archived", 
 export type WorkspaceStatus = typeof WorkspaceStatus.Type
 export const WorkspaceOwnership = Schema.Literal("managed", "adopted")
 export type WorkspaceOwnership = typeof WorkspaceOwnership.Type
+export const TaskStatus = Schema.Literal("backlog", "in_progress", "in_review", "done", "canceled", "error")
+export type TaskStatus = typeof TaskStatus.Type
+export const WorkspaceKind = Schema.Literal("main", "task")
+export type WorkspaceKind = typeof WorkspaceKind.Type
 
 export class Workspace extends Schema.Class<Workspace>("Workspace")({
   id: Schema.String,
@@ -14,7 +18,12 @@ export class Workspace extends Schema.Class<Workspace>("Workspace")({
   baseBranch: Schema.String,
   baseRef: Schema.String,
   status: WorkspaceStatus,
+  taskStatus: Schema.optionalWith(TaskStatus, { default: () => "in_progress" as const }),
+  kind: Schema.optionalWith(WorkspaceKind, { default: () => "task" as const }),
+  materialized: Schema.optionalWith(Schema.Boolean, { default: () => true }),
+  sortOrder: Schema.optionalWith(Schema.Number, { default: () => 0 }),
   ownership: Schema.optionalWith(WorkspaceOwnership, { default: () => "managed" as const }),
+  zenMode: Schema.optionalWith(Schema.Boolean, { default: () => false }),
   pinned: Schema.Boolean,
   createdAt: Schema.Number,
   archivedAt: Schema.NullOr(Schema.Number),
@@ -28,6 +37,56 @@ export type TabKind = typeof TabKind.Type
 /** 状态徽标（设计文档 §六）：working=●工作中 / awaiting-input=✓等输入 / error=!错误 / idle=○空闲 */
 export const TabStatus = Schema.Literal("working", "awaiting-input", "error", "idle")
 export type TabStatus = typeof TabStatus.Type
+
+export const EngineCapabilitiesSchema = Schema.Struct({
+  nativeQueue: Schema.Boolean,
+  midSessionModelSwitch: Schema.Boolean,
+  resume: Schema.Boolean,
+  hooks: Schema.Boolean,
+  effort: Schema.Boolean,
+})
+export type EngineCapabilitiesDto = typeof EngineCapabilitiesSchema.Type
+
+export const CustomEngineDefinition = Schema.Struct({
+  id: Schema.String,
+  displayName: Schema.String,
+  enabled: Schema.Boolean,
+  command: Schema.Array(Schema.String),
+  models: Schema.optional(Schema.Array(Schema.String)),
+  efforts: Schema.optional(Schema.Array(Schema.String)),
+  capabilities: EngineCapabilitiesSchema,
+  transcriptStrategy: Schema.Literal("none", "jsonl-path"),
+  transcriptPathTemplate: Schema.optional(Schema.String),
+  historyStrategy: Schema.Literal("none", "resume-args"),
+  resumeArgs: Schema.optional(Schema.Array(Schema.String)),
+  turnDetection: Schema.Literal("none", "hooks", "terminal-title"),
+  accountDetectionCommand: Schema.optional(Schema.Array(Schema.String)),
+  accountDetectionPath: Schema.optional(Schema.String),
+  presetId: Schema.optional(Schema.String),
+})
+export type CustomEngineDefinition = typeof CustomEngineDefinition.Type
+export const decodeCustomEngineDefinition = Schema.decodeUnknownSync(CustomEngineDefinition)
+
+export const EngineAvailability = Schema.Struct({
+  available: Schema.Boolean,
+  accountHint: Schema.NullOr(Schema.String),
+  error: Schema.NullOr(Schema.String),
+})
+export type EngineAvailability = typeof EngineAvailability.Type
+
+export const EngineInfo = Schema.Struct({
+  id: Schema.String,
+  displayName: Schema.String,
+  capabilities: EngineCapabilitiesSchema,
+  models: Schema.Array(Schema.String),
+  efforts: Schema.optional(Schema.Array(Schema.String)),
+  custom: Schema.Boolean,
+  enabled: Schema.Boolean,
+  presetId: Schema.NullOr(Schema.String),
+  availability: EngineAvailability,
+  definition: Schema.optional(CustomEngineDefinition),
+})
+export type EngineInfo = typeof EngineInfo.Type
 
 export class Tab extends Schema.Class<Tab>("Tab")({
   id: Schema.String,

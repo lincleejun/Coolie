@@ -9,6 +9,7 @@ import { CoolieConfig } from "../src/config.js"
 import { ProjectsRepoLive } from "../src/repo/projects.js"
 import { EventsRepoLive } from "../src/repo/events.js"
 import { WorkspacesRepoLive } from "../src/repo/workspaces.js"
+import { TabsRepoLive } from "../src/repo/tabs.js"
 import { GitService } from "../src/git/service.js"
 import { SetupRunner, SetupScriptError, type SetupRunnerShape } from "../src/workspace/setup.js"
 import { WorkspaceLifecycleLive, PostCreateHooks } from "../src/workspace/lifecycle.js"
@@ -16,15 +17,19 @@ import { createApp, newToken } from "../src/http/app.js"
 import { makeFakeGit } from "./helpers/fake-git.js"
 
 let server: http.Server, base: string, token: string
+let db: Database.Database
 let fake: ReturnType<typeof makeFakeGit>
 let setupFails = false
 let repoRoot: string
+let zenCalls: Array<{ workspaceId: string; zen: boolean; tabId: string | null | undefined }>
 let seenCreateCtx: Array<{
   initialPrompt?: string; engineId?: string; model?: string; effort?: string; fanoutGroup?: string
 }>
+let hookGate: Promise<void> | null
+let hookEntered: (() => void) | null
 
 beforeEach(async () => {
-  const db = new Database(":memory:"); runMigrations(db)
+  db = new Database(":memory:"); runMigrations(db)
   const home = fs.mkdtempSync(path.join(os.tmpdir(), "coolie-hw-home-"))
   const wsRoot = fs.mkdtempSync(path.join(os.tmpdir(), "coolie-hw-ws-"))
   repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), "coolie-hw-repo-"))
@@ -33,6 +38,9 @@ beforeEach(async () => {
   fake = makeFakeGit()
   setupFails = false
   seenCreateCtx = []
+  zenCalls = []
+  hookGate = null
+  hookEntered = null
   const setup: SetupRunnerShape = {
     run: () => setupFails
       ? Effect.fail(new SetupScriptError({ script: "fake.sh", exitCode: 1, message: "setup 退出码 1", outputTail: "boom" }))
@@ -43,10 +51,22 @@ beforeEach(async () => {
       Layer.succeed(GitService, fake.git),
       Layer.succeed(SetupRunner, setup),
       Layer.succeed(PostCreateHooks, [
-        (_ws, ctx) => Effect.sync(() => { seenCreateCtx.push({ ...ctx }) }),
+        (ws, ctx) => Effect.gen(function* () {
+          seenCreateCtx.push({ ...ctx })
+          if (hookGate !== null) {
+            yield* Effect.sync(() => {
+              db.prepare(`INSERT INTO tabs
+                (id, workspace_id, kind, engine_id, engine_session_id, tmux_window, title, status, data)
+                VALUES (?, ?, 'run', NULL, NULL, 1, 'race-runtime', 'idle', '{}')`)
+                .run(`race-${ws.id}`, ws.id)
+            })
+          }
+          hookEntered?.()
+          if (hookGate !== null) yield* Effect.promise(() => hookGate!)
+        }),
       ]),
     )),
-    Layer.provideMerge(Layer.mergeAll(ProjectsRepoLive, EventsRepoLive, WorkspacesRepoLive)),
+    Layer.provideMerge(Layer.mergeAll(ProjectsRepoLive, EventsRepoLive, WorkspacesRepoLive, TabsRepoLive)),
     Layer.provideMerge(Layer.succeed(Db, db)),
     Layer.provideMerge(Layer.succeed(CoolieConfig, cfg)),
   )
@@ -55,6 +75,13 @@ beforeEach(async () => {
     runtime: (eff) => Effect.runPromiseExit(Effect.provide(eff, layer) as Effect.Effect<any, any, never>),
     token,
     onShutdown: () => {},
+    layoutOps: {
+      reconcile: async () => ({ version: 1, zen: false, focusedTabId: null, restoreTabId: null, geometry: [] }),
+      setZen: async (workspaceId, zen, tabId) => {
+        zenCalls.push({ workspaceId, zen, tabId })
+        return { version: 1, zen, focusedTabId: tabId ?? null, restoreTabId: null, geometry: [] }
+      },
+    },
   })
   server = http.createServer(app)
   await new Promise<void>((r) => server.listen(0, "127.0.0.1", r))
@@ -69,28 +96,133 @@ const addProject = async (): Promise<string> => {
   expect(r.status).toBe(201)
   return (await r.json()).id
 }
-const createWs = async (projectId: string, extra: Record<string, unknown> = {}) =>
+const createWsIntent = async (projectId: string, extra: Record<string, unknown> = {}) =>
   req("/workspaces", { method: "POST", body: JSON.stringify({ projectId, ...extra }) })
+const createWs = async (projectId: string, extra: Record<string, unknown> = {}) => {
+  const created = await createWsIntent(projectId, extra)
+  if (created.status !== 201) return created
+  const intent = await created.json()
+  const ensured = await req(`/workspaces/${intent.id}/ensure`, { method: "POST", body: "{}" })
+  if (!ensured.ok) return ensured
+  const rows = await (await req("/workspaces")).json()
+  return new Response(JSON.stringify(rows.find((row: any) => row.id === intent.id)), {
+    status: 201, headers: { "content-type": "application/json" },
+  })
+}
 
 describe("workspace HTTP API", () => {
-  it("POST /workspaces -> 201 active; GET /workspaces lists and filters", async () => {
-    const pid = await addProject()
-    const created = await createWs(pid, { branchSlug: "fix-x" })
+  it("toggles zen state through the layout operation", async () => {
+    const projectId = await addProject()
+    const created = await createWs(projectId, { name: "zen-task" })
     expect(created.status).toBe(201)
     const ws = await created.json()
-    expect(ws.status).toBe("active")
-    expect(ws.branch).toBe("coolie/fix-x")
+    const response = await req(`/workspaces/${ws.id}/zen`, {
+      method: "POST", body: JSON.stringify({ zen: true }),
+    })
+    expect(response.status).toBe(200)
+    expect(await response.json()).toMatchObject({ zen: true })
+    expect(zenCalls).toEqual([{ workspaceId: ws.id, zen: true, tabId: null }])
+  })
+
+  it("POST creates a lazy intent; ensure materializes it", async () => {
+    const pid = await addProject()
+    const created = await createWsIntent(pid, { branchSlug: "fix-x" })
+    expect(created.status).toBe(201)
+    const intent = await created.json()
+    expect(intent.status).toBe("creating")
+    expect(intent.materialized).toBe(false)
+    expect(intent.taskStatus).toBe("backlog")
+    expect(fake.state.worktrees.has(intent.path)).toBe(false)
+    expect((await req(`/workspaces/${intent.id}/ensure`, { method: "POST", body: "{}" })).status).toBe(200)
     const list = await (await req("/workspaces")).json()
-    expect(list.map((w: any) => w.id)).toContain(ws.id)
+    const ws = list.find((workspace: any) => workspace.id === intent.id)
+    expect(ws.status).toBe("active")
+    expect(ws.materialized).toBe(true)
+    expect(ws.branch).toBe("coolie/fix-x")
     const filtered = await (await req(`/workspaces?project=${pid}`)).json()
-    expect(filtered).toHaveLength(1)
+    expect(filtered.map((workspace: any) => workspace.kind).sort()).toEqual(["main", "task"])
     const empty = await (await req("/workspaces?project=nope")).json()
     expect(empty).toHaveLength(0)
+  })
+  it("serializes parallel ensure so the loser cannot roll back the materialized winner", async () => {
+    const pid = await addProject()
+    const created = await createWsIntent(pid, { branchSlug: "parallel-ensure" })
+    const intent = await created.json()
+    let releaseHook!: () => void
+    hookGate = new Promise<void>((resolve) => { releaseHook = resolve })
+    const entered = new Promise<void>((resolve) => { hookEntered = resolve })
+
+    const first = req(`/workspaces/${intent.id}/ensure`, { method: "POST", body: "{}" })
+    await entered
+    const second = req(`/workspaces/${intent.id}/ensure`, { method: "POST", body: "{}" })
+    releaseHook()
+    const responses = await Promise.all([first, second])
+
+    expect(responses.map((response) => response.status)).toEqual([200, 200])
+    expect(fake.state.calls.filter((call) => call[0] === "worktreeAdd")).toHaveLength(1)
+    expect(fake.state.calls.some((call) => call[0] === "worktreeRemove")).toBe(false)
+    const workspace = (await (await req("/workspaces")).json()).find((row: any) => row.id === intent.id)
+    expect(workspace).toMatchObject({ status: "active", materialized: true })
+  })
+  it("serializes ensure before archive and leaves only the archived row", async () => {
+    const pid = await addProject()
+    const intent = await (await createWsIntent(pid, { branchSlug: "ensure-archive-race" })).json()
+    let releaseHook!: () => void
+    hookGate = new Promise<void>((resolve) => { releaseHook = resolve })
+    const entered = new Promise<void>((resolve) => { hookEntered = resolve })
+
+    const ensuring = req(`/workspaces/${intent.id}/ensure`, { method: "POST", body: "{}" })
+    await entered
+    const archiving = req(`/workspaces/${intent.id}/archive`, { method: "POST", body: "{}" })
+    releaseHook()
+    const [ensureResponse, archiveResponse] = await Promise.all([ensuring, archiving])
+
+    expect(ensureResponse.status).toBe(200)
+    expect(archiveResponse.status).toBe(200)
+    expect(await archiveResponse.json()).toMatchObject({ status: "archived", materialized: true })
+    expect(fake.state.worktrees.has(intent.path)).toBe(false)
+    expect(db.prepare("SELECT status FROM workspaces WHERE id = ?").get(intent.id)).toEqual({ status: "archived" })
+    expect(db.prepare("SELECT COUNT(*) AS count FROM tabs WHERE workspace_id = ?").get(intent.id)).toEqual({ count: 0 })
+  })
+  it("serializes ensure before delete and removes all workspace-owned state", async () => {
+    const pid = await addProject()
+    const intent = await (await createWsIntent(pid, { branchSlug: "ensure-delete-race" })).json()
+    let releaseHook!: () => void
+    hookGate = new Promise<void>((resolve) => { releaseHook = resolve })
+    const entered = new Promise<void>((resolve) => { hookEntered = resolve })
+
+    const ensuring = req(`/workspaces/${intent.id}/ensure`, { method: "POST", body: "{}" })
+    await entered
+    const deleting = req(`/workspaces/${intent.id}?force=1`, { method: "DELETE" })
+    releaseHook()
+    const [ensureResponse, deleteResponse] = await Promise.all([ensuring, deleting])
+
+    expect(ensureResponse.status).toBe(200)
+    expect(deleteResponse.status).toBe(204)
+    expect(fake.state.worktrees.has(intent.path)).toBe(false)
+    expect(db.prepare("SELECT COUNT(*) AS count FROM workspaces WHERE id = ?").get(intent.id)).toEqual({ count: 0 })
+    expect(db.prepare("SELECT COUNT(*) AS count FROM tabs WHERE workspace_id = ?").get(intent.id)).toEqual({ count: 0 })
+  })
+  it("orders archive/delete before a later ensure by persisted lifecycle state", async () => {
+    const pid = await addProject()
+    const archived = await (await createWs(pid, { branchSlug: "archive-then-ensure" })).json()
+    expect((await req(`/workspaces/${archived.id}/archive`, { method: "POST", body: "{}" })).status).toBe(200)
+    expect((await req(`/workspaces/${archived.id}/ensure`, { method: "POST", body: "{}" })).status).toBe(409)
+    expect(fake.state.worktrees.has(archived.path)).toBe(false)
+    expect(db.prepare("SELECT status FROM workspaces WHERE id = ?").get(archived.id)).toEqual({ status: "archived" })
+
+    const deleted = await (await createWs(pid, { branchSlug: "delete-then-ensure" })).json()
+    expect((await req(`/workspaces/${deleted.id}?force=1`, { method: "DELETE" })).status).toBe(204)
+    expect((await req(`/workspaces/${deleted.id}/ensure`, { method: "POST", body: "{}" })).status).toBe(404)
+    expect(fake.state.worktrees.has(deleted.path)).toBe(false)
+    expect(db.prepare("SELECT COUNT(*) AS count FROM workspaces WHERE id = ?").get(deleted.id)).toEqual({ count: 0 })
+    expect(db.prepare("SELECT COUNT(*) AS count FROM tabs WHERE workspace_id IN (?, ?)").get(archived.id, deleted.id))
+      .toEqual({ count: 0 })
   })
   it("validation: missing projectId -> 400; unknown project -> 404", async () => {
     const bad = await req("/workspaces", { method: "POST", body: JSON.stringify({}) })
     expect(bad.status).toBe(400)
-    const missing = await createWs("nope")
+    const missing = await createWsIntent("nope")
     expect(missing.status).toBe(404)
     expect((await missing.json()).code).toBe("NotFound")
   })
@@ -149,7 +281,7 @@ describe("workspace HTTP API", () => {
     expect((await req(`/workspaces/${ws.id}`, { method: "DELETE" })).status).toBe(409)
     expect((await req(`/workspaces/${ws.id}?force=1`, { method: "DELETE" })).status).toBe(204)
     const list = await (await req("/workspaces")).json()
-    expect(list).toHaveLength(0)
+    expect(list.filter((workspace: any) => workspace.kind === "task")).toHaveLength(0)
   })
   it("setup failure -> 500 SetupScriptError, row stays error; retry -> 200 active", async () => {
     const pid = await addProject()
@@ -160,9 +292,10 @@ describe("workspace HTTP API", () => {
     expect(failed.status).toBe(500)
     expect((await failed.json()).code).toBe("SetupScriptError")
     const list = await (await req("/workspaces")).json()
-    expect(list[0].status).toBe("error")
+    const failedWorkspace = list.find((workspace: any) => workspace.kind === "task")
+    expect(failedWorkspace.status).toBe("error")
     setupFails = false
-    const retried = await req(`/workspaces/${list[0].id}/retry`, { method: "POST", body: JSON.stringify({}) })
+    const retried = await req(`/workspaces/${failedWorkspace.id}/retry`, { method: "POST", body: JSON.stringify({}) })
     expect(retried.status).toBe(200)
     expect((await retried.json()).status).toBe("active")
   })
@@ -171,7 +304,7 @@ describe("workspace HTTP API", () => {
     await createWs(pid)
     const events = await (await req("/events?after=0")).json()
     const types = events.map((e: any) => e.type)
-    expect(types).toContain("workspace.creating")
+    expect(types).toContain("workspace.intent.created")
     expect(types).toContain("workspace.created")
   })
   it("POST /workspaces/:id/pin strictly validates and persists pin state", async () => {
@@ -246,6 +379,46 @@ describe("workspace HTTP API", () => {
     })
     expect(created.status).toBe(201)
     expect(seenCreateCtx).toEqual([{ engineId: "claude", fanoutGroup: "fo-abc" }])
+  })
+  it("mutates task metadata, safely renames its branch, and reorders tasks", async () => {
+    const pid = await addProject()
+    const workspace = await (await createWs(pid, { name: "metadata" })).json()
+    const second = await (await createWs(pid, { name: "metadata-second" })).json()
+    const renamed = await req(`/workspaces/${workspace.id}/rename`, {
+      method: "POST", body: JSON.stringify({ name: "Metadata Task" }),
+    })
+    expect((await renamed.json()).name).toBe("Metadata Task")
+    const status = await req(`/workspaces/${workspace.id}/task-status`, {
+      method: "POST", body: JSON.stringify({ status: "in_review" }),
+    })
+    expect((await status.json()).taskStatus).toBe("in_review")
+    const branch = await req(`/workspaces/${workspace.id}/branch`, {
+      method: "POST", body: JSON.stringify({ branch: "feature/renamed" }),
+    })
+    expect((await branch.json()).branch).toBe("feature/renamed")
+    expect(fake.state.worktrees.get(workspace.path)).toBe("feature/renamed")
+    const all = await (await req(`/workspaces?project=${pid}`)).json()
+    const mainId = all.find((item: any) => item.kind === "main").id
+    const ids = [second.id, workspace.id]
+    const reordered = await req("/workspaces/reorder", {
+      method: "POST", body: JSON.stringify({ projectId: pid, workspaceIds: ids }),
+    })
+    expect(reordered.status).toBe(200)
+    const reorderedRows = await reordered.json()
+    expect(reorderedRows.filter((item: any) => item.kind === "task" && item.status !== "archived")
+      .map((item: any) => item.id)).toEqual(ids)
+    expect(reorderedRows.some((item: any) => item.id === mainId)).toBe(true)
+    const events = await (await req(`/events?workspace=${workspace.id}`)).json()
+    expect(events.map((event: any) => event.type)).toEqual(expect.arrayContaining([
+      "workspace.renamed", "workspace.task-status.changed", "workspace.branch.renamed",
+    ]))
+  })
+  it("never archives or deletes the project main task", async () => {
+    const pid = await addProject()
+    const main = (await (await req(`/workspaces?project=${pid}`)).json())
+      .find((workspace: any) => workspace.kind === "main")
+    expect((await req(`/workspaces/${main.id}/archive`, { method: "POST", body: "{}" })).status).toBe(409)
+    expect((await req(`/workspaces/${main.id}`, { method: "DELETE" })).status).toBe(409)
   })
   it.each(["engineId", "model", "effort", "fanoutGroup"])("POST /workspaces rejects non-string %s", async (field) => {
     const r = await req("/workspaces", {

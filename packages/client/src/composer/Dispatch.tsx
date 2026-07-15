@@ -1,4 +1,4 @@
-import { useState } from "react"
+import { useEffect, useRef, useState } from "react"
 import { useData } from "../stores/data"
 import { useUi } from "../stores/ui"
 import { Composer } from "./Composer"
@@ -37,6 +37,23 @@ export const buildCreateBody = (i: CreateBodyInput): Record<string, unknown> => 
 export const fanoutTotal = (counts: Readonly<Record<string, number>>): number =>
   Object.values(counts).reduce((total, count) =>
     total + (Number.isFinite(count) && count > 0 ? Math.floor(count) : 0), 0)
+
+export const resolveDispatchDefaults = (
+  engines: readonly EngineInfo[],
+  preferences: { defaultEngine: string; defaultModel: string },
+): { engineId: string; model: string } => {
+  const usable = (candidate: EngineInfo): boolean =>
+    candidate.enabled !== false && candidate.availability?.available !== false
+  const engine = engines.find((candidate) => candidate.id === preferences.defaultEngine && usable(candidate))
+    ?? engines.find(usable)
+    ?? engines[0]
+  return {
+    engineId: engine?.id ?? preferences.defaultEngine ?? "",
+    model: engine && preferences.defaultModel && engine.models.includes(preferences.defaultModel)
+      ? preferences.defaultModel
+      : "default",
+  }
+}
 
 export const buildFanoutRequests = (
   base: CreateBodyInput,
@@ -102,9 +119,12 @@ export const DispatchPanel = () => {
   // loop forever (Maximum update depth) — keep the selector returning a stable reference.
   const engines = useData((s) => s.config?.engines) ?? []
   const projectId = useUi((s) => s.dispatchProjectId) ?? projects[0]?.id ?? null
-  const [engineId, setEngineId] = useState(engines[0]?.id ?? "claude")
+  const preferences = useSettings((state) => state.preferences)
+  const initialDefaults = resolveDispatchDefaults(engines, preferences)
+  const initializedDefaults = useRef(engines.length > 0)
+  const [engineId, setEngineId] = useState(initialDefaults.engineId)
   const engine = engines.find((candidate) => candidate.id === engineId) ?? engines[0]
-  const [model, setModel] = useState("default")
+  const [model, setModel] = useState(initialDefaults.model)
   const [effort, setEffort] = useState("default")
   const [creating, setCreating] = useState(false)
   const [err, setErr] = useState<string | null>(null)
@@ -117,11 +137,31 @@ export const DispatchPanel = () => {
   const namePool = useSettings((state) => state.namePool)
   const customNames = useSettings((state) => state.customNames)
 
+  useEffect(() => {
+    setEngineId((current) => {
+      const currentEngine = engines.find((candidate) => candidate.id === current)
+      const currentUsable = currentEngine &&
+        currentEngine.enabled !== false && currentEngine.availability?.available !== false
+      if (initializedDefaults.current && currentUsable) return current
+      const next = resolveDispatchDefaults(engines, preferences)
+      initializedDefaults.current = engines.length > 0
+      setModel(next.model)
+      setEffort("default")
+      return next.engineId
+    })
+  }, [engines, preferences.defaultEngine, preferences.defaultModel])
+
+  useEffect(() => {
+    if (!engine) return
+    if (model !== "default" && !engine.models.includes(model)) setModel("default")
+    if (!engine.capabilities.effort) setEffort("default")
+  }, [engine, model])
+
   const submit = (prompt: string): void => {
     const api = useData.getState().getApi()
     if (!api || !projectId || !engine || creating) return
     if (overCap) {
-      setErr(`fan-out 实例数 ${total} 超上限 ${MAX_FANOUT}`)
+      setErr(tr("dispatch.overCap").replace("{total}", String(total)).replace("{max}", String(MAX_FANOUT)))
       return
     }
     setCreating(true); setErr(null)
@@ -140,17 +180,23 @@ export const DispatchPanel = () => {
           }, counts, engines, groupId)
           const results = await submitFanoutRequests(
             requests,
-            (body) => api.req("POST", "/workspaces", body),
+            async (body) => {
+              const workspace = await api.req("POST", "/workspaces", body)
+              await api.req("POST", `/workspaces/${workspace.id}/ensure`, {})
+              return workspace
+            },
           )
           const first = results.find((result) => result.ok)
           if (first?.ok) useUi.getState().selectWs(first.workspaceId)
           const failures = results.filter((result): result is Extract<FanoutCreateResult, { ok: false }> => !result.ok)
           if (failures.length > 0)
-            setErr(`部分失败（${failures.length}/${results.length}）：${failures.map((result) =>
-              `${result.engineId}: ${result.error}`).join("；")}；成功项已保留`)
+            setErr(tr("dispatch.partialFailure")
+              .replace("{failed}", String(failures.length))
+              .replace("{total}", String(results.length))
+              .replace("{errors}", failures.map((result) => `${result.engineId}: ${result.error}`).join("; ")))
           return
         }
-        // 同步流水线：fetch 会等到 active/error 才返回（server 行为，可长达数十秒）
+        // Intent creation is cheap; ensure performs the first materialization and prompt delivery.
         const ws = await api.req("POST", "/workspaces", buildCreateBody({
           projectId,
           engineId: engine.id,
@@ -160,6 +206,7 @@ export const DispatchPanel = () => {
           namePool,
           customNames,
         }))
+        await api.req("POST", `/workspaces/${ws.id}/ensure`, {})
         useUi.getState().selectWs(ws.id)
       } catch (e: any) {
         setErr(e?.message ?? String(e)) // status=error 的半成品会出现在左栏（! 徽标）供 Retry
@@ -213,12 +260,12 @@ export const DispatchPanel = () => {
         )}
       </div>
       <div className="dispatch-fanout">
-        <label>Fan-out（每引擎实例数）</label>
+        <label>{tr("dispatch.fanout")}</label>
         {engines.map((candidate) => (
           <span key={candidate.id} className="fanout-engine">
             {candidate.displayName}
             <input
-              aria-label={`${candidate.displayName} 实例数`}
+              aria-label={tr("dispatch.instanceCount").replace("{engine}", candidate.displayName)}
               type="number"
               min={0}
               max={MAX_FANOUT}
@@ -233,13 +280,14 @@ export const DispatchPanel = () => {
         ))}
         {total > 0 && (
           <span className={overCap ? "dispatch-err" : "dim"}>
-            将创建 {total} 个（上限 {MAX_FANOUT}）{overCap ? "，请减少实例数" : ""}
+            {tr("dispatch.total").replace("{total}", String(total)).replace("{max}", String(MAX_FANOUT))}
+            {overCap ? tr("dispatch.reduce") : ""}
           </span>
         )}
       </div>
-      {err && <div className="dispatch-err">创建失败：{err}（左栏 error 项可 Retry）</div>}
+      {err && <div className="dispatch-err">{tr("dispatch.createFailed").replace("{error}", err)}</div>}
       {creating
-        ? <div className="dispatch-busy">◌ 创建中…（fetch worktree → setup → tmux → engine → 投递首条 prompt）</div>
+        ? <div className="dispatch-busy">◌ {tr("dispatch.creating")}</div>
         : <Composer wsId={`dispatch:${projectId ?? "none"}`} onSubmitOverride={submit}
             disabled={overCap}
             placeholder={tr("dispatch.placeholder")} />}
@@ -249,17 +297,19 @@ export const DispatchPanel = () => {
 
 /** error workspace 的动作条（spec §四：error 可重试；半成品已自动回滚） */
 export const ErrorActions = ({ wsId }: { wsId: string }) => {
+  const tr = useT()
   const [busy, setBusy] = useState(false)
   const act = (fn: () => Promise<unknown>): void => {
     setBusy(true)
-    void fn().catch((e: any) => alert(e?.message ?? e)).finally(() => setBusy(false))
+    void fn().catch((e: any) => useData.getState().pushWarning("workspace.lifecycle", e?.message ?? String(e)))
+      .finally(() => setBusy(false))
   }
   const api = () => useData.getState().getApi()!
   return (
     <div className="error-actions">
-      <span className="b-error">! 创建失败（半成品已回滚）</span>
-      <button className="btn" disabled={busy} onClick={() => act(() => api().req("POST", `/workspaces/${wsId}/retry`, {}))}>重试</button>
-      <button disabled={busy} onClick={() => act(() => api().req("DELETE", `/workspaces/${wsId}?force=1`))}>删除记录</button>
+      <span className="b-error">! {tr("dispatch.errorRolledBack")}</span>
+      <button className="btn" disabled={busy} onClick={() => act(() => api().req("POST", `/workspaces/${wsId}/retry`, {}))}>{tr("dispatch.retry")}</button>
+      <button disabled={busy} onClick={() => act(() => api().req("DELETE", `/workspaces/${wsId}?force=1`))}>{tr("dispatch.deleteRecord")}</button>
     </div>
   )
 }

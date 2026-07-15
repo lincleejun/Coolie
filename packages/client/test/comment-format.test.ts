@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest"
 import { formatLineComment } from "../src/rightpanel/comment.js"
 import type { LineSelection } from "../src/rightpanel/DiffView.js"
+import { t } from "../src/i18n/index.js"
 
 const selection: LineSelection = {
   path: "src/a.ts",
@@ -17,7 +18,7 @@ describe("formatLineComment", () => {
   it("includes file, section, line range, verbatim diff, and comment", () => {
     const output = formatLineComment(selection, "这里为什么改成 2？")
     expect(output).toContain("关于 `src/a.ts`")
-    expect(output).toContain("unstaged")
+    expect(output).toContain("未暂存")
     expect(output).toContain("第 41 行")
     expect(output).toContain("```diff")
     expect(output).toContain("-const x = 1")
@@ -49,5 +50,13 @@ describe("formatLineComment", () => {
     expect(output.split("\n").find((line) => line.endsWith("diff"))).toBe("````diff")
     expect(output).toContain("\n````\n")
     expect(output).toContain("+```ts")
+  })
+
+  it("translates generated comment framing and line ranges", () => {
+    const english = formatLineComment(selection, "Why?", (key) => t(key, "en"))
+    const chinese = formatLineComment(selection, "为什么？", (key) => t(key, "zh"))
+    expect(english).toContain("Regarding `src/a.ts` (unstaged) line 41:")
+    expect(english).not.toMatch(/\p{Script=Han}/u)
+    expect(chinese).toContain("关于 `src/a.ts`（未暂存）第 41 行：")
   })
 })

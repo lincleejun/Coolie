@@ -35,6 +35,8 @@ export interface GitServiceShape {
   readonly isDirty: (worktreePath: string) => Effect.Effect<boolean, GitError>
   /** git config branch.<branch>.base <base>（Conductor 惯例，供 diff 基点用） */
   readonly setBranchBase: (repoRoot: string, branch: string, base: string) => Effect.Effect<void, GitError>
+  /** Rename a checked-out branch from its worktree, preserving worktree registration. */
+  readonly renameBranch: (worktreePath: string, oldBranch: string, newBranch: string) => Effect.Effect<void, GitError>
   /** git ls-files --others --ignored --exclude-standard -- <pathspecs>：用 git 自己做 gitignore 匹配 */
   readonly listIgnoredMatching: (repoRoot: string, patterns: readonly string[]) => Effect.Effect<string[], GitError>
 }
@@ -100,6 +102,8 @@ export const GitServiceLive = Layer.succeed(GitService, {
     runGit("status", ["status", "--porcelain"], worktreePath).pipe(Effect.map((out) => out.trim() !== "")),
   setBranchBase: (repoRoot, branch, base) =>
     runGit("config", ["config", `branch.${branch}.base`, base], repoRoot).pipe(Effect.asVoid),
+  renameBranch: (worktreePath, oldBranch, newBranch) =>
+    runGit("branch -m", ["branch", "-m", oldBranch, newBranch], worktreePath).pipe(Effect.asVoid),
   listIgnoredMatching: (repoRoot, patterns) => {
     if (patterns.length === 0) return Effect.succeed([])
     // 无 '/' 的 pattern 视为任意层级（gitignore 直觉）：加 **/ 前缀；带 '/' 的按原样根相对匹配

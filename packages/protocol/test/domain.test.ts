@@ -41,6 +41,9 @@ describe("protocol domain", () => {
     expect(w.ownership).toBe("adopted")
     expect(w.portBase).toBe(40000)
     expect(w.archivedAt).toBeNull()
+    expect(w.taskStatus).toBe("in_progress")
+    expect(w.kind).toBe("task")
+    expect(w.materialized).toBe(true)
   })
   it("decodes legacy Workspace payloads as managed", () => {
     const raw = {
@@ -48,7 +51,9 @@ describe("protocol domain", () => {
       branch: "coolie/legacy", baseBranch: "main", baseRef: "abc123", status: "active",
       pinned: false, createdAt: 1, archivedAt: null, portBase: 40000,
     }
-    expect(decodeWorkspace(raw).ownership).toBe("managed")
+    const workspace = decodeWorkspace(raw)
+    expect(workspace.ownership).toBe("managed")
+    expect(workspace.taskStatus).toBe("in_progress")
   })
   it("rejects a bad workspace status", () => {
     expect(() => decodeWorkspace({

@@ -25,7 +25,7 @@ export interface ProjectsRepoShape {
   readonly add: (repoRoot: string) => Effect.Effect<Project, ValidationError | ConflictError>
   readonly get: (id: string) => Effect.Effect<Project, NotFoundError>
   readonly list: () => Effect.Effect<Project[]>
-  readonly remove: (id: string) => Effect.Effect<void, NotFoundError>
+  readonly remove: (id: string) => Effect.Effect<void, NotFoundError | ConflictError>
 }
 export class ProjectsRepo extends Context.Tag("ProjectsRepo")<ProjectsRepo, ProjectsRepoShape>() {}
 
@@ -46,13 +46,26 @@ export const ProjectsRepoLive = Layer.effect(
           id: ulid(), name: path.basename(abs), repoRoot: abs,
           defaultBaseBranch: detectDefaultBranch(abs), createdAt: Date.now(),
         })
+        const mainId = ulid()
         let ev!: CoolieEvent
+        let mainEv!: CoolieEvent
         db.transaction(() => {
           db.prepare("INSERT INTO projects (id, name, repo_root, default_base_branch, created_at) VALUES (?,?,?,?,?)")
             .run(p.id, p.name, p.repoRoot, p.defaultBaseBranch, p.createdAt)
+          db.prepare(`INSERT INTO workspaces
+            (id, project_id, name, path, branch, base_branch, base_ref, status, pinned, created_at,
+             archived_at, data, task_status, kind, materialized, sort_order)
+            VALUES (?,?,?,?,?,?,?,'active',0,?,NULL,?,'in_progress','main',1,-1)`)
+            .run(mainId, p.id, p.name, p.repoRoot, p.defaultBaseBranch, p.defaultBaseBranch, "HEAD",
+              p.createdAt, JSON.stringify({ portBase: 0, ownership: "managed" }))
           ev = appendEventRow(db, { workspaceId: null, type: "project.added", payload: { id: p.id, repoRoot: p.repoRoot } })
+          mainEv = appendEventRow(db, {
+            workspaceId: mainId, type: "workspace.main.created",
+            payload: { id: mainId, projectId: p.id, path: p.repoRoot, branch: p.defaultBaseBranch },
+          })
         })()
         broadcast(ev)
+        broadcast(mainEv)
         return p
       }),
       get: (id) => Effect.gen(function* () {
@@ -64,13 +77,25 @@ export const ProjectsRepoLive = Layer.effect(
         db.prepare("SELECT * FROM projects ORDER BY created_at").all().map(rowToProject)),
       remove: (id) => Effect.gen(function* () {
         let ev: CoolieEvent | null = null
-        const changes = db.transaction(() => {
+        const project = db.prepare("SELECT 1 FROM projects WHERE id = ?").get(id)
+        if (!project) return yield* new NotFoundError({ message: `项目不存在：${id}` })
+        const taskCount = (db.prepare(
+          "SELECT count(*) AS n FROM workspaces WHERE project_id = ? AND kind <> 'main'",
+        ).get(id) as { n: number }).n
+        if (taskCount > 0)
+          return yield* new ConflictError({ message: `项目仍有 ${taskCount} 个非 main task，拒绝移除` })
+        db.transaction(() => {
+          const mainRows = db.prepare("SELECT id FROM workspaces WHERE project_id = ? AND kind = 'main'")
+            .all(id) as Array<{ id: string }>
+          for (const main of mainRows) {
+            db.prepare("DELETE FROM prompt_queue WHERE workspace_id = ?").run(main.id)
+            db.prepare("DELETE FROM tabs WHERE workspace_id = ?").run(main.id)
+          }
+          db.prepare("DELETE FROM workspaces WHERE project_id = ? AND kind = 'main'").run(id)
           const res = db.prepare("DELETE FROM projects WHERE id = ?").run(id)
           if (res.changes > 0)
             ev = appendEventRow(db, { workspaceId: null, type: "project.removed", payload: { id } })
-          return res.changes
         })()
-        if (changes === 0) return yield* new NotFoundError({ message: `项目不存在：${id}` })
         if (ev !== null) broadcast(ev)
       }),
     }

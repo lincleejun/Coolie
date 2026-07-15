@@ -97,8 +97,9 @@ describe("WorkspaceAdopter", () => {
     const rows = await Effect.runPromise(Effect.provide(Effect.gen(function* () {
       return yield* (yield* WorkspacesRepo).list()
     }), layer))
-    expect(rows).toHaveLength(1)
-    expect(rows[0]).toMatchObject({ ownership: "adopted", status: "error", path: linked })
+    const adopted = rows.filter((workspace) => workspace.kind === "task")
+    expect(adopted).toHaveLength(1)
+    expect(adopted[0]).toMatchObject({ ownership: "adopted", status: "error", path: linked })
     expect(fs.readFileSync(dirty, "utf8")).toBe("keep this dirty change\n")
     expect(git(repoRoot, "worktree", "list", "--porcelain")).toContain(linked)
   })

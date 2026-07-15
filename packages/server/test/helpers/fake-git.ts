@@ -92,6 +92,16 @@ export const makeFakeGit = (init?: {
       rec("setBranchBase", repoRoot, branch, base)
       return guard("setBranchBase", () => { state.branchBases.set(branch, base) })
     },
+    renameBranch: (worktreePath, oldBranch, newBranch) => {
+      rec("renameBranch", worktreePath, oldBranch, newBranch)
+      return guard("renameBranch", () => {
+        const current = state.worktrees.get(worktreePath)
+        const sha = state.refs.get(`refs/heads/${oldBranch}`) ?? FAKE_SHA
+        state.refs.delete(`refs/heads/${oldBranch}`)
+        state.refs.set(`refs/heads/${newBranch}`, sha)
+        if (current === oldBranch) state.worktrees.set(worktreePath, newBranch)
+      })
+    },
     listIgnoredMatching: (repoRoot, patterns) => {
       rec("listIgnoredMatching", repoRoot, ...patterns)
       return guard("listIgnoredMatching", () => [...state.ignoredFiles])

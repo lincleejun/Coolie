@@ -6,7 +6,7 @@ import * as path from "node:path"
 import { Effect, Exit, Cause, Option } from "effect"
 import type { ApiErrorBody } from "@coolie/protocol"
 import type { ClientRegistry } from "../daemon/clients.js"
-import type { ClientRole } from "@coolie/protocol"
+import type { ClientRole, TaskStatus } from "@coolie/protocol"
 import { ProjectsRepo } from "../repo/projects.js"
 import { EventsRepo } from "../repo/events.js"
 import { WorkspacesRepo } from "../repo/workspaces.js"
@@ -14,9 +14,12 @@ import { WorkspaceLifecycle } from "../workspace/lifecycle.js"
 import { TabsRepo } from "../repo/tabs.js"
 import { QueueRepo } from "../repo/queue.js"
 import { EngineRegistry, engineHome } from "../engine/registry.js"
+import { CustomEngineStore, detectArgvAvailability, detectCustomEngine, copilotPreset } from "../engine/custom-store.js"
+import { makeCustomEngine } from "../engine/custom-adapter.js"
 import { ConflictError, NotFoundError } from "../repo/errors.js"
 import { tmuxSessionName } from "@coolie/protocol"
 import type { ComposerOps, InputMode } from "../tmux/ops.js"
+import type { TabsRepoShape } from "../repo/tabs.js"
 import { isDiffSection, isSafeRelPath, type DiffSection, type GitReadOps } from "../git/inspect.js"
 import type { WorkspaceSerial } from "../engine/queue-drain.js"
 import { scanSlashCommands } from "../engine/claude/commands.js"
@@ -24,9 +27,12 @@ import { SessionEnsurer } from "../workspace/heal.js"
 import { WorkspaceAdopter } from "../workspace/adopt.js"
 import { WorkspaceFinisher } from "../workspace/finish.js"
 import { MAX_CHECKPOINT_LABEL_LENGTH, WorkspaceCheckpoints } from "../workspace/checkpoint.js"
+import { readPrInstructions } from "../workspace/pr-instructions.js"
 import { CUSTOM_NAMES_MAX, NAME_MAX_LENGTH, NAME_POOLS } from "../workspace/names.js"
 import { tokenEquals } from "./token.js"
 import { handleEventsStream } from "./sse.js"
+import type { WorkspaceLayoutState } from "../tmux/layout.js"
+import type { BackgroundCollector } from "../collector/background.js"
 export { newToken } from "./token.js"
 
 // `runtime` runs an AppServices-dependent Effect to completion and hands
@@ -35,7 +41,7 @@ export { newToken } from "./token.js"
 // on it is not a reliable way to recover the original TaggedError. Running via
 // `Effect.runPromiseExit` and unwrapping with `Exit.match` + `Cause.failureOption`
 // (mirrors the pattern already used in test/projects-repo.test.ts) is robust.
-export type AppServices = ProjectsRepo | EventsRepo | WorkspacesRepo | WorkspaceLifecycle | TabsRepo | QueueRepo | EngineRegistry | SessionEnsurer | WorkspaceAdopter | WorkspaceFinisher | WorkspaceCheckpoints
+export type AppServices = ProjectsRepo | EventsRepo | WorkspacesRepo | WorkspaceLifecycle | TabsRepo | QueueRepo | EngineRegistry | CustomEngineStore | SessionEnsurer | WorkspaceAdopter | WorkspaceFinisher | WorkspaceCheckpoints
 export type Runtime = <A, E>(eff: Effect.Effect<A, E, AppServices>) => Promise<Exit.Exit<A, E>>
 export interface AppDeps {
   readonly runtime: Runtime
@@ -62,10 +68,16 @@ export interface AppDeps {
   readonly clients?: ClientRegistry
   /** composer 投递 / shell tab 动作（tmux 门面）；未提供时相关路由 501 */
   readonly composerOps?: ComposerOps
+  readonly layoutOps?: {
+    readonly reconcile: (workspaceId: string) => Promise<WorkspaceLayoutState>
+    readonly setZen: (workspaceId: string, zen: boolean, focusedTabId?: string | null) => Promise<WorkspaceLayoutState>
+  }
   /** Serializes queue decisions and delivery for one workspace without blocking others. */
   readonly workspaceSerial?: WorkspaceSerial
   /** 图片附件根目录；生产为 COOLIE_HOME/attachments，测试可注入临时目录。 */
   readonly attachmentsDir?: string
+  /** Background aggregate collector; omitted in narrow HTTP unit tests. */
+  readonly collector?: Pick<BackgroundCollector, "collect" | "snapshots">
 }
 
 const send = (res: ServerResponse, status: number, body?: unknown) => {
@@ -74,6 +86,38 @@ const send = (res: ServerResponse, status: number, body?: unknown) => {
 }
 const err = (res: ServerResponse, status: number, code: ApiErrorBody["code"], message: string) =>
   send(res, status, { code, message } satisfies ApiErrorBody)
+const optionalInteger = (value: unknown): number | null => {
+  if (value === null || value === undefined || value === "") return null
+  const number = Number(value)
+  return Number.isInteger(number) ? number : null
+}
+
+/** Exact routing wins. Legacy workspace-only signals are accepted only when one engine tab matches. */
+const resolveEngineTabContext = (
+  tabs: TabsRepoShape,
+  workspaceId: string,
+  engineId: string | null,
+  context: { readonly tabId?: string | null; readonly sessionId?: string | null; readonly tmuxWindow?: number | null },
+) => Effect.gen(function* () {
+  const matches = (tab: { workspaceId: string; kind: string; engineId: string | null }): boolean =>
+    tab.workspaceId === workspaceId && tab.kind === "engine" && (engineId === null || tab.engineId === engineId)
+  if (context.tabId) {
+    const candidate = yield* tabs.get(context.tabId).pipe(Effect.option)
+    return Option.isSome(candidate) && matches(candidate.value) ? candidate.value : null
+  }
+  if (context.sessionId) {
+    const candidate = yield* tabs.findEngineTabBySession(workspaceId, context.sessionId)
+    if (candidate && matches(candidate)) return candidate
+    // Resume may fork a new engine session id before the row is updated. A lone matching
+    // legacy tab is still unambiguous; multiple siblings must degrade without mutation.
+  }
+  if (context.tmuxWindow !== null && context.tmuxWindow !== undefined) {
+    const candidate = yield* tabs.findTabByWindow(workspaceId, context.tmuxWindow)
+    return candidate && matches(candidate) ? candidate : null
+  }
+  const candidates = (yield* tabs.listEngineTabsByWorkspace(workspaceId)).filter(matches)
+  return candidates.length === 1 ? candidates[0]! : null
+})
 
 // Marks "the request body isn't valid JSON" as a distinct, recoverable failure
 // so the outer route catch can map exactly this to 400 Validation — and let
@@ -236,7 +280,7 @@ export const deriveRepoName = (url: string): string | null => {
   return name === "" || name === "." || name === ".." ? null : name
 }
 
-export const createApp = ({ runtime, token, onShutdown, onError, bus, sseHeartbeatMs, claudeHome, codexHome, gitRead, config, clients, composerOps, workspaceSerial, cloneRepo, attachmentsDir }: AppDeps) =>
+export const createApp = ({ runtime, token, onShutdown, onError, bus, sseHeartbeatMs, claudeHome, codexHome, gitRead, config, clients, composerOps, layoutOps, workspaceSerial, cloneRepo, attachmentsDir, collector }: AppDeps) =>
 
   (req: IncomingMessage, res: ServerResponse): void => {
     void (async () => {
@@ -309,7 +353,11 @@ export const createApp = ({ runtime, token, onShutdown, onError, bus, sseHeartbe
             res, runtime,
             Effect.gen(function* () {
               const tabs = yield* TabsRepo
-              const tab = yield* tabs.findEngineTab(wsId)
+              const tab = yield* resolveEngineTabContext(tabs, wsId, null, {
+                tabId: url.searchParams.get("tabId") ?? (typeof body.tabId === "string" ? body.tabId : null),
+                sessionId: url.searchParams.get("sessionId") ?? (typeof body.sessionId === "string" ? body.sessionId : null),
+                tmuxWindow: optionalInteger(url.searchParams.get("window")) ?? optionalInteger(body.window),
+              })
               if (!tab) return { ok: true } // 已归档/删除的竞态回报：与 /hooks/claude 同款静默
               // C3：状态迁移 + engine.exited 事件同事务（避免半写）
               yield* tabs.recordEngineExit(tab.id, wsId, body.exitCode)
@@ -332,12 +380,17 @@ export const createApp = ({ runtime, token, onShutdown, onError, bus, sseHeartbe
               const tabs = yield* TabsRepo
               const registry = yield* EngineRegistry
               const engine = registry.get(engineId)
-              const tab = engine ? yield* tabs.findEngineTab(wsId) : null
+              const hookSessionId = typeof (body as any)?.session_id === "string" && (body as any).session_id !== ""
+                ? (body as any).session_id as string : null
+              const tab = engine ? yield* resolveEngineTabContext(tabs, wsId, engineId, {
+                tabId: url.searchParams.get("tabId") ?? (typeof (body as any)?.tabId === "string" ? (body as any).tabId : null),
+                sessionId: url.searchParams.get("sessionId") ?? hookSessionId,
+                tmuxWindow: optionalInteger(url.searchParams.get("window")) ?? optionalInteger((body as any)?.window),
+              }) : null
               if (!engine || !tab) return { ok: true } // 未知引擎/无 tab：hook 永远成功，静默吞
               yield* tabs.touchHookAt(tab.id, Date.now())
               // --resume 会 fork 新 session id：以 hook 上报为真源同步，否则 mtime 轮询/标题派生盯旧转录
-              const hookSid = typeof (body as any)?.session_id === "string" && (body as any).session_id !== ""
-                ? (body as any).session_id as string : null
+              const hookSid = hookSessionId
               const sid = hookSid ?? tab.engineSessionId
               // C4：stored 为 null 也回填（codex 服务端造 id：起始 null，首个 hook 带来真 id）
               if (hookSid !== null && hookSid !== tab.engineSessionId)
@@ -398,15 +451,26 @@ export const createApp = ({ runtime, token, onShutdown, onError, bus, sseHeartbe
               const registry = yield* EngineRegistry
               const engine = registry.get(engineId)
               const tabs = yield* TabsRepo
-              const tab = engine ? yield* tabs.findEngineTab(wsId) : null
+              const notifiedSessionId =
+                typeof (body as any)?.["thread-id"] === "string" ? (body as any)["thread-id"]
+                : typeof (body as any)?.thread_id === "string" ? (body as any).thread_id
+                : typeof (body as any)?.sessionId === "string" ? (body as any).sessionId
+                : null
+              const tab = engine ? yield* resolveEngineTabContext(tabs, wsId, engineId, {
+                tabId: url.searchParams.get("tabId") ?? (typeof (body as any)?.tabId === "string" ? (body as any).tabId : null),
+                sessionId: url.searchParams.get("sessionId") ?? notifiedSessionId,
+                tmuxWindow: optionalInteger(url.searchParams.get("window")) ?? optionalInteger((body as any)?.window),
+              }) : null
               if (!engine || !tab) return { ok: true }
+              if (notifiedSessionId !== null && notifiedSessionId !== tab.engineSessionId)
+                yield* tabs.setEngineSessionId(tab.id, notifiedSessionId)
               // Notify gets the short authority window and remains distinguishable from native hooks.
               yield* tabs.touchHookAt(tab.id, Date.now())
               yield* tabs.setStatus(tab.id, "awaiting-input", "notify")
               yield* (yield* EventsRepo).append({
                 workspaceId: wsId,
                 type: "engine.turn.finished",
-                payload: { tabId: tab.id, sessionId: tab.engineSessionId, source: "notify" },
+                payload: { tabId: tab.id, sessionId: notifiedSessionId ?? tab.engineSessionId, source: "notify" },
               })
               return { ok: true }
             }),
@@ -438,6 +502,19 @@ export const createApp = ({ runtime, token, onShutdown, onError, bus, sseHeartbe
             (events) => send(res, 200, events),
             onError,
           )
+        }
+        if (route === "GET /collect") {
+          if (!collector) return err(res, 501, "Internal", "collector unavailable")
+          const workspaceId = url.searchParams.get("workspace")
+          return send(res, 200, collector.snapshots().filter((snapshot) =>
+            workspaceId === null || snapshot.workspaceId === workspaceId))
+        }
+        if (route === "POST /collect") {
+          if (!collector) return err(res, 501, "Internal", "collector unavailable")
+          const body = await readJson(req)
+          if (body.workspaceId !== undefined && typeof body.workspaceId !== "string")
+            return err(res, 400, "Validation", "workspaceId must be a string")
+          return send(res, 200, await collector.collect(body.workspaceId))
         }
         if (route === "GET /projects")
           return await runRoute(
@@ -534,6 +611,15 @@ export const createApp = ({ runtime, token, onShutdown, onError, bus, sseHeartbe
             onError,
           )
         }
+        const wsGet = url.pathname.match(/^\/workspaces\/([^/]+)$/)
+        if (req.method === "GET" && wsGet) {
+          return await runRoute(
+            res, runtime,
+            Effect.gen(function* () { return yield* (yield* WorkspacesRepo).get(wsGet[1]!) }),
+            (workspace) => send(res, 200, workspace),
+            onError,
+          )
+        }
         if (route === "POST /workspaces") {
           const body = await readJson(req)
           if (typeof body.projectId !== "string") return err(res, 400, "Validation", "projectId required")
@@ -569,7 +655,7 @@ export const createApp = ({ runtime, token, onShutdown, onError, bus, sseHeartbe
           return await runRoute(
             res, runtime,
             Effect.gen(function* () {
-              return yield* (yield* WorkspaceLifecycle).create({
+              return yield* (yield* WorkspaceLifecycle).createIntent({
                 projectId: body.projectId,
                 ...(body.branchSlug ? { branchSlug: body.branchSlug } : {}),
                 ...(body.name ? { name: body.name } : {}),
@@ -583,6 +669,47 @@ export const createApp = ({ runtime, token, onShutdown, onError, bus, sseHeartbe
               })
             }),
             (ws) => send(res, 201, ws),
+            onError,
+          )
+        }
+        if (route === "POST /workspaces/reorder") {
+          const body = await readJson(req)
+          if (body === null || typeof body !== "object" || Array.isArray(body) ||
+            typeof body.projectId !== "string" || !Array.isArray(body.workspaceIds) ||
+            body.workspaceIds.some((id: unknown) => typeof id !== "string"))
+            return err(res, 400, "Validation", "projectId 与 workspaceIds[] 必填")
+          return await runRoute(
+            res, runtime,
+            Effect.gen(function* () {
+              return yield* (yield* WorkspaceLifecycle).reorder(body.projectId, body.workspaceIds)
+            }),
+            (items) => send(res, 200, items),
+            onError,
+          )
+        }
+        const wsMetadata = url.pathname.match(/^\/workspaces\/([^/]+)\/(rename|task-status|branch)$/)
+        if (req.method === "POST" && wsMetadata) {
+          const body = await readJson(req)
+          if (body === null || typeof body !== "object" || Array.isArray(body))
+            return err(res, 400, "Validation", "body must be an object")
+          const action = wsMetadata[2]!
+          if (action === "rename" && typeof body.name !== "string")
+            return err(res, 400, "Validation", "name required")
+          const taskStatuses = new Set<TaskStatus>(["backlog", "in_progress", "in_review", "done", "canceled", "error"])
+          if (action === "task-status" && !taskStatuses.has(body.status))
+            return err(res, 400, "Validation", "status must be backlog|in_progress|in_review|done|canceled|error")
+          if (action === "branch" && typeof body.branch !== "string")
+            return err(res, 400, "Validation", "branch required")
+          return await runRoute(
+            res, runtime,
+            Effect.gen(function* () {
+              const lifecycle = yield* WorkspaceLifecycle
+              if (action === "rename") return yield* lifecycle.rename(wsMetadata[1]!, body.name)
+              if (action === "task-status")
+                return yield* lifecycle.setTaskStatus(wsMetadata[1]!, body.status as TaskStatus)
+              return yield* lifecycle.renameBranch(wsMetadata[1]!, body.branch)
+            }),
+            (workspace) => send(res, 200, workspace),
             onError,
           )
         }
@@ -628,7 +755,7 @@ export const createApp = ({ runtime, token, onShutdown, onError, bus, sseHeartbe
         if (req.method === "POST" && wsEnsure) {
           return await runRoute(
             res, runtime,
-            Effect.gen(function* () { return yield* (yield* SessionEnsurer).ensure(wsEnsure[1]!) }),
+            Effect.gen(function* () { return yield* (yield* WorkspaceLifecycle).ensure(wsEnsure[1]!) }),
             (out) => send(res, 200, out),
             onError,
           )
@@ -705,6 +832,59 @@ export const createApp = ({ runtime, token, onShutdown, onError, bus, sseHeartbe
             ? workspaceSerial.run(tabResume[1]!, handleResume)
             : handleResume())
         }
+        const tabRename = url.pathname.match(/^\/workspaces\/([^/]+)\/tabs\/([^/]+)\/rename$/)
+        if (req.method === "POST" && tabRename) {
+          const body = await readJson(req)
+          if (typeof body.title !== "string" || body.title.trim() === "")
+            return err(res, 400, "Validation", "title 必须是非空 string")
+          return await runRoute(
+            res, runtime,
+            Effect.gen(function* () {
+              const tabs = yield* TabsRepo
+              const tab = yield* tabs.get(tabRename[2]!)
+              if (tab.workspaceId !== tabRename[1]!) return yield* new NotFoundError({ message: "tab 不属于该 workspace" })
+              yield* tabs.setTitle(tab.id, body.title.trim())
+              return yield* tabs.get(tab.id)
+            }),
+            (tab) => send(res, 200, tab),
+            onError,
+          )
+        }
+        const zenRoute = url.pathname.match(/^\/workspaces\/([^/]+)\/zen$/)
+        if (req.method === "POST" && zenRoute) {
+          if (!layoutOps) return err(res, 501, "Internal", "tmux layout unavailable")
+          const body = await readJson(req)
+          if (body.zen !== undefined && typeof body.zen !== "boolean")
+            return err(res, 400, "Validation", "zen 必须是 boolean")
+          if (body.tabId !== undefined && typeof body.tabId !== "string")
+            return err(res, 400, "Validation", "tabId 必须是 string")
+          return await runRoute(
+            res, runtime,
+            Effect.gen(function* () {
+              const ws = yield* (yield* WorkspacesRepo).get(zenRoute[1]!)
+              if (ws.status !== "active")
+                return yield* new ConflictError({ message: `workspace 非 active（当前 ${ws.status}）` })
+              if (typeof body.tabId === "string") {
+                const tab = yield* (yield* TabsRepo).get(body.tabId)
+                if (tab.workspaceId !== ws.id || tab.kind !== "engine")
+                  return yield* new ConflictError({ message: "zen 只能聚焦该 workspace 的 engine tab" })
+              }
+              return {
+                workspaceId: ws.id,
+                zen: typeof body.zen === "boolean" ? body.zen : !ws.zenMode,
+                tabId: typeof body.tabId === "string" ? body.tabId : null,
+              }
+            }),
+            async (input) => {
+              try { send(res, 200, await layoutOps.setZen(input.workspaceId, input.zen, input.tabId)) }
+              catch (error) {
+                onError?.(error)
+                if (!res.headersSent) err(res, 500, "TmuxError", error instanceof Error ? error.message : String(error))
+              }
+            },
+            onError,
+          )
+        }
         const wsDel = url.pathname.match(/^\/workspaces\/([^/]+)$/)
         if (req.method === "DELETE" && wsDel) {
           return await runRoute(
@@ -752,20 +932,129 @@ export const createApp = ({ runtime, token, onShutdown, onError, bus, sseHeartbe
             onError,
           )
         }
+        if (route === "GET /engines/custom") {
+          return await runRoute(
+            res, runtime,
+            Effect.gen(function* () { return yield* (yield* CustomEngineStore).list() }),
+            (items) => send(res, 200, items),
+            onError,
+          )
+        }
+        if (route === "POST /engines/custom") {
+          const body = await readJson(req)
+          return await runRoute(
+            res, runtime,
+            Effect.gen(function* () {
+              const definition = yield* (yield* CustomEngineStore).put(body)
+              const registry = yield* EngineRegistry
+              if (definition.enabled) (registry as Map<string, any>).set(definition.id, makeCustomEngine(definition))
+              else (registry as Map<string, any>).delete(definition.id)
+              return definition
+            }),
+            (definition) => send(res, 200, definition),
+            onError,
+          )
+        }
+        if (route === "POST /engines/custom/presets/copilot") {
+          const body = await readJson(req)
+          return await runRoute(
+            res, runtime,
+            Effect.gen(function* () {
+              const definition = yield* (yield* CustomEngineStore).put(copilotPreset(
+                typeof body.id === "string" ? body.id : "copilot",
+              ))
+              const registry = yield* EngineRegistry
+              ;(registry as Map<string, any>).set(definition.id, makeCustomEngine(definition))
+              return definition
+            }),
+            (definition) => send(res, 201, definition),
+            onError,
+          )
+        }
+        const customDetect = url.pathname.match(/^\/engines\/custom\/([^/]+)\/detect$/)
+        if (req.method === "POST" && customDetect) {
+          return await runRoute(
+            res, runtime,
+            Effect.gen(function* () {
+              const definition = yield* (yield* CustomEngineStore).get(customDetect[1]!)
+              return yield* Effect.promise(() => detectCustomEngine(definition))
+            }),
+            (result) => send(res, 200, result),
+            onError,
+          )
+        }
+        const customItem = url.pathname.match(/^\/engines\/custom\/([^/]+)$/)
+        if (req.method === "DELETE" && customItem) {
+          return await runRoute(
+            res, runtime,
+            Effect.gen(function* () {
+              yield* (yield* CustomEngineStore).remove(customItem[1]!)
+              const registry = yield* EngineRegistry
+              ;(registry as Map<string, any>).delete(customItem[1]!)
+            }),
+            () => send(res, 204),
+            onError,
+          )
+        }
+        const switchRoute = url.pathname.match(/^\/workspaces\/([^/]+)\/engine$/)
+        if (req.method === "POST" && switchRoute) {
+          const body = await readJson(req)
+          if (typeof body.engineId !== "string") return err(res, 400, "Validation", "engineId 必填")
+          const action = () => runRoute(
+            res, runtime,
+            Effect.gen(function* () {
+              const tabs = yield* TabsRepo
+              const selected = typeof body.tabId === "string"
+                ? yield* tabs.get(body.tabId)
+                : yield* tabs.findEngineTab(switchRoute[1]!)
+              if (!selected || selected.workspaceId !== switchRoute[1]! || selected.kind !== "engine")
+                return yield* new NotFoundError({ message: "engine tab 不存在" })
+              return yield* (yield* SessionEnsurer).switchEngine(switchRoute[1]!, selected.id, body.engineId, {
+                ...(typeof body.model === "string" ? { model: body.model } : {}),
+                ...(typeof body.effort === "string" ? { effort: body.effort } : {}),
+              })
+            }),
+            (result) => send(res, 200, result),
+            onError,
+          )
+          return await (workspaceSerial ? workspaceSerial.run(switchRoute[1]!, action) : action())
+        }
         if (route === "GET /config") {
           if (!config) return err(res, 500, "Internal", "config unavailable")
           return await runRoute(
             res, runtime,
             Effect.gen(function* () {
               const registry = yield* EngineRegistry
-              const engines = [...registry.values()].map((e) => ({
+              const customStore = yield* Effect.serviceOption(CustomEngineStore)
+              const definitions = Option.isSome(customStore) ? yield* customStore.value.list() : []
+              const byId = new Map(definitions.map((definition) => [definition.id, definition]))
+              const availability = yield* Effect.promise(async () => new Map(await Promise.all(
+                [...registry.values()].map(async (engine) => {
+                  const definition = byId.get(engine.id)
+                  return [engine.id, definition
+                    ? await detectCustomEngine(definition)
+                    : await detectArgvAvailability([engine.id, "--version"])] as const
+                }),
+              )))
+              const engines: any[] = [...registry.values()].map((e) => ({
                 id: e.id,
                 displayName: e.displayName,
                 capabilities: e.capabilities,
                 models: e.models ?? [], // F4：models 可选，缺省下发空数组（fake 引擎无 models）
                 ...(e.modelEfforts !== undefined ? { modelEfforts: e.modelEfforts } : {}),
                 ...(e.efforts !== undefined ? { efforts: e.efforts } : {}),
+                custom: byId.has(e.id),
+                enabled: true,
+                presetId: byId.get(e.id)?.presetId ?? null,
+                availability: availability.get(e.id) ?? { available: false, accountHint: null, error: "not detected" },
+                ...(byId.has(e.id) ? { definition: byId.get(e.id) } : {}),
               }))
+              for (const definition of definitions) if (!definition.enabled) engines.push({
+                id: definition.id, displayName: definition.displayName, capabilities: definition.capabilities,
+                models: definition.models ?? [], ...(definition.efforts ? { efforts: definition.efforts } : {}),
+                custom: true, enabled: false, presetId: definition.presetId ?? null,
+                availability: { available: false, accountHint: null, error: "disabled" }, definition,
+              })
               return {
                 tmuxSocket: config.tmuxSocket,
                 engines,
@@ -779,11 +1068,11 @@ export const createApp = ({ runtime, token, onShutdown, onError, bus, sseHeartbe
             onError,
           )
         }
-        const gitRoute = url.pathname.match(/^\/workspaces\/([^/]+)\/(git\/diffstat|git\/changes|git\/diff|files|commands)$/)
+        const gitRoute = url.pathname.match(/^\/workspaces\/([^/]+)\/(git\/diffstat|git\/changes|git\/diff|files|commands|pr-instructions)$/)
         if (req.method === "GET" && gitRoute) {
           const wsId = gitRoute[1]!
           const kind = gitRoute[2]!
-          if (kind !== "commands" && !gitRead) return err(res, 501, "Internal", "gitRead unavailable")
+          if (kind !== "commands" && kind !== "pr-instructions" && !gitRead) return err(res, 501, "Internal", "gitRead unavailable")
           // Validate request-controlled diff arguments before workspace lookup/status checks.
           let diffSection: DiffSection = "againstBase"
           let diffPath = ""
@@ -807,10 +1096,14 @@ export const createApp = ({ runtime, token, onShutdown, onError, bus, sseHeartbe
             }),
             async (ws) => {
               try {
-                if (kind === "git/diffstat") return send(res, 200, await gitRead!.diffstat(ws.path, ws.baseRef))
-                if (kind === "git/changes") return send(res, 200, await gitRead!.changes(ws.path, ws.baseRef))
-                if (kind === "git/diff") return send(res, 200, await gitRead!.diff(ws.path, ws.baseRef, diffSection, diffPath))
+                // Main tasks inspect the checked-out HEAD itself. "HEAD" also keeps
+                // pre-m0007 rows with an empty/branch-name baseRef readable.
+                const baseRef = ws.kind === "main" ? "HEAD" : ws.baseRef
+                if (kind === "git/diffstat") return send(res, 200, await gitRead!.diffstat(ws.path, baseRef))
+                if (kind === "git/changes") return send(res, 200, await gitRead!.changes(ws.path, baseRef))
+                if (kind === "git/diff") return send(res, 200, await gitRead!.diff(ws.path, baseRef, diffSection, diffPath))
                 if (kind === "files") return send(res, 200, { files: await gitRead!.files(ws.path) })
+                if (kind === "pr-instructions") return send(res, 200, readPrInstructions(ws.path))
                 return send(res, 200, { commands: claudeHome !== undefined ? scanSlashCommands(ws.path, claudeHome) : scanSlashCommands(ws.path, "") })
               } catch (e: any) {
                 if (!res.headersSent) err(res, 500, "GitError", e?.message ?? String(e))
@@ -821,9 +1114,26 @@ export const createApp = ({ runtime, token, onShutdown, onError, bus, sseHeartbe
         }
         const tabsCreate = url.pathname.match(/^\/workspaces\/([^/]+)\/tabs$/)
         if (req.method === "POST" && tabsCreate) {
-          if (!composerOps) return err(res, 501, "Internal", "composerOps unavailable")
           const body = await readJson(req)
-          if (body.kind !== "shell" && body.kind !== "run") return err(res, 400, "Validation", "kind 必须是 shell|run")
+          if (body.kind === "engine") {
+            if (typeof body.engineId !== "string") return err(res, 400, "Validation", "engineId 必填")
+            const action = () => runRoute(
+              res, runtime,
+              Effect.gen(function* () {
+                const outcome = yield* (yield* SessionEnsurer).createEngineTab(tabsCreate[1]!, body.engineId, {
+                  ...(typeof body.model === "string" ? { model: body.model } : {}),
+                  ...(typeof body.effort === "string" ? { effort: body.effort } : {}),
+                  ...(typeof body.title === "string" && body.title.trim() !== "" ? { title: body.title.trim() } : {}),
+                })
+                return yield* (yield* TabsRepo).get(outcome.tabId!)
+              }),
+              (tab) => send(res, 201, tab),
+              onError,
+            )
+            return await (workspaceSerial ? workspaceSerial.run(tabsCreate[1]!, action) : action())
+          }
+          if (!composerOps) return err(res, 501, "Internal", "composerOps unavailable")
+          if (body.kind !== "shell" && body.kind !== "run") return err(res, 400, "Validation", "kind 必须是 engine|shell|run")
           if (body.kind === "run" && (!composerOps.listWindows || !composerOps.newRunWindow || !composerOps.respawnRunWindow))
             return err(res, 501, "Internal", "run tab unavailable")
           const handleTabsCreate = () => runRoute(
@@ -875,6 +1185,7 @@ export const createApp = ({ runtime, token, onShutdown, onError, bus, sseHeartbe
                     const mapped = errorFromCause(inserted.cause, onError)
                     return send(res, mapped.status, mapped.body)
                   }
+                  await layoutOps?.reconcile(ws.id)
                   return send(res, 201, inserted.value)
                 }
                 const idx = await composerOps.newShellWindow(session, ws.path)
@@ -882,7 +1193,10 @@ export const createApp = ({ runtime, token, onShutdown, onError, bus, sseHeartbe
                   return yield* (yield* TabsRepo).insert({ workspaceId: ws.id, kind: "shell", tmuxWindow: idx })
                 }))
                 await Exit.match(exit, {
-                  onSuccess: async (tab) => { send(res, 201, tab) },
+                  onSuccess: async (tab) => {
+                    await layoutOps?.reconcile(ws.id)
+                    send(res, 201, tab)
+                  },
                   onFailure: async (cause) => {
                     // The tmux operation has committed but the DB operation has not.
                     // Compensation is best-effort; the HTTP response must retain the
@@ -910,8 +1224,13 @@ export const createApp = ({ runtime, token, onShutdown, onError, bus, sseHeartbe
             Effect.gen(function* () {
               const tab = yield* (yield* TabsRepo).get(tabDel[2]!)
               if (tab.workspaceId !== tabDel[1]!) return yield* new NotFoundError({ message: "tab 不属于该 workspace" })
-              if (tab.kind !== "shell")
-                return yield* new ConflictError({ message: `只能关 shell tab（当前 ${tab.kind}）` })
+              if (tab.kind !== "shell" && tab.kind !== "engine")
+                return yield* new ConflictError({ message: `只能关 shell/engine tab（当前 ${tab.kind}）` })
+              if (tab.kind === "engine") {
+                const engineTabs = yield* (yield* TabsRepo).listEngineTabsByWorkspace(tab.workspaceId)
+                if (engineTabs.length <= 1)
+                  return yield* new ConflictError({ message: "不能关闭最后一个 engine tab" })
+              }
               return tab
             }),
             async (tab) => {
@@ -931,10 +1250,11 @@ export const createApp = ({ runtime, token, onShutdown, onError, bus, sseHeartbe
           return await runRoute(
             res, runtime,
             Effect.gen(function* () {
-              const items = yield* (yield* QueueRepo).listQueued(queueList[1]!)
+              const tabId = url.searchParams.get("tabId") ?? undefined
+              const items = yield* (yield* QueueRepo).listQueued(queueList[1]!, tabId)
               return {
                 queue: items.map((item, index) => ({
-                  id: item.id, text: item.text, mode: item.mode, createdAt: item.createdAt, position: index + 1,
+                  id: item.id, tabId: item.tabId, text: item.text, mode: item.mode, createdAt: item.createdAt, position: index + 1,
                 })),
               }
             }),
@@ -978,10 +1298,15 @@ export const createApp = ({ runtime, token, onShutdown, onError, bus, sseHeartbe
               const ws = yield* (yield* WorkspacesRepo).get(inputRoute[1]!)
               if (ws.status !== "active")
                 return yield* new ConflictError({ message: `workspace 非 active（当前 ${ws.status}）` })
-              const tab = yield* (yield* TabsRepo).findEngineTab(ws.id)
+              const tabs = yield* TabsRepo
+              const tab = typeof body.tabId === "string"
+                ? yield* tabs.get(body.tabId)
+                : yield* tabs.findEngineTab(ws.id)
               if (!tab) return yield* new NotFoundError({ message: "无 engine tab" })
+              if (tab.workspaceId !== ws.id || tab.kind !== "engine")
+                return yield* new NotFoundError({ message: "engine tab 不属于该 workspace" })
               const engine = (yield* EngineRegistry).get(tab.engineId ?? "claude")
-              const queuedCount = (yield* (yield* QueueRepo).listQueued(ws.id)).length
+              const queuedCount = (yield* (yield* QueueRepo).listQueued(ws.id, tab.id)).length
               return { ws, tab, engine, queuedCount }
             }),
             async ({ ws, tab, engine, queuedCount }) => {

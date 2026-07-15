@@ -27,12 +27,18 @@ export interface TabsRepoShape {
   }) => Effect.Effect<Tab>
   readonly get: (id: string) => Effect.Effect<Tab, NotFoundError>
   readonly listByWorkspace: (workspaceId: string) => Effect.Effect<Tab[]>
+  readonly listEngineTabsByWorkspace: (workspaceId: string) => Effect.Effect<Tab[]>
+  readonly findEngineTabBySession: (workspaceId: string, sessionId: string) => Effect.Effect<Tab | null>
+  readonly findTabByWindow: (workspaceId: string, tmuxWindow: number) => Effect.Effect<Tab | null>
+  /** Compatibility only: deterministic primary engine tab (lowest tmux window, then oldest id). */
   readonly findEngineTab: (workspaceId: string) => Effect.Effect<Tab | null>
   readonly setStatus: (id: string, status: TabStatus, source: TabStatusSource) => Effect.Effect<Tab, NotFoundError>
   /** C3：engine 退出的状态与 engine.exited 事件同事务提交/回滚（避免 setStatus 已落库、事件写失败的半写） */
   readonly recordEngineExit: (tabId: string, workspaceId: string, exitCode: number) => Effect.Effect<Tab, NotFoundError>
   readonly setTitle: (id: string, title: string) => Effect.Effect<void, NotFoundError>
   readonly setEngineSessionId: (id: string, sessionId: string) => Effect.Effect<void, NotFoundError>
+  readonly setTmuxWindow: (id: string, tmuxWindow: number) => Effect.Effect<void, NotFoundError>
+  readonly switchEngine: (id: string, engineId: string, sessionId: string | null) => Effect.Effect<Tab, NotFoundError>
   readonly touchHookAt: (id: string, ts: number) => Effect.Effect<void, NotFoundError>
   readonly listEngineTabs: () => Effect.Effect<Array<{ tab: Tab; workspacePath: string }>>
   /** 删单个 tab 行 + tab.closed 事件（shell tab 关闭用） */
@@ -76,8 +82,23 @@ export const TabsRepoLive = Layer.effect(
       get: (id) => mustGetRow(id).pipe(Effect.map(rowToTab)),
       listByWorkspace: (wsId) => Effect.sync(() =>
         db.prepare("SELECT * FROM tabs WHERE workspace_id = ? ORDER BY tmux_window, id").all(wsId).map(rowToTab)),
+      listEngineTabsByWorkspace: (wsId) => Effect.sync(() =>
+        db.prepare(`SELECT * FROM tabs WHERE workspace_id = ? AND kind = 'engine'
+          ORDER BY CASE WHEN tmux_window IS NULL THEN 1 ELSE 0 END, tmux_window, id`).all(wsId).map(rowToTab)),
+      findEngineTabBySession: (wsId, sessionId) => Effect.sync(() => {
+        const r = db.prepare(`SELECT * FROM tabs
+          WHERE workspace_id = ? AND kind = 'engine' AND engine_session_id = ?
+          ORDER BY CASE WHEN tmux_window IS NULL THEN 1 ELSE 0 END, tmux_window, id LIMIT 1`).get(wsId, sessionId)
+        return r ? rowToTab(r) : null
+      }),
+      findTabByWindow: (wsId, tmuxWindow) => Effect.sync(() => {
+        const r = db.prepare("SELECT * FROM tabs WHERE workspace_id = ? AND tmux_window = ? ORDER BY id LIMIT 1")
+          .get(wsId, tmuxWindow)
+        return r ? rowToTab(r) : null
+      }),
       findEngineTab: (wsId) => Effect.sync(() => {
-        const r = db.prepare("SELECT * FROM tabs WHERE workspace_id = ? AND kind = 'engine' ORDER BY id LIMIT 1").get(wsId)
+        const r = db.prepare(`SELECT * FROM tabs WHERE workspace_id = ? AND kind = 'engine'
+          ORDER BY CASE WHEN tmux_window IS NULL THEN 1 ELSE 0 END, tmux_window, id LIMIT 1`).get(wsId)
         return r ? rowToTab(r) : null
       }),
       setStatus: (id, status, source) => Effect.gen(function* () {
@@ -133,6 +154,25 @@ export const TabsRepoLive = Layer.effect(
         })()
         broadcast(ev)
       }),
+      setTmuxWindow: (id, tmuxWindow) => Effect.gen(function* () {
+        const r = yield* mustGetRow(id)
+        if (r.tmux_window === tmuxWindow) return
+        db.prepare("UPDATE tabs SET tmux_window = ? WHERE id = ?").run(tmuxWindow, id)
+      }),
+      switchEngine: (id, engineId, sessionId) => Effect.gen(function* () {
+        const r = yield* mustGetRow(id)
+        let ev!: CoolieEvent
+        db.transaction(() => {
+          db.prepare("UPDATE tabs SET engine_id = ?, engine_session_id = ?, status = 'idle' WHERE id = ?")
+            .run(engineId, sessionId, id)
+          ev = appendEventRow(db, {
+            workspaceId: r.workspace_id, type: "engine.switched",
+            payload: { tabId: id, fromEngineId: r.engine_id ?? null, engineId, sessionId },
+          })
+        })()
+        broadcast(ev)
+        return rowToTab(getRow(id))
+      }),
       touchHookAt: (id, ts) => Effect.gen(function* () {
         const r = yield* mustGetRow(id)
         let data: any = {}
@@ -149,6 +189,7 @@ export const TabsRepoLive = Layer.effect(
         const r = yield* mustGetRow(id)
         let ev!: CoolieEvent
         db.transaction(() => {
+          db.prepare("DELETE FROM prompt_queue WHERE tab_id = ?").run(id)
           db.prepare("DELETE FROM tabs WHERE id = ?").run(id)
           ev = appendEventRow(db, { workspaceId: r.workspace_id, type: "tab.closed", payload: { tabId: id, kind: r.kind } })
         })()

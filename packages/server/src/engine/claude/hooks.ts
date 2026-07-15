@@ -21,7 +21,7 @@ INFO="${home}/server.json"
 PORT=$(sed -n 's/.*"port": *\\([0-9][0-9]*\\).*/\\1/p' "$INFO")
 TOKEN=$(sed -n 's/.*"token": *"\\([^"]*\\)".*/\\1/p' "$INFO")
 [ -n "$PORT" ] && [ -n "$TOKEN" ] || exit 0
-curl -s -m 2 -X POST "http://127.0.0.1:$PORT/hooks/${engineId}?workspace=$COOLIE_WORKSPACE" \\
+curl -s -m 2 -X POST "http://127.0.0.1:$PORT/hooks/${engineId}?workspace=$COOLIE_WORKSPACE&tabId=$COOLIE_TAB_ID&window=$COOLIE_TMUX_WINDOW" \\
   -H "Authorization: Bearer $TOKEN" -H "content-type: application/json" \\
   --data-binary @- >/dev/null 2>&1
 exit 0

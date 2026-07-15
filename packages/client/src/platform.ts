@@ -5,6 +5,7 @@ export interface PlatformCapabilities {
   readonly windowControls: boolean
   readonly externalTerminal: boolean
   readonly directoryPicker: boolean
+  readonly openEditor: boolean
 }
 
 /** Runtime capability check shared by the desktop and browser builds. */
@@ -20,6 +21,90 @@ export const platformCapabilities = (scope: object = globalThis): PlatformCapabi
     windowControls: desktop,
     externalTerminal: desktop,
     directoryPicker: desktop,
+    openEditor: desktop,
+  }
+}
+
+export type OpenInEditorErrorCode =
+  | "desktop_only"
+  | "invalid_workspace_path"
+  | "invalid_relative_path"
+  | "workspace_unavailable"
+  | "path_unavailable"
+  | "path_outside_workspace"
+  | "invalid_editor_config"
+  | "editor_launch_failed"
+  | "invoke_failed"
+
+export class OpenInEditorError extends Error {
+  readonly code: OpenInEditorErrorCode
+
+  constructor(code: OpenInEditorErrorCode, message: string) {
+    super(message)
+    this.name = "OpenInEditorError"
+    this.code = code
+  }
+}
+
+const editorErrorCodes = new Set<OpenInEditorErrorCode>([
+  "desktop_only",
+  "invalid_workspace_path",
+  "invalid_relative_path",
+  "workspace_unavailable",
+  "path_unavailable",
+  "path_outside_workspace",
+  "invalid_editor_config",
+  "editor_launch_failed",
+  "invoke_failed",
+])
+
+const isAbsolutePath = (path: string): boolean =>
+  path.startsWith("/") || /^[A-Za-z]:[\\/]/.test(path) || path.startsWith("\\\\")
+
+export const validateEditorPath = (workspacePath: string, relativePath: string): void => {
+  if (!isAbsolutePath(workspacePath) || workspacePath.includes("\0"))
+    throw new OpenInEditorError("invalid_workspace_path", "editor workspace path must be absolute")
+  if (
+    relativePath === "" ||
+    relativePath.includes("\0") ||
+    isAbsolutePath(relativePath) ||
+    relativePath.startsWith("\\") ||
+    relativePath.split(/[\\/]/).includes("..")
+  )
+    throw new OpenInEditorError("invalid_relative_path", "editor path must be relative to the workspace")
+}
+
+const editorInvokeError = (error: unknown): OpenInEditorError => {
+  if (error instanceof OpenInEditorError) return error
+  if (typeof error === "object" && error !== null) {
+    const value = error as { code?: unknown; message?: unknown }
+    if (
+      typeof value.code === "string" &&
+      editorErrorCodes.has(value.code as OpenInEditorErrorCode) &&
+      typeof value.message === "string"
+    )
+      return new OpenInEditorError(value.code as OpenInEditorErrorCode, value.message)
+  }
+  return new OpenInEditorError(
+    "invoke_failed",
+    `open-in-editor failed: ${error instanceof Error ? error.message : String(error)}`,
+  )
+}
+
+export const openInEditor = async (
+  workspacePath: string,
+  relativePath: string,
+  scope: object = globalThis,
+  invokeCommand: (command: string, args: Record<string, unknown>) => Promise<unknown> =
+    async (command, args) => (await import("@tauri-apps/api/core")).invoke(command, args),
+): Promise<void> => {
+  if (!isDesktop(scope))
+    throw new OpenInEditorError("desktop_only", "open-in-editor is only available in the desktop app")
+  validateEditorPath(workspacePath, relativePath)
+  try {
+    await invokeCommand("open_in_editor", { workspacePath, relativePath })
+  } catch (error) {
+    throw editorInvokeError(error)
   }
 }
 

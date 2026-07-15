@@ -1,12 +1,15 @@
 import { useEffect, useMemo, useRef, useState } from "react"
 import { fuzzyFilter } from "../composer/fuzzy"
 import { dispatchHotkeyId, getRunnableHotkeyIds } from "../hotkeys/dispatch"
-import { prettyChord, type HotkeyDef, type HotkeyId } from "../hotkeys/registry"
+import { hotkeyCategoryKey, hotkeyLabel, prettyChord, type HotkeyDef, type HotkeyId } from "../hotkeys/registry"
 import { orderedActiveWs } from "../hotkeys/useGlobalHotkeys"
 import { useSettings } from "../settings/settings"
 import { useData } from "../stores/data"
-import { useUi } from "../stores/ui"
+import { consumeModalKey, useUi } from "../stores/ui"
 import { useT } from "../i18n"
+import type { MsgKey } from "../i18n"
+import { buildTaskCommands } from "../sidebar/taskCommands"
+import { promptDialog } from "./dialogs"
 
 export interface Command {
   readonly id: string
@@ -22,6 +25,8 @@ export interface BuildCommandDeps {
   readonly checkpointWorkspace?: { id: string; name: string } | undefined
   readonly checkpointCreateTitle?: string | undefined
   readonly checkpointListTitle?: string | undefined
+  readonly workspaceSelectTitle?: string | undefined
+  readonly translate?: ((key: MsgKey) => string) | undefined
   runHotkey(id: HotkeyId): void
   selectWs(id: string): void
   createCheckpoint?: (() => void) | undefined
@@ -34,13 +39,15 @@ export const buildCommands = (deps: BuildCommandDeps): Command[] => [
       hotkey.id !== "app.commandPalette" && deps.runnableActionIds.has(hotkey.id))
     .map((hotkey) => ({
       id: `hk:${hotkey.id}`,
-      title: `${hotkey.category} · ${hotkey.label}`,
+      title: `${deps.translate?.(hotkeyCategoryKey(hotkey.category)) ?? hotkey.category} · ${
+        deps.translate ? hotkeyLabel(hotkey, deps.translate) : hotkey.labelKey
+      }`,
       chord: hotkey.chord,
       run: () => deps.runHotkey(hotkey.id),
     })),
   ...deps.workspaces.map((workspace) => ({
     id: `ws:${workspace.id}`,
-    title: `切到 workspace · ${workspace.name}`,
+    title: `${deps.workspaceSelectTitle ?? "Switch workspace"} · ${workspace.name}`,
     run: () => deps.selectWs(workspace.id),
   })),
   ...(deps.checkpointWorkspace && deps.createCheckpoint ? [{
@@ -80,9 +87,16 @@ export const CommandPalette = () => {
   const [query, setQuery] = useState("")
   const [selected, setSelected] = useState(0)
   const inputRef = useRef<HTMLInputElement>(null)
+  const returnFocus = useRef<HTMLElement | null>(null)
 
   useEffect(() => {
-    if (!open) return
+    if (!open) {
+      const target = returnFocus.current
+      returnFocus.current = null
+      if (target) requestAnimationFrame(() => { if (target.isConnected !== false) target.focus() })
+      return
+    }
+    returnFocus.current ??= document.activeElement as HTMLElement | null
     setQuery("")
     setSelected(0)
     const frame = requestAnimationFrame(() => inputRef.current?.focus())
@@ -96,17 +110,19 @@ export const CommandPalette = () => {
     checkpointWorkspace: workspaces.find((workspace) => workspace.id === selectedWs && workspace.status === "active"),
     checkpointCreateTitle: tr("checkpoint.create"),
     checkpointListTitle: tr("checkpoint.list"),
+    workspaceSelectTitle: tr("palette.switchWorkspace"),
+    translate: tr,
     runHotkey: (id) => { dispatchHotkeyId(id) },
     selectWs: (id) => useUi.getState().selectWs(id),
     createCheckpoint: selectedWs ? () => {
-      const label = window.prompt(tr("checkpoint.labelPrompt"))
-      if (label === null) return
-      const api = useData.getState().getApi()
-      if (!api) {
-        useData.getState().pushWarning("checkpoint.error", tr("checkpoint.noApi"))
-        return
-      }
-      void api.req("POST", `/workspaces/${selectedWs}/checkpoints`, label === "" ? {} : { label })
+      void promptDialog(tr("checkpoint.create"), tr("checkpoint.labelPrompt")).then((label) => {
+        if (label === null) return
+        const api = useData.getState().getApi()
+        if (!api) {
+          useData.getState().pushWarning("checkpoint.error", tr("checkpoint.noApi"))
+          return
+        }
+        void api.req("POST", `/workspaces/${selectedWs}/checkpoints`, label === "" ? {} : { label })
         .then((item) => useData.getState().pushWarning(
           "checkpoint.created",
           `${tr("checkpoint.created")} ${item.ref} (${item.oid})`,
@@ -115,6 +131,7 @@ export const CommandPalette = () => {
           "checkpoint.error",
           error instanceof Error ? error.message : String(error),
         ))
+      })
     } : undefined,
     listCheckpoints: selectedWs ? () => {
       const api = useData.getState().getApi()
@@ -134,7 +151,16 @@ export const CommandPalette = () => {
           error instanceof Error ? error.message : String(error),
         ))
     } : undefined,
-  }), [registry, workspaces, selectedWs, open, tr])
+  }).concat(
+    workspaces.find((workspace) => workspace.id === selectedWs)
+      ? buildTaskCommands(workspaces.find((workspace) => workspace.id === selectedWs)!).map((command) => ({
+        id: `task:${command.id}`,
+        title: `${tr("palette.task")} · ${command.label}`,
+        chord: command.key,
+        run: () => { void command.run() },
+      }))
+      : [],
+  ), [registry, workspaces, selectedWs, open, tr])
   const filtered = filterCommands(commands, query)
   const close = (): void => useUi.getState().setPalette(false)
   const run = (command: Command): void => {
@@ -145,7 +171,8 @@ export const CommandPalette = () => {
   if (!open) return null
   return (
     <div className="modal-backdrop" onClick={close}>
-      <div className="modal palette" role="dialog" aria-label={tr("palette.dialog")} onClick={(event) => event.stopPropagation()}>
+      <div className="modal palette" role="dialog" aria-modal="true" aria-label={tr("palette.dialog")}
+        onClick={(event) => event.stopPropagation()}>
         <input
           ref={inputRef}
           className="palette-input"
@@ -154,7 +181,7 @@ export const CommandPalette = () => {
           value={query}
           onChange={(event) => { setQuery(event.target.value); setSelected(0) }}
           onKeyDown={(event) => {
-            if (event.key === "Escape") { event.preventDefault(); close() }
+            if (consumeModalKey(event, "Escape", close)) return
             else if (event.key === "ArrowDown") {
               event.preventDefault()
               setSelected((value) => movePaletteSelection(value, 1, filtered.length))
@@ -162,9 +189,8 @@ export const CommandPalette = () => {
               event.preventDefault()
               setSelected((value) => movePaletteSelection(value, -1, filtered.length))
             } else if (event.key === "Enter") {
-              event.preventDefault()
               const command = filtered[selected]
-              if (command) run(command)
+              consumeModalKey(event, "Enter", () => { if (command) run(command) })
             }
           }}
         />

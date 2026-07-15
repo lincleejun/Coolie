@@ -91,8 +91,8 @@ describe("lifecycle × tmux × engine bootstrap", () => {
       }), layer) as Effect.Effect<any, never, never>)
       const session = sessionNameFor(ws.id)
       expect(await Effect.runPromise(tmux.listWindows(session))).toEqual([
-        { index: 0, name: "engine" },
-        { index: 1, name: "setup" },
+        expect.objectContaining({ index: 0, name: "engine", role: "engine", workspaceId: ws.id }),
+        expect.objectContaining({ index: 1, name: "setup", role: "ops", workspaceId: ws.id }),
       ])
       expect(tabs.map((t: any) => [t.kind, t.tmuxWindow])).toEqual([["engine", 0], ["setup", 1]])
       expect(fs.readFileSync(path.join(ws.path, "setup-ok"), "utf8").trim()).toBe("ok")

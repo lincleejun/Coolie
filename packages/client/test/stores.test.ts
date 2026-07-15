@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach } from "vitest"
+import { describe, it, expect, beforeEach, vi } from "vitest"
 import { useData } from "../src/stores/data.js"
 import { useUi } from "../src/stores/ui.js"
 
@@ -109,6 +109,25 @@ describe("useData 生命周期动作（D2：archive/unarchive/delete 打对端�
     await useData.getState().deleteWs("W")
     expect(calls).toEqual(["POST /workspaces/W/unarchive", "DELETE /workspaces/W?force=1"])
   })
+  it("exposes task metadata and reorder mutations", async () => {
+    const calls: Array<{ m: string; p: string; b: any }> = []
+    const api = {
+      info: { port: 1, token: "t", pid: 1 },
+      req: async (m: string, p: string, b: any) => { calls.push({ m, p, b }); return {} },
+      wsTerminalUrl: () => "",
+    } as any
+    useData.getState().setApi(api)
+    await useData.getState().renameWs("W", "New name")
+    await useData.getState().setTaskStatusWs("W", "in_review")
+    await useData.getState().renameBranchWs("W", "feature/new")
+    await useData.getState().reorderWs("P", ["W", "M"])
+    expect(calls).toEqual([
+      { m: "POST", p: "/workspaces/W/rename", b: { name: "New name" } },
+      { m: "POST", p: "/workspaces/W/task-status", b: { status: "in_review" } },
+      { m: "POST", p: "/workspaces/W/branch", b: { branch: "feature/new" } },
+      { m: "POST", p: "/workspaces/reorder", b: { projectId: "P", workspaceIds: ["W", "M"] } },
+    ])
+  })
 })
 
 describe("useData.sendInput", () => {
@@ -118,5 +137,44 @@ describe("useData.sendInput", () => {
     expect(useData.getState().pendingSends.filter((x) => x.wsId === "W")).toHaveLength(1)
     await p.catch(() => {}) // port 1 不可达：reject 即可，账要清
     expect(useData.getState().pendingSends).toHaveLength(0)
+  })
+  it("targets the selected engine tab in composer and engine-switch requests", async () => {
+    const calls: Array<{ path: string; body: any }> = []
+    const api = {
+      info: { port: 1234, token: "t", pid: 1 },
+      req: async (_method: string, path: string, body: any) => {
+        calls.push({ path, body })
+        return path.endsWith("/tabs") ? [] : {}
+      },
+      wsTerminalUrl: () => "",
+    } as any
+    useData.getState().setApi(api)
+    useUi.getState().selectTab("W", "engine-two")
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response("{}", { status: 200 }))
+    await useData.getState().sendInput("W", { text: "hello", mode: "send", skipStable: false })
+    expect(JSON.parse(String(fetchSpy.mock.calls[0]![1]!.body))).toMatchObject({ tabId: "engine-two", text: "hello" })
+    fetchSpy.mockRestore()
+
+    await useData.getState().switchEngine("W", "codex")
+    expect(calls[0]).toMatchObject({
+      path: "/workspaces/W/engine",
+      body: { engineId: "codex", tabId: "engine-two" },
+    })
+  })
+
+  it("falls back to the primary engine when a shell tab is selected", async () => {
+    useData.setState({
+      tabsByWs: {
+        W: [
+          { id: "engine-one", workspaceId: "W", kind: "engine" },
+          { id: "shell-one", workspaceId: "W", kind: "shell" },
+        ],
+      },
+    } as any)
+    useUi.getState().selectTab("W", "shell-one")
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response("{}", { status: 200 }))
+    await useData.getState().sendInput("W", { text: "hello", mode: "send", skipStable: false })
+    expect(JSON.parse(String(fetchSpy.mock.calls[0]![1]!.body))).toMatchObject({ tabId: "engine-one" })
+    fetchSpy.mockRestore()
   })
 })

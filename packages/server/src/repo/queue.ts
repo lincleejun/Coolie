@@ -28,15 +28,16 @@ const rowToQueued = (row: any): QueuedPrompt => ({
 export interface QueueRepoShape {
   readonly enqueue: (entry: { workspaceId: string; tabId: string; text: string }) =>
     Effect.Effect<{ id: number; position: number }>
-  readonly peekNext: (workspaceId: string) => Effect.Effect<QueuedPrompt | null>
-  readonly claimNext: (workspaceId: string) => Effect.Effect<QueuedPrompt | null>
-  readonly listQueued: (workspaceId: string) => Effect.Effect<QueuedPrompt[]>
+  readonly peekNext: (workspaceId: string, tabId?: string) => Effect.Effect<QueuedPrompt | null>
+  readonly claimNext: (workspaceId: string, tabId?: string) => Effect.Effect<QueuedPrompt | null>
+  readonly listQueued: (workspaceId: string, tabId?: string) => Effect.Effect<QueuedPrompt[]>
   readonly withdraw: (id: number, workspaceId: string) =>
     Effect.Effect<{ status: "withdrawn" | "inflight" | "missing"; prompt?: QueuedPrompt }>
   readonly delivered: (id: number) => Effect.Effect<boolean>
   readonly release: (id: number, reason?: string) => Effect.Effect<boolean>
   readonly recoverInflight: () => Effect.Effect<number>
   readonly listWorkspaceIds: () => Effect.Effect<string[]>
+  readonly listTargets: () => Effect.Effect<Array<{ workspaceId: string; tabId: string }>>
   readonly clearWorkspace: (workspaceId: string) => Effect.Effect<number>
 }
 
@@ -55,8 +56,9 @@ export const makeQueueRepo = (
         "INSERT INTO prompt_queue (workspace_id, tab_id, text, mode, created_at) VALUES (?, ?, ?, 'send', ?)",
       ).run(workspaceId, tabId, text, Date.now())
       id = Number(result.lastInsertRowid)
-      position = (db.prepare("SELECT COUNT(*) AS n FROM prompt_queue WHERE workspace_id = ? AND state = 'queued'")
-        .get(workspaceId) as { n: number }).n
+      position = (db.prepare(
+        "SELECT COUNT(*) AS n FROM prompt_queue WHERE workspace_id = ? AND tab_id = ? AND state = 'queued'",
+      ).get(workspaceId, tabId) as { n: number }).n
       event = appendEventRow(db, {
         workspaceId,
         type: "prompt.queued",
@@ -66,16 +68,18 @@ export const makeQueueRepo = (
     broadcast(event)
     return { id, position }
   }),
-  peekNext: (workspaceId) => Effect.sync(() => {
-    const row = db.prepare("SELECT * FROM prompt_queue WHERE workspace_id = ? AND state = 'queued' ORDER BY id ASC LIMIT 1").get(workspaceId)
+  peekNext: (workspaceId, tabId) => Effect.sync(() => {
+    const row = tabId === undefined
+      ? db.prepare("SELECT * FROM prompt_queue WHERE workspace_id = ? AND state = 'queued' ORDER BY id ASC LIMIT 1").get(workspaceId)
+      : db.prepare("SELECT * FROM prompt_queue WHERE workspace_id = ? AND tab_id = ? AND state = 'queued' ORDER BY id ASC LIMIT 1").get(workspaceId, tabId)
     return row ? rowToQueued(row) : null
   }),
-  claimNext: (workspaceId) => Effect.sync(() => {
+  claimNext: (workspaceId, tabId) => Effect.sync(() => {
     let claimed: QueuedPrompt | null = null
     db.transaction(() => {
-      const row = db.prepare(
-        "SELECT * FROM prompt_queue WHERE workspace_id = ? AND state = 'queued' ORDER BY id ASC LIMIT 1",
-      ).get(workspaceId)
+      const row = tabId === undefined
+        ? db.prepare("SELECT * FROM prompt_queue WHERE workspace_id = ? AND state = 'queued' ORDER BY id ASC LIMIT 1").get(workspaceId)
+        : db.prepare("SELECT * FROM prompt_queue WHERE workspace_id = ? AND tab_id = ? AND state = 'queued' ORDER BY id ASC LIMIT 1").get(workspaceId, tabId)
       if (!row) return
       const changed = db.prepare("UPDATE prompt_queue SET state = 'inflight' WHERE id = ? AND state = 'queued'")
         .run((row as any).id).changes
@@ -83,8 +87,11 @@ export const makeQueueRepo = (
     })()
     return claimed
   }),
-  listQueued: (workspaceId) => Effect.sync(() =>
-    db.prepare("SELECT * FROM prompt_queue WHERE workspace_id = ? AND state = 'queued' ORDER BY id ASC").all(workspaceId).map(rowToQueued)),
+  listQueued: (workspaceId, tabId) => Effect.sync(() =>
+    (tabId === undefined
+      ? db.prepare("SELECT * FROM prompt_queue WHERE workspace_id = ? AND state = 'queued' ORDER BY id ASC").all(workspaceId)
+      : db.prepare("SELECT * FROM prompt_queue WHERE workspace_id = ? AND tab_id = ? AND state = 'queued' ORDER BY id ASC").all(workspaceId, tabId))
+      .map(rowToQueued)),
   withdraw: (id, workspaceId) => Effect.sync(() => {
     let result: { status: "withdrawn" | "inflight" | "missing"; prompt?: QueuedPrompt } = { status: "missing" }
     let event: CoolieEvent | null = null
@@ -145,6 +152,10 @@ export const makeQueueRepo = (
   listWorkspaceIds: () => Effect.sync(() =>
     (db.prepare("SELECT DISTINCT workspace_id FROM prompt_queue ORDER BY workspace_id").all() as Array<{ workspace_id: string }>)
       .map((row) => row.workspace_id)),
+  listTargets: () => Effect.sync(() =>
+    (db.prepare("SELECT DISTINCT workspace_id, tab_id FROM prompt_queue ORDER BY workspace_id, tab_id")
+      .all() as Array<{ workspace_id: string; tab_id: string }>)
+      .map((row) => ({ workspaceId: row.workspace_id, tabId: row.tab_id }))),
   clearWorkspace: (workspaceId) => Effect.sync(() =>
     db.prepare("DELETE FROM prompt_queue WHERE workspace_id = ?").run(workspaceId).changes),
 })

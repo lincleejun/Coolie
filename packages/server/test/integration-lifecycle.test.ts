@@ -102,7 +102,7 @@ describe("integration: workspace lifecycle against a real git repo", () => {
     const types = (await ok(Effect.gen(function* () {
       return yield* (yield* EventsRepo).listAfter({ after: 0 })
     }))).map((e) => e.type)
-    for (const t of ["workspace.creating", "workspace.setup.started", "workspace.setup.finished", "workspace.created"])
+    for (const t of ["workspace.intent.created", "workspace.setup.started", "workspace.setup.finished", "workspace.created"])
       expect(types).toContain(t)
   }, 30_000)
 

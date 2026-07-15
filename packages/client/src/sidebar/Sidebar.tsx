@@ -1,25 +1,35 @@
-import { useEffect, useState } from "react"
+import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react"
 import type { Workspace, Tab } from "@coolie/protocol"
 import { useData } from "../stores/data"
-import { useUi } from "../stores/ui"
+import { consumeModalKey, useUi } from "../stores/ui"
 import { useAttention } from "../stores/attention"
 import { ApiError } from "../api/client"
 import { orderedActiveWs, pinnedFirst } from "../hotkeys/useGlobalHotkeys"
 import { CaretRightIcon, ChevronDownIcon, FolderPlusIcon, GitBranchIcon, HelpIcon, PlusIcon, SearchIcon, SettingsIcon } from "../chrome/icons"
 import { ProjectOnboarding } from "../chrome/EmptyState"
 import { openWorkspaceWindow } from "../chrome/workspaceWindow"
+import { archiveForceConfirmation, buildTaskCommands, deleteConfirmation } from "./taskCommands"
+import { confirmDialog, promptDialog, trapTabKey, useAppDialogOpen } from "../chrome/dialogs"
+import { showToast } from "../chrome/Toasts"
+import { useT, t } from "../i18n"
+
+export { archiveForceConfirmation, deleteConfirmation } from "./taskCommands"
 
 /** 状态徽标（spec §六）：workspace 状态优先，active 时取 engine tab 状态 */
 export const wsBadge = (ws: Workspace, tabs: Tab[] | undefined): { glyph: string; cls: string; title: string } => {
-  if (ws.status === "creating") return { glyph: "◌", cls: "b-creating", title: "创建中" }
-  if (ws.status === "error") return { glyph: "!", cls: "b-error", title: "创建失败（可重试）" }
-  if (ws.status === "archived") return { glyph: "▪", cls: "b-archived", title: "已归档" }
-  const engine = tabs?.find((t) => t.kind === "engine")
-  switch (engine?.status) {
-    case "working": return { glyph: "●", cls: "b-working", title: "工作中" }
-    case "awaiting-input": return { glyph: "✓", cls: "b-await", title: "等输入" }
-    case "error": return { glyph: "!", cls: "b-error", title: "错误" }
-    default: return { glyph: "○", cls: "b-idle", title: "空闲" }
+  if (ws.status === "creating") return { glyph: "◌", cls: "b-creating", title: t("sidebar.status.creating") }
+  if (ws.status === "error") return { glyph: "!", cls: "b-error", title: t("sidebar.status.createError") }
+  if (ws.status === "archived") return { glyph: "▪", cls: "b-archived", title: t("sidebar.status.archived") }
+  const statuses = tabs?.filter((tab) => tab.kind === "engine").map((tab) => tab.status) ?? []
+  const status = statuses.includes("error") ? "error"
+    : statuses.includes("awaiting-input") ? "awaiting-input"
+    : statuses.includes("working") ? "working"
+    : "idle"
+  switch (status) {
+    case "working": return { glyph: "●", cls: "b-working", title: t("sidebar.status.working") }
+    case "awaiting-input": return { glyph: "✓", cls: "b-await", title: t("sidebar.status.awaiting") }
+    case "error": return { glyph: "!", cls: "b-error", title: t("sidebar.status.error") }
+    default: return { glyph: "○", cls: "b-idle", title: t("sidebar.status.idle") }
   }
 }
 
@@ -27,15 +37,18 @@ export const wsBadge = (ws: Workspace, tabs: Tab[] | undefined): { glyph: string
 const monogram = (name: string): string =>
   (name.match(/[A-Za-z0-9]/g)?.slice(0, 2).join("") || name.slice(0, 2)).toUpperCase()
 
-export const archiveForceConfirmation = (ws: Workspace): string =>
-  ws.ownership === "adopted"
-    ? `归档「${ws.name}」只取消 Coolie 管理并停止运行时，保留外部 worktree 及其改动。`
-    : `「${ws.name}」有未提交改动。强制归档会永久丢弃未提交改动，确定继续？`
+export const reorderWorkspaceIds = (ids: readonly string[], sourceId: string, targetId: string): string[] => {
+  const next = [...ids]
+  const from = next.indexOf(sourceId)
+  const to = next.indexOf(targetId)
+  if (from < 0 || to < 0 || from === to) return next
+  next.splice(from, 1)
+  next.splice(to, 0, sourceId)
+  return next
+}
 
-export const deleteConfirmation = (ws: Workspace): string =>
-  ws.ownership === "adopted"
-    ? `删除 workspace「${ws.name}」只取消 Coolie 管理，保留外部 worktree、分支及未提交改动。`
-    : `删除 workspace「${ws.name}」？\n这会永久丢弃未提交改动并删除 worktree；branch ⑂${ws.branch} 保留。`
+export const canFinishWorkspace = (workspace: Pick<Workspace, "kind" | "status">): boolean =>
+  workspace.status === "active" && workspace.kind !== "main"
 
 const DiffCount = ({ wsId }: { wsId: string }) => {
   const d = useData((s) => s.diffstatByWs[wsId])
@@ -49,57 +62,65 @@ const WsRowMenu = ({ ws, onClose }: { ws: Workspace; onClose: () => void }) => {
   const [busy, setBusy] = useState(false)
   const run = (fn: () => Promise<unknown>): void => {
     setBusy(true)
-    void fn().catch((e: unknown) => alert(e instanceof Error ? e.message : String(e))).finally(() => { setBusy(false); onClose() })
+    void fn().catch((error: unknown) => showToast("task.lifecycle", error))
+      .finally(() => { setBusy(false); onClose() })
   }
   const archive = (): void => run(async () => {
     const d = useData.getState()
-    if (ws.ownership === "adopted" && !window.confirm(archiveForceConfirmation(ws))) return
+    if (ws.ownership === "adopted" && !await confirmDialog(t("task.archiveTitle"), archiveForceConfirmation(ws), true)) return
     try { await d.archiveWs(ws.id, false) }
     catch (e) {
       // 脏 worktree：server 以 409 ConflictError 拒绝无 force 归档 → 征得确认后强制
-      if (e instanceof ApiError && e.status === 409 && window.confirm(archiveForceConfirmation(ws)))
+      if (e instanceof ApiError && e.status === 409 && await confirmDialog(t("task.archiveTitle"), archiveForceConfirmation(ws), true))
         await d.archiveWs(ws.id, true)
       else if (!(e instanceof ApiError && e.status === 409)) throw e
     }
   })
   const togglePinned = (): void => run(() => useData.getState().setPinnedWs(ws.id, !ws.pinned))
   const unarchive = (): void => run(() => useData.getState().unarchiveWs(ws.id))
-  const del = (): void => {
-    if (!window.confirm(deleteConfirmation(ws))) { onClose(); return }
-    run(() => useData.getState().deleteWs(ws.id, true))
-  }
+  const del = (): void => run(async () => {
+    if (await confirmDialog(t("task.deleteTitle"), deleteConfirmation(ws), true))
+      await useData.getState().deleteWs(ws.id, true)
+  })
   const finishPr = (): void => run(async () => {
+    if (ws.kind === "main") return
     const api = useData.getState().getApi()
-    if (!api) throw new Error("api 未就绪")
-    const title = window.prompt("PR 标题（留空使用 branch 名）") ?? undefined
+    if (!api) throw new Error(t("sidebar.apiUnavailable"))
+    const title = await promptDialog(t("dialog.createPr"), t("dialog.prTitle"), ws.branch) ?? undefined
     const out = await api.req("POST", `/workspaces/${ws.id}/finish`, { createPr: true, title })
-    if (out.prUrl) window.alert(`PR 已创建：${out.prUrl}`)
-    for (const warning of out.warnings ?? []) useData.getState().pushWarning("workspace.finish", warning)
+    if (out.prUrl) showToast("workspace.pr.created", out.prUrl)
+    for (const warning of out.warnings ?? []) showToast("workspace.finish", warning)
   })
   const mergeBack = (): void => {
-    if (!window.confirm(`确认把「${ws.branch}」以 --no-ff 合回主 checkout 的 ${ws.baseBranch}？\n两边都必须 clean；冲突会原样保留。`)) {
-      onClose()
-      return
-    }
     run(async () => {
+      if (ws.kind === "main") return
+      if (!await confirmDialog(t("dialog.mergeTitle"), t("dialog.mergeMessage")
+        .replace("{branch}", ws.branch).replace("{base}", ws.baseBranch), true)) return
       const api = useData.getState().getApi()
-      if (!api) throw new Error("api 未就绪")
+      if (!api) throw new Error(t("sidebar.apiUnavailable"))
       await api.req("POST", `/workspaces/${ws.id}/finish`, { mergeBack: true })
     })
   }
   return (
     <div className="ws-menu" role="menu" onClick={(e) => e.stopPropagation()}>
-      <button role="menuitem" disabled={busy} onClick={togglePinned}>{ws.pinned ? "取消置顶" : "置顶"}</button>
-      {ws.status === "active" && <button role="menuitem" disabled={busy} onClick={archive}>归档</button>}
-      {ws.status === "active" && <button role="menuitem" disabled={busy} onClick={finishPr}>创建 PR…</button>}
-      {ws.status === "active" && <button role="menuitem" disabled={busy} onClick={mergeBack}>合回主 checkout…</button>}
-      {ws.status === "archived" && <button role="menuitem" disabled={busy} onClick={unarchive}>恢复</button>}
-      <button role="menuitem" className="danger" disabled={busy} onClick={del}>删除…</button>
+      <button role="menuitem" disabled={busy} onClick={togglePinned}>{t(ws.pinned ? "task.unpin" : "task.pin")}</button>
+      {ws.status === "active" && <button role="menuitem" disabled={busy} onClick={archive}>{t("task.archive")}</button>}
+      {canFinishWorkspace(ws) &&
+        <button role="menuitem" disabled={busy} onClick={finishPr}>{t("task.createPr")}</button>}
+      {canFinishWorkspace(ws) &&
+        <button role="menuitem" disabled={busy} onClick={mergeBack}>{t("task.mergeBack")}</button>}
+      {ws.status === "archived" && <button role="menuitem" disabled={busy} onClick={unarchive}>{t("task.restore")}</button>}
+      <button role="menuitem" className="danger" disabled={busy} onClick={del}>{t("task.delete")}</button>
     </div>
   )
 }
 
-const WsRow = ({ ws }: { ws: Workspace }) => {
+const WsRow = ({ ws, focused, onFocus, onDrop }: {
+  ws: Workspace
+  focused: boolean
+  onFocus(): void
+  onDrop(sourceId: string, targetId: string): void
+}) => {
   const selected = useUi((s) => s.selectedWs === ws.id)
   const raised = useAttention((s) => s.isRaised(ws.id))
   const tabs = useData((s) => s.tabsByWs[ws.id])
@@ -114,17 +135,30 @@ const WsRow = ({ ws }: { ws: Workspace }) => {
   }, [menuOpen])
   return (
     <div
-      className={`ws-row ${selected ? "selected" : ""}`}
+      className={`ws-row ${selected ? "selected" : ""} ${focused ? "keyboard-focused" : ""}`}
+      role="option"
+      aria-selected={selected}
+      tabIndex={focused ? 0 : -1}
+      draggable
+      data-workspace-id={ws.id}
       onClick={() => useUi.getState().selectWs(ws.id)}
+      onFocus={onFocus}
+      onDragStart={(event) => event.dataTransfer.setData("text/coolie-workspace", ws.id)}
+      onDragOver={(event) => event.preventDefault()}
+      onDrop={(event) => {
+        event.preventDefault()
+        const sourceId = event.dataTransfer.getData("text/coolie-workspace")
+        if (sourceId) onDrop(sourceId, ws.id)
+      }}
       onContextMenu={(e) => { e.preventDefault(); setMenuOpen(true) }}
     >
       <span className={`badge ${badge.cls}`} title={badge.title}>{badge.glyph}</span>
-      {raised && <span className="attn-dot" title="需要你" aria-label="需要你">!</span>}
+      {raised && <span className="attn-dot" title={t("sidebar.needsYou")} aria-label={t("sidebar.needsYou")}>!</span>}
       <span className="ws-name">{ws.pinned ? "📌 " : ""}{ws.name}</span>
       <span className="ws-branch" title={ws.branch}><GitBranchIcon size={11} className="ws-branch-icon" />{ws.branch.replace(/^coolie\//, "")}</span>
       {ws.status === "active" && <DiffCount wsId={ws.id} />}
       <button
-        className="ws-more" title="更多动作" aria-label="更多动作"
+        className="ws-more" title={t("sidebar.more")} aria-label={t("sidebar.more")}
         onClick={(e) => { e.stopPropagation(); setMenuOpen((v) => !v) }}
       >⋯</button>
       {menuOpen && <WsRowMenu ws={ws} onClose={() => setMenuOpen(false)} />}
@@ -133,13 +167,51 @@ const WsRow = ({ ws }: { ws: Workspace }) => {
 }
 
 export const Sidebar = () => {
+  const tr = useT()
   const projects = useData((s) => s.projects)
   const workspaces = useData((s) => s.workspaces)
   const query = useUi((s) => s.searchQuery)
   const collapsedProjects = useUi((s) => s.collapsedProjects)
   const dispatchMode = useUi((s) => s.dispatchMode)
   const dispatchProjectId = useUi((s) => s.dispatchProjectId)
+  const settingsOpen = useUi((s) => s.settingsOpen)
   const [projectPickerOpen, setProjectPickerOpen] = useState(false)
+  const [projectFilter, setProjectFilter] = useState("")
+  const [focusedId, setFocusedId] = useState<string | null>(null)
+  const listRef = useRef<HTMLDivElement>(null)
+  const projectPicker = useRef<HTMLDivElement>(null)
+  const projectPickerTrigger = useRef<HTMLButtonElement>(null)
+  const projectPickerClose = useRef<HTMLButtonElement>(null)
+  const appDialogOpen = useAppDialogOpen()
+
+  useEffect(() => {
+    if (projectPickerOpen) useUi.getState().openModal("project-picker")
+    else useUi.getState().closeModal("project-picker")
+    return () => useUi.getState().closeModal("project-picker")
+  }, [projectPickerOpen])
+
+  useEffect(() => {
+    if (!projectPickerOpen || appDialogOpen) return
+    const frame = requestAnimationFrame(() => projectPickerClose.current?.focus())
+    return () => cancelAnimationFrame(frame)
+  }, [appDialogOpen, projectPickerOpen])
+
+  useEffect(() => {
+    if (settingsOpen) {
+      setProjectPickerOpen(false)
+      useUi.getState().closeModal("project-picker")
+    }
+  }, [settingsOpen])
+
+  const openProjectPicker = (): void => {
+    useUi.getState().openModal("project-picker")
+    setProjectPickerOpen(true)
+  }
+  const closeProjectPicker = (): void => {
+    useUi.getState().closeModal("project-picker")
+    setProjectPickerOpen(false)
+    requestAnimationFrame(() => projectPickerTrigger.current?.focus())
+  }
 
   // diff 计数轮询（spec §7.1：git diff --shortstat 轮询）：5s、窗口聚焦时才打
   useEffect(() => {
@@ -155,9 +227,52 @@ export const Sidebar = () => {
     query === "" || w.name.includes(query) || w.branch.includes(query)
   const ordered = orderedActiveWs().filter(match)
   const archived = pinnedFirst(workspaces.filter((w) => w.status === "archived" && match(w)))
+  const visible = useMemo(() => ordered.filter((workspace) =>
+    projectFilter === "" || workspace.projectId === projectFilter), [ordered, projectFilter])
+  const moveWorkspace = (sourceId: string, targetId: string): void => {
+    const source = workspaces.find((workspace) => workspace.id === sourceId)
+    const target = workspaces.find((workspace) => workspace.id === targetId)
+    if (!source || !target || source.projectId !== target.projectId || sourceId === targetId) return
+    const ids = reorderWorkspaceIds(
+      ordered.filter((workspace) => workspace.projectId === source.projectId).map((workspace) => workspace.id),
+      sourceId,
+      targetId,
+    )
+    void useData.getState().reorderWs(source.projectId, ids)
+      .catch((error: unknown) => showToast("workspace.reorder", error))
+  }
+  const onListKeyDown = (event: KeyboardEvent<HTMLDivElement>): void => {
+    if (event.metaKey || event.ctrlKey || event.altKey || event.target instanceof HTMLInputElement) return
+    const index = visible.findIndex((workspace) => workspace.id === focusedId)
+    if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+      event.preventDefault()
+      const delta = event.key === "ArrowDown" ? 1 : -1
+      const next = visible[(Math.max(index, 0) + delta + visible.length) % visible.length]
+      if (event.shiftKey && focusedId && next) moveWorkspace(focusedId, next.id)
+      else if (next) {
+        setFocusedId(next.id)
+        requestAnimationFrame(() => listRef.current?.querySelector<HTMLElement>(`[data-workspace-id="${next.id}"]`)?.focus())
+      }
+      return
+    }
+    if (event.key.toLowerCase() === "n") {
+      event.preventDefault()
+      const projectId = projectFilter || visible.find((workspace) => workspace.id === focusedId)?.projectId || projects[0]?.id
+      if (projectId) startWorkspace(projectId)
+      return
+    }
+    const ws = visible.find((workspace) => workspace.id === focusedId)
+    if (!ws) return
+    const command = buildTaskCommands(ws).find((item) =>
+      item.key.toLowerCase() === event.key.toLowerCase())
+    if (command) {
+      event.preventDefault()
+      void command.run()
+    }
+  }
   const startWorkspace = (projectId: string): void => {
     void openWorkspaceWindow(projectId)
-      .catch((error: unknown) => window.alert(error instanceof Error ? error.message : String(error)))
+      .catch((error: unknown) => showToast("workspace.open", error))
   }
   const adopt = async (projectId: string): Promise<void> => {
     const data = useData.getState()
@@ -166,39 +281,51 @@ export const Sidebar = () => {
     try {
       const candidates: Array<{ path: string; branch: string; head: string }> =
         await api.req("GET", `/projects/${projectId}/worktrees/adoptable`)
-      if (candidates.length === 0) return window.alert("没有可采用的 branch worktree")
-      const answer = window.prompt(
-        `输入要采用的编号：\n${candidates.map((item, index) => `${index + 1}. ${item.branch}\n   ${item.path}`).join("\n")}`,
+      if (candidates.length === 0) {
+        showToast("workspace.adopt", tr("sidebar.noAdoptable"))
+        return
+      }
+      const answer = await promptDialog(t("dialog.adoptTitle"),
+        `${t("sidebar.adoptNumber")}:\n${candidates.map((item, index) => `${index + 1}. ${item.branch}\n   ${item.path}`).join("\n")}`,
         "1",
       )
       if (answer === null) return
       const chosen = candidates[Number(answer) - 1]
-      if (!chosen) throw new Error("编号无效")
-      const name = window.prompt("Workspace 名称（留空自动分配）") || undefined
+      if (!chosen) throw new Error(tr("sidebar.invalidAdoptNumber"))
+      const name = await promptDialog(t("task.namePrompt"), t("task.namePrompt")) || undefined
       await api.req("POST", `/projects/${projectId}/worktrees/adopt`, { path: chosen.path, ...(name ? { name } : {}) })
       await data.refreshWorkspaces()
     } catch (error) {
-      window.alert(error instanceof Error ? error.message : String(error))
+      showToast("workspace.adopt", error)
     }
   }
 
   return (
     <div className="sidebar">
       <div className="side-actions">
-        <button className="side-new" onClick={() => setProjectPickerOpen(true)}>
-          <PlusIcon size={15} /> Open Project
+        <button ref={projectPickerTrigger} className="side-new" onClick={openProjectPicker}>
+          <PlusIcon size={15} /> {tr("sidebar.openProject")}
         </button>
         <div className="side-search-wrap">
           <SearchIcon size={13} />
           <input
-            className="side-search" placeholder="搜索 workspace…"
+            className="side-search" placeholder={tr("sidebar.search")}
             value={query} onChange={(e) => useUi.getState().setSearch(e.target.value)}
           />
         </div>
+        <select
+          className="side-project-filter"
+          aria-label={tr("sidebar.filter")}
+          value={projectFilter}
+          onChange={(event) => setProjectFilter(event.target.value)}
+        >
+          <option value="">{tr("sidebar.allProjects")}</option>
+          {projects.map((project) => <option key={project.id} value={project.id}>{project.name}</option>)}
+        </select>
       </div>
-      <div className="side-list">
-        {projects.map((p) => {
-          const rows = ordered.filter((w) => w.projectId === p.id)
+      <div className="side-list" ref={listRef} role="listbox" aria-label={tr("sidebar.tasks")} onKeyDown={onListKeyDown}>
+        {projects.filter((project) => projectFilter === "" || project.id === projectFilter).map((p) => {
+          const rows = visible.filter((w) => w.projectId === p.id)
           const creatingHere = dispatchMode && dispatchProjectId === p.id
           const showNewAgent = creatingHere && !rows.some((workspace) => workspace.status === "creating")
           if (rows.length === 0 && query !== "" && !creatingHere) return null
@@ -207,28 +334,31 @@ export const Sidebar = () => {
             <section key={p.id}>
               <div className="proj-h">
                 <button
-                  className="proj-chev" aria-label={collapsed ? "展开" : "折叠"}
+                  className="proj-chev" aria-label={collapsed ? tr("sidebar.expand") : tr("sidebar.collapse")}
                   onClick={() => useUi.getState().toggleProjectCollapsed(p.id)}
                 >
                   {collapsed ? <CaretRightIcon size={12} /> : <ChevronDownIcon size={12} />}
                 </button>
                 <span className="repo-m">{monogram(p.name)}</span>
                 <span className="proj-name">{p.name}</span>
-                <button className="proj-add" title="采用已有 worktree…" aria-label="采用 worktree" onClick={() => void adopt(p.id)}>
+                <button className="proj-add" title={tr("sidebar.adopt")} aria-label={tr("sidebar.adopt")} onClick={() => void adopt(p.id)}>
                   <FolderPlusIcon size={13} />
                 </button>
-                <button className="proj-add" title="在新窗口新建 workspace" aria-label="新建 workspace" onClick={() => startWorkspace(p.id)}>
+                <button className="proj-add" title={tr("sidebar.new")} aria-label={tr("sidebar.new")} onClick={() => startWorkspace(p.id)}>
                   <PlusIcon size={13} />
                 </button>
               </div>
-              {!collapsed && rows.map((w) => <WsRow key={w.id} ws={w} />)}
+              {!collapsed && rows.map((w) => <WsRow key={w.id} ws={w}
+                focused={focusedId === w.id || (focusedId === null && w.id === visible[0]?.id)}
+                onFocus={() => setFocusedId(w.id)}
+                onDrop={moveWorkspace} />)}
               {!collapsed && showNewAgent && (
                 <button className="ws-row new-agent-row selected" onClick={() => useUi.getState().setDispatchMode(true, p.id)}>
                   <span className="badge b-creating">◌</span>
                   <span className="ws-name">&lt;new agent&gt;</span>
                 </button>
               )}
-              {!collapsed && rows.length === 0 && !creatingHere && <div className="dim empty-hint">⌘N 创建第一个 workspace</div>}
+              {!collapsed && rows.length === 0 && !creatingHere && <div className="dim empty-hint">{tr("sidebar.empty")}</div>}
             </section>
           )
         })}
@@ -236,33 +366,39 @@ export const Sidebar = () => {
           <section>
             <div className="proj-h">
               <button
-                className="proj-chev" aria-label={collapsedProjects.__archived ? "展开" : "折叠"}
+                className="proj-chev" aria-label={collapsedProjects.__archived ? tr("sidebar.expand") : tr("sidebar.collapse")}
                 onClick={() => useUi.getState().toggleProjectCollapsed("__archived")}
               >
                 {collapsedProjects.__archived ? <CaretRightIcon size={12} /> : <ChevronDownIcon size={12} />}
               </button>
-              <span className="proj-name">已归档（{archived.length}）</span>
+              <span className="proj-name">{tr("sidebar.archived")}（{archived.length}）</span>
             </div>
-            {!collapsedProjects.__archived && archived.map((w) => <WsRow key={w.id} ws={w} />)}
+            {!collapsedProjects.__archived && archived.map((w) => <WsRow key={w.id} ws={w}
+              focused={focusedId === w.id} onFocus={() => setFocusedId(w.id)} onDrop={moveWorkspace} />)}
           </section>
         )}
-        {projects.length === 0 && <div className="dim empty-hint side-onboard-hint">还没有项目 —— 中间面板可打开目录或 clone 仓库。</div>}
+        {projects.length === 0 && <div className="dim empty-hint side-onboard-hint">{tr("sidebar.noProjects")}</div>}
       </div>
       <div className="side-footer">
         <span className="side-foot-sp" />
-        <button className="icobtn" title={`帮助 · 快捷键 ⌘/`} aria-label="帮助" onClick={() => useUi.getState().setCheatsheet(true)}>
+        <button className="icobtn" title={`${tr("sidebar.help")} · ⌘/`} aria-label={tr("sidebar.help")} onClick={() => useUi.getState().setCheatsheet(true)}>
           <HelpIcon size={16} />
         </button>
-        <button className="icobtn" title="设置（⌘,）" aria-label="设置" onClick={() => useUi.getState().setSettings(true)}>
+        <button className="icobtn" title={`${tr("sidebar.settings")}（⌘,）`} aria-label={tr("sidebar.settings")} onClick={() => useUi.getState().setSettings(true)}>
           <SettingsIcon size={16} />
         </button>
       </div>
-      {projectPickerOpen && (
-        <div className="modal-backdrop" onClick={() => setProjectPickerOpen(false)}>
-          <div className="modal project-picker" role="dialog" aria-label="Open Project" onClick={(event) => event.stopPropagation()}>
-            <button className="project-picker-close" onClick={() => setProjectPickerOpen(false)} aria-label="关闭">×</button>
+      {projectPickerOpen && !appDialogOpen && !settingsOpen && (
+        <div className="modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) closeProjectPicker() }}>
+          <div ref={projectPicker} className="modal project-picker" role="dialog" aria-modal="true"
+            aria-label={tr("sidebar.openProject")} onKeyDown={(event) => {
+              if (trapTabKey(event.nativeEvent, projectPicker.current)) return
+              consumeModalKey(event, "Escape", closeProjectPicker)
+            }}>
+            <button ref={projectPickerClose} className="project-picker-close" onClick={closeProjectPicker}
+              aria-label={tr("dialog.close")}>×</button>
             <ProjectOnboarding onProjectReady={(project) => {
-              setProjectPickerOpen(false)
+              closeProjectPicker()
               startWorkspace(project.id)
             }} />
           </div>

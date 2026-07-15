@@ -5,12 +5,12 @@ import { EVENT_CHANNEL } from "../events/bus.js"
 import type { QueuedPrompt } from "../repo/queue.js"
 
 export interface DrainDeps {
-  readonly resolveEngineTab: (workspaceId: string) => Promise<{
+  readonly resolveEngineTab: (workspaceId: string, tabId?: string) => Promise<{
     tab: Tab
     wsActive: boolean
     nativeQueue: boolean
   } | null>
-  readonly claimNext: (workspaceId: string) => Promise<QueuedPrompt | null>
+  readonly claimNext: (workspaceId: string, tabId?: string) => Promise<QueuedPrompt | null>
   readonly release: (queueId: number) => Promise<void>
   readonly deliver: (target: string, text: string) => Promise<void>
   readonly markWorking: (tabId: string) => Promise<void>
@@ -19,12 +19,12 @@ export interface DrainDeps {
 }
 
 /** A turn-complete edge may start at most one queued turn. */
-export const drainWorkspace = async (deps: DrainDeps, workspaceId: string): Promise<boolean> => {
-  const resolved = await deps.resolveEngineTab(workspaceId)
+export const drainWorkspace = async (deps: DrainDeps, workspaceId: string, tabId?: string): Promise<boolean> => {
+  const resolved = await deps.resolveEngineTab(workspaceId, tabId)
   if (!resolved || !resolved.wsActive || resolved.nativeQueue || resolved.tab.status !== "awaiting-input") return false
-  const next = await deps.claimNext(workspaceId)
+  const next = await deps.claimNext(workspaceId, tabId)
   if (!next) return false
-  const current = await deps.resolveEngineTab(workspaceId)
+  const current = await deps.resolveEngineTab(workspaceId, next.tabId)
   if (!current || !current.wsActive || current.nativeQueue || current.tab.status !== "awaiting-input") {
     await deps.release(next.id)
     return false
@@ -72,9 +72,16 @@ export const resumeQueuedWorkspaces = async (
   queue: {
     readonly recoverInflight: () => Promise<number>
     readonly listWorkspaceIds: () => Promise<string[]>
+    readonly listTargets?: () => Promise<Array<{ workspaceId: string; tabId: string }>>
   },
 ): Promise<void> => {
   await queue.recoverInflight()
+  if (queue.listTargets) {
+    const targets = await queue.listTargets()
+    await Promise.all(targets.map(({ workspaceId, tabId }) =>
+      serial.run(workspaceId, async () => { await drainWorkspace(deps, workspaceId, tabId) })))
+    return
+  }
   const workspaceIds = await queue.listWorkspaceIds()
   await Promise.all(workspaceIds.map((workspaceId) =>
     serial.run(workspaceId, async () => { await drainWorkspace(deps, workspaceId) })))
@@ -87,11 +94,11 @@ export const startQueueDrainer = (
 ): (() => void) => {
   const onEvent = (event: CoolieEvent): void => {
     if (event.type !== "tab.status.changed" || !event.workspaceId) return
-    const payload = event.payload as { status?: string; source?: string } | null
+    const payload = event.payload as { status?: string; source?: string; tabId?: string } | null
     if (payload?.status !== "awaiting-input") return
     if (payload.source === "interrupt") return
     const workspaceId = event.workspaceId
-    void serial.run(workspaceId, async () => { await drainWorkspace(deps, workspaceId) })
+    void serial.run(workspaceId, async () => { await drainWorkspace(deps, workspaceId, payload.tabId) })
   }
   bus.on(EVENT_CHANNEL, onEvent)
   return () => bus.off(EVENT_CHANNEL, onEvent)

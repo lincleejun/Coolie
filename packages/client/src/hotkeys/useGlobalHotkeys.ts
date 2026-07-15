@@ -1,8 +1,8 @@
 import { useEffect } from "react"
 import { dispatchHotkey, pushHotkeyLayer } from "./dispatch"
 import { useData } from "../stores/data"
-import { useUi } from "../stores/ui"
-import type { HotkeyId } from "./registry"
+import { isModalActive, useUi } from "../stores/ui"
+import { resolveHotkey, type HotkeyId } from "./registry"
 import { openWorkspaceWindow } from "../chrome/workspaceWindow"
 
 /** pinned 稳定分组：置顶项优先，两个组内均保留输入顺序。 */
@@ -13,7 +13,8 @@ export const pinnedFirst = <T extends { pinned: boolean }>(items: readonly T[]):
 
 /** 视觉顺序的 active workspace 列表——Cmd+1..9/[/] 的索引真源 */
 export const orderedActiveWs = () => {
-  const ws = useData.getState().workspaces.filter((w) => w.status === "active" || w.status === "creating" || w.status === "error")
+  const ws = useData.getState().workspaces.filter((w) =>
+    w.kind !== "main" && (w.status === "active" || w.status === "creating" || w.status === "error"))
   return pinnedFirst(ws)
 }
 
@@ -37,7 +38,21 @@ const openWorkspaceForCurrentProject = (): void => {
   const projectId = selectedWs?.projectId ?? data.projects[0]?.id
   if (!projectId) return
   void openWorkspaceWindow(projectId)
-    .catch((error: unknown) => window.alert(error instanceof Error ? error.message : String(error)))
+    .catch((error: unknown) => useData.getState().pushWarning(
+      "workspace.open", error instanceof Error ? error.message : String(error),
+    ))
+}
+
+export const dispatchGlobalHotkey = (event: KeyboardEvent): boolean => {
+  if (isModalActive()) {
+    if (!resolveHotkey(event)) return false
+    event.preventDefault()
+    event.stopImmediatePropagation()
+    return true
+  }
+  if (!dispatchHotkey(event)) return false
+  event.preventDefault()
+  return true
 }
 
 export const useGlobalHotkeys = (): void => {
@@ -58,9 +73,7 @@ export const useGlobalHotkeys = (): void => {
       "app.settings": () => useUi.getState().setSettings(!useUi.getState().settingsOpen),
     }
     const pop = pushHotkeyLayer(handlers)
-    const onKey = (e: KeyboardEvent): void => {
-      if (dispatchHotkey(e)) e.preventDefault()
-    }
+    const onKey = (event: KeyboardEvent): void => { dispatchGlobalHotkey(event) }
     document.addEventListener("keydown", onKey)
     return () => { document.removeEventListener("keydown", onKey); pop() }
   }, [])

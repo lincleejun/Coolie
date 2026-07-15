@@ -35,6 +35,8 @@ describe("keep-alive 包装脚本", () => {
     expect(body).toContain("/hooks/engine-exit?workspace=$WS")
     expect(body).toContain(`${home}/server.json`)
     expect(body).toContain('exec "${SHELL:-/bin/sh}"')
+    expect(body).toContain("trap ':' INT")
+    expect(body).toContain("trap - INT")
   })
 
   it("engine 非零退出：curl 回报 exitCode + 横幅打印 + 落回 shell", () => {
@@ -65,6 +67,9 @@ describe("keep-alive 包装脚本", () => {
   })
 
   it("wrapEngineCommand 形状", () => {
-    expect(wrapEngineCommand(home, "w1", ["cat"])).toEqual(["/bin/sh", keepAliveScriptPath(home), "w1", "cat"])
+    expect(wrapEngineCommand(home, "w1", ["cat"], { tabId: "t1", tmuxWindow: 2 })).toEqual([
+      "/usr/bin/env", "COOLIE_WORKSPACE=w1", "COOLIE_TAB_ID=t1", "COOLIE_TMUX_WINDOW=2",
+      "/bin/sh", keepAliveScriptPath(home), "w1", "cat",
+    ])
   })
 })

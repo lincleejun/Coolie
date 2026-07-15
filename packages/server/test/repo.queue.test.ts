@@ -49,6 +49,19 @@ describe("QueueRepo", () => {
     expect(live.map((e) => e.type)).toEqual(["prompt.queued", "prompt.queued"])
   })
 
+  it("keeps positions and restart targets isolated per engine tab", async () => {
+    const positions = await run(Effect.gen(function* () {
+      const queue = yield* QueueRepo
+      const first = yield* queue.enqueue({ workspaceId: "w1", tabId: "t1", text: "一" })
+      const sibling = yield* queue.enqueue({ workspaceId: "w1", tabId: "t2", text: "二" })
+      const second = yield* queue.enqueue({ workspaceId: "w1", tabId: "t1", text: "三" })
+      return [first.position, sibling.position, second.position]
+    }))
+    expect(positions).toEqual([1, 1, 2])
+    expect(await run(Effect.gen(function* () { return yield* (yield* QueueRepo).listTargets() })))
+      .toEqual([{ workspaceId: "w1", tabId: "t1" }, { workspaceId: "w1", tabId: "t2" }])
+  })
+
   it("remove emits once and clearWorkspace removes remaining prompts", async () => {
     const ids = await run(Effect.gen(function* () {
       const queue = yield* QueueRepo

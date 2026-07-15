@@ -16,14 +16,19 @@ export const ensureKeepAliveScript = (home: string): string => {
 # Coolie engine keep-alive 包装（自动生成，勿手改）。
 # 用法：coolie-keepalive.sh <workspaceId> <engine command...>
 WS="$1"; shift
+# Keep the wrapper alive when the foreground engine receives SIGINT. External
+# commands reset caught traps to their default disposition on exec, so Ctrl-C
+# still reaches the engine; Coolie's intentional interrupt API sends Escape.
+trap ':' INT
 "$@"
 CODE=$?
+trap - INT
 INFO="${home}/server.json"
 if [ -f "$INFO" ]; then
   PORT=$(sed -n 's/.*"port": *\\([0-9][0-9]*\\).*/\\1/p' "$INFO")
   TOKEN=$(sed -n 's/.*"token": *"\\([^"]*\\)".*/\\1/p' "$INFO")
   if [ -n "$PORT" ] && [ -n "$TOKEN" ]; then
-    curl -s -m 2 -X POST "http://127.0.0.1:$PORT/hooks/engine-exit?workspace=$WS" \\
+    curl -s -m 2 -X POST "http://127.0.0.1:$PORT/hooks/engine-exit?workspace=$WS&tabId=$COOLIE_TAB_ID&window=$COOLIE_TMUX_WINDOW" \\
       -H "Authorization: Bearer $TOKEN" -H "content-type: application/json" \\
       --data "{\\"exitCode\\":$CODE}" >/dev/null 2>&1
   fi
@@ -36,5 +41,15 @@ exec "\${SHELL:-/bin/sh}"
 }
 
 /** engine 命令 → window 0 实际运行的包装命令。 */
-export const wrapEngineCommand = (home: string, wsId: string, engineCmd: readonly string[]): string[] =>
-  ["/bin/sh", keepAliveScriptPath(home), wsId, ...engineCmd]
+export const wrapEngineCommand = (
+  home: string,
+  wsId: string,
+  engineCmd: readonly string[],
+  context?: { readonly tabId?: string; readonly tmuxWindow?: number },
+): string[] => [
+  "/usr/bin/env",
+  `COOLIE_WORKSPACE=${wsId}`,
+  ...(context?.tabId ? [`COOLIE_TAB_ID=${context.tabId}`] : []),
+  ...(context?.tmuxWindow !== undefined ? [`COOLIE_TMUX_WINDOW=${context.tmuxWindow}`] : []),
+  "/bin/sh", keepAliveScriptPath(home), wsId, ...engineCmd,
+]

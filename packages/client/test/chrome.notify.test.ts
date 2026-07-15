@@ -7,9 +7,11 @@ import {
   setBadge,
 } from "../src/chrome/notify.js"
 import { useUi } from "../src/stores/ui.js"
+import { useSettings } from "../src/settings/settings.js"
 
 describe("notify utility capability degradation", () => {
   beforeEach(() => {
+    useSettings.setState({ lang: "en" })
     vi.stubGlobal("document", { title: "Coolie" })
     vi.stubGlobal("navigator", {})
     vi.stubGlobal("window", { focus: vi.fn() })
@@ -76,8 +78,8 @@ describe("notify utility capability degradation", () => {
 
     notifyTurnComplete("USA", "w1")
 
-    expect(NotificationApi).toHaveBeenCalledWith("USA 需要你", {
-      body: "engine 完成一轮，等待你的输入",
+    expect(NotificationApi).toHaveBeenCalledWith("USA needs you", {
+      body: "The engine finished a turn and is waiting for your input",
       tag: "coolie-w1",
     })
     notification.onclick?.()

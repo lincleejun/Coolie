@@ -88,6 +88,20 @@ describe("TabsRepo", () => {
     expect(Exit.isFailure(exit)).toBe(true)
   })
 
+  it("switchEngine atomically updates the engine tab and preserves sibling tabs", async () => {
+    const result = await run(Effect.gen(function* () {
+      const tabs = yield* TabsRepo
+      const engine = yield* tabs.insert({ workspaceId: "w1", kind: "engine", engineId: "claude", engineSessionId: "old", tmuxWindow: 0 })
+      const shell = yield* tabs.insert({ workspaceId: "w1", kind: "shell", tmuxWindow: 2 })
+      const switched = yield* tabs.switchEngine(engine.id, "copilot", "new")
+      return { switched, shell, all: yield* tabs.listByWorkspace("w1") }
+    }))
+    expect(result.switched).toMatchObject({ engineId: "copilot", engineSessionId: "new", status: "idle" })
+    expect(result.all.some((tab) => tab.id === result.shell.id && tab.tmuxWindow === 2)).toBe(true)
+    const event = eventRows().find((row) => row.type === "engine.switched")
+    expect(JSON.parse(event!.payload)).toMatchObject({ fromEngineId: "claude", engineId: "copilot" })
+  })
+
   it("findEngineTab returns the engine tab, null when absent", async () => {
     const found = await run(Effect.gen(function* () {
       const repo = yield* TabsRepo
@@ -99,6 +113,30 @@ describe("TabsRepo", () => {
     }))
     expect(found.none).toBeNull()
     expect(found.some?.kind).toBe("engine")
+  })
+
+  it("lists and resolves multiple engine tabs by exact session/window while primary is deterministic", async () => {
+    const found = await run(Effect.gen(function* () {
+      const repo = yield* TabsRepo
+      const later = yield* repo.insert({
+        workspaceId: "w1", kind: "engine", engineId: "codex", engineSessionId: "session-b", tmuxWindow: 4,
+      })
+      const primary = yield* repo.insert({
+        workspaceId: "w1", kind: "engine", engineId: "claude", engineSessionId: "session-a", tmuxWindow: 1,
+      })
+      return {
+        list: yield* repo.listEngineTabsByWorkspace("w1"),
+        session: yield* repo.findEngineTabBySession("w1", "session-b"),
+        window: yield* repo.findTabByWindow("w1", 1),
+        primary: yield* repo.findEngineTab("w1"),
+        later,
+        expectedPrimary: primary,
+      }
+    }))
+    expect(found.list.map((tab) => tab.id)).toEqual([found.expectedPrimary.id, found.later.id])
+    expect(found.session?.id).toBe(found.later.id)
+    expect(found.window?.id).toBe(found.expectedPrimary.id)
+    expect(found.primary?.id).toBe(found.expectedPrimary.id)
   })
 
   it("listEngineTabs joins active workspaces only", async () => {

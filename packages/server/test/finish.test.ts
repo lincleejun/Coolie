@@ -13,7 +13,11 @@ const workspace = new Workspace({
 })
 const project = new Project({ id: "p1", name: "repo", repoRoot: "/repo", defaultBaseBranch: "main", createdAt: 1 })
 
-const run = async (outputs: Record<string, string>, request: FinishRequest = { createPr: true }) => {
+const run = async (
+  outputs: Record<string, string>,
+  request: FinishRequest = { createPr: true },
+  selectedWorkspace: Workspace = workspace,
+) => {
   const calls: Array<{ tool: string; cwd: string; args: readonly string[] }> = []
   const ops = {
     git: (cwd: string, args: readonly string[]) => Effect.sync(() => {
@@ -29,7 +33,7 @@ const run = async (outputs: Record<string, string>, request: FinishRequest = { c
   const layer = WorkspaceFinisherLive.pipe(Layer.provideMerge(Layer.mergeAll(
     Layer.succeed(FinishOps, ops),
     Layer.succeed(ProjectsRepo, { add: null as any, get: () => Effect.succeed(project), list: null as any, remove: null as any }),
-    Layer.succeed(WorkspacesRepo, { get: () => Effect.succeed(workspace) } as any),
+    Layer.succeed(WorkspacesRepo, { get: () => Effect.succeed(selectedWorkspace) } as any),
     Layer.succeed(EventsRepo, {
       append: (event: any) => Effect.sync(() => { events.push(event); return events.length }),
       listAfter: null as any,
@@ -71,5 +75,21 @@ describe("WorkspaceFinisher", () => {
     }, { createPr: true, mergeBack: true })
     expect(Exit.isFailure(exit)).toBe(true)
     expect(calls.some((call) => call.args[0] === "push" || call.tool === "gh")).toBe(false)
+  })
+
+  it("rejects the main task before invoking git or gh", async () => {
+    const main = new Workspace({
+      ...workspace,
+      id: "main-1",
+      name: "repo",
+      path: "/repo",
+      branch: "main",
+      kind: "main",
+      portBase: 0,
+    })
+    const { exit, calls, events } = await run({}, { createPr: true, mergeBack: true }, main)
+    expect(Exit.isFailure(exit)).toBe(true)
+    expect(calls).toEqual([])
+    expect(events).toEqual([])
   })
 })

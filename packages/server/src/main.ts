@@ -13,13 +13,15 @@ import { WorkspacesRepo, WorkspacesRepoLive } from "./repo/workspaces.js"
 import { TabsRepo, TabsRepoLive } from "./repo/tabs.js"
 import { QueueRepo, QueueRepoLive } from "./repo/queue.js"
 import { EventsBus, EventsBusLive } from "./events/bus.js"
-import { WorkspaceLifecycleLive } from "./workspace/lifecycle.js"
+import { WorkspaceLifecycle, WorkspaceLifecycleLive } from "./workspace/lifecycle.js"
 import { GitServiceLive } from "./git/service.js"
 import { realGitRead } from "./git/inspect.js"
 import { makeSetupRunnerLive } from "./workspace/setup.js"
 import { TmuxService, TmuxServiceLive } from "./tmux/service.js"
 import { makeComposerOps } from "./tmux/ops.js"
+import { makeTmuxLayout } from "./tmux/layout.js"
 import { EngineRegistry, EngineRegistryLive, engineHome } from "./engine/registry.js"
+import { CustomEngineStoreLive } from "./engine/custom-store.js"
 import { EngineBootstrapHookLive } from "./engine/bootstrap.js"
 import { SessionEnsurerLive } from "./workspace/heal.js"
 import { WorkspaceAdopterLive } from "./workspace/adopt.js"
@@ -36,6 +38,7 @@ import { assertSockPathFits } from "./daemon/socket.js"
 import { makeClientRegistry } from "./daemon/clients.js"
 import { rotateLogIfNeeded } from "./log/rotate.js"
 import { createLogger, installCrashNet } from "./log/logger.js"
+import { BackgroundCollector, collectPullRequest } from "./collector/background.js"
 
 const cfg = Effect.runSync(CoolieConfig.pipe(Effect.provide(CoolieConfigLive)))
 
@@ -74,9 +77,9 @@ const cmdStart = async (): Promise<void> => {
       FinishOpsLive,
       makeSetupRunnerLive((chunk) => logger.info(`setup: ${chunk.trimEnd()}`)),
       TmuxServiceLive,
-      EngineRegistryLive,
+      EngineRegistryLive.pipe(Layer.provide(CustomEngineStoreLive)),
     )),
-    Layer.provideMerge(Layer.mergeAll(ProjectsRepoLive, EventsRepoLive, WorkspacesRepoLive, TabsRepoLive, QueueRepoLive)),
+    Layer.provideMerge(Layer.mergeAll(ProjectsRepoLive, EventsRepoLive, WorkspacesRepoLive, TabsRepoLive, QueueRepoLive, CustomEngineStoreLive)),
     Layer.provideMerge(EventsBusLive), // Plan 2 的 dead export 转正：单一构造点
     Layer.provideMerge(DbLive),
     Layer.provideMerge(CoolieConfigLive),
@@ -93,6 +96,11 @@ const cmdStart = async (): Promise<void> => {
   // tmux 首启检测（设计文档 §十二）：不阻启动，warn 进日志；doctor 同口径
   const tmuxSvc = Context.get(runtimeCtx, TmuxService)
   const composerOps = makeComposerOps(tmuxSvc)
+  const tmuxLayout = makeTmuxLayout(
+    tmuxSvc,
+    Context.get(runtimeCtx, WorkspacesRepo),
+    Context.get(runtimeCtx, TabsRepo),
+  )
   void Effect.runPromise(tmuxSvc.version()).then(
     (v) => logger.info(`tmux ok: ${v}`),
     (e) => logger.warn(`tmux 不可用：${String(e)}（brew install tmux；coolie doctor 检查）`),
@@ -113,25 +121,57 @@ const cmdStart = async (): Promise<void> => {
     homeFor: (engineId) => engineHome(engineId, cfg),
   })
   const workspaceSerial = createWorkspaceSerial()
+  const collector = new BackgroundCollector({
+    listWorkspaces: async () => {
+      const exit = await runtime(Effect.gen(function* () { return yield* (yield* WorkspacesRepo).list() }))
+      return Exit.isSuccess(exit) ? exit.value : []
+    },
+    diffstat: (workspace) => realGitRead.diffstat(workspace.path, workspace.baseRef),
+    pullRequest: (workspace) => collectPullRequest(workspace),
+    transcript: async (workspace) => {
+      const exit = await runtime(Effect.gen(function* () {
+        return yield* (yield* TabsRepo).listEngineTabsByWorkspace(workspace.id)
+      }))
+      const tabs = Exit.isSuccess(exit) ? exit.value : []
+      const updatedAt = tabs.reduce<number | null>((latest, tab) =>
+        tab.lastHookAt !== null && (latest === null || tab.lastHookAt > latest) ? tab.lastHookAt : latest, null)
+      const titled = tabs.find((tab) => tab.title !== null)
+      return {
+        active: tabs.some((tab) => tab.status === "working"),
+        updatedAt,
+        title: titled?.title ?? null,
+      }
+    },
+    appendEvent: async (workspaceId, type, payload) => {
+      await runtime(Effect.gen(function* () {
+        yield* (yield* EventsRepo).append({ workspaceId, type, payload })
+      }))
+    },
+    concurrency: 4,
+  })
+  let stopCollector = (): void => {}
   const drainDeps: DrainDeps = {
-    resolveEngineTab: async (workspaceId) => {
+    resolveEngineTab: async (workspaceId, tabId) => {
       const exit = await runtime(Effect.gen(function* () {
         const workspace = yield* (yield* WorkspacesRepo).get(workspaceId).pipe(Effect.option)
         if (Option.isNone(workspace)) return null
-        const tab = yield* (yield* TabsRepo).findEngineTab(workspaceId)
-        if (!tab) return null
-        const engine = (yield* EngineRegistry).get(tab.engineId ?? "claude")
+        const tabs = yield* TabsRepo
+        const exact = tabId === undefined
+          ? yield* tabs.findEngineTab(workspaceId)
+          : Option.getOrNull(yield* tabs.get(tabId).pipe(Effect.option))
+        if (!exact || exact.workspaceId !== workspaceId || exact.kind !== "engine") return null
+        const engine = (yield* EngineRegistry).get(exact.engineId ?? "claude")
         return {
-          tab,
+          tab: exact,
           wsActive: workspace.value.status === "active",
           nativeQueue: engine?.capabilities.nativeQueue === true,
         }
       }))
       return Exit.isSuccess(exit) ? exit.value : null
     },
-    claimNext: async (workspaceId) => {
+    claimNext: async (workspaceId, tabId) => {
       const exit = await runtime(Effect.gen(function* () {
-        return yield* (yield* QueueRepo).claimNext(workspaceId)
+        return yield* (yield* QueueRepo).claimNext(workspaceId, tabId)
       }))
       return Exit.isSuccess(exit) ? exit.value : null
     },
@@ -170,6 +210,7 @@ const cmdStart = async (): Promise<void> => {
     logger.info("shutdown")
     stopPoller()
     stopDrainer()
+    stopCollector()
     clients.dispose()
     fs.rmSync(cfg.serverInfoPath, { force: true })
     await Promise.race([
@@ -215,7 +256,13 @@ const cmdStart = async (): Promise<void> => {
     config: { tmuxSocket: cfg.tmuxSocket, reposRoot },
     attachmentsDir: path.join(cfg.home, "attachments"),
     composerOps,
+    layoutOps: {
+      reconcile: (workspaceId) => Effect.runPromise(tmuxLayout.reconcile(workspaceId)),
+      setZen: (workspaceId, zen, focusedTabId) =>
+        Effect.runPromise(tmuxLayout.setZen(workspaceId, zen, focusedTabId)),
+    },
     workspaceSerial,
+    collector,
     cloneRepo,
     onShutdown: () => void shutdown(),
     onError: (e) => logger.error("http 500", e),
@@ -227,8 +274,14 @@ const cmdStart = async (): Promise<void> => {
     token, tmuxSocket: cfg.tmuxSocket, clients,
     resolveSession: async (wsId, window) => {
       const exit = await runtime(Effect.gen(function* () {
-        const ws = yield* (yield* WorkspacesRepo).get(wsId)
+        const workspaces = yield* WorkspacesRepo
+        let ws = yield* workspaces.get(wsId)
+        if (!ws.materialized) {
+          yield* (yield* WorkspaceLifecycle).ensure(wsId)
+          ws = yield* workspaces.get(wsId)
+        }
         if (ws.status !== "active" && ws.status !== "creating") return null
+        if (ws.status === "active") yield* (yield* WorkspaceLifecycle).ensure(wsId)
         const registered = (yield* (yield* TabsRepo).listByWorkspace(wsId))
           .some((tab) => tab.tmuxWindow === window)
         return registered ? tmuxSessionName(ws.id) : null
@@ -258,6 +311,7 @@ const cmdStart = async (): Promise<void> => {
         process.exit(1)
       }
       stopDrainer = startQueueDrainer(bus, drainDeps, workspaceSerial)
+      stopCollector = collector.start(Number(process.env.COOLIE_COLLECT_INTERVAL_MS ?? 30_000))
       void resumeQueuedWorkspaces(workspaceSerial, drainDeps, {
         recoverInflight: async () => {
           const exit = await runtime(Effect.gen(function* () { return yield* (yield* QueueRepo).recoverInflight() }))
@@ -265,6 +319,10 @@ const cmdStart = async (): Promise<void> => {
         },
         listWorkspaceIds: async () => {
           const exit = await runtime(Effect.gen(function* () { return yield* (yield* QueueRepo).listWorkspaceIds() }))
+          return Exit.isSuccess(exit) ? exit.value : []
+        },
+        listTargets: async () => {
+          const exit = await runtime(Effect.gen(function* () { return yield* (yield* QueueRepo).listTargets() }))
           return Exit.isSuccess(exit) ? exit.value : []
         },
       })

@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest"
-import { engineHome } from "../src/engine/registry.js"
+import { engineHome, makeEngineRegistry } from "../src/engine/registry.js"
+import { copilotPreset } from "../src/engine/custom-store.js"
 
 describe("engineHome", () => {
   it("engineHome 按引擎 id 选目录，未知兜底 claudeHome", () => {
@@ -8,5 +9,14 @@ describe("engineHome", () => {
     expect(engineHome("codex", cfg)).toBe("/x")
     expect(engineHome("mystery", cfg)).toBe("/c")
     expect(engineHome(null, cfg)).toBe("/c")
+  })
+})
+
+describe("custom registry merge", () => {
+  it("keeps built-ins and merges only enabled custom engines", () => {
+    const disabled = { ...copilotPreset("disabled-agent"), enabled: false }
+    const registry = makeEngineRegistry([copilotPreset(), disabled])
+    expect([...registry.keys()]).toEqual(expect.arrayContaining(["claude", "codex", "copilot"]))
+    expect(registry.has("disabled-agent")).toBe(false)
   })
 })

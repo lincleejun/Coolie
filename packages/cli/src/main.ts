@@ -2,6 +2,11 @@
 import { Command } from "commander"
 import {
   ROUTES,
+  routeExample,
+  routeGroup,
+  routeRequestShape,
+  routeResponseShape,
+  selectRoutes,
   buildCoolieUrl,
   decodeProject,
   decodeWorkspace,
@@ -18,11 +23,15 @@ import {
 } from "@coolie/server"
 import * as path from "node:path"
 import * as fs from "node:fs"
+import { fileURLToPath } from "node:url"
 import { spawnSync } from "node:child_process"
 import Database from "better-sqlite3"
-import { api, home } from "./client.js"
+import { api, ensureServer, home } from "./client.js"
 import { toCsv, toTable } from "./export-format.js"
 import { expandAgents, parseAgentsSpec } from "./fanout.js"
+import { generateCompletion, type CompletionShell } from "./completions.js"
+import { checkForUpdate } from "./update-check.js"
+import { resetRuntime, stopDaemon } from "./server-control.js"
 
 const program = new Command("coolie").showHelpAfterError()
 const fail = (e: unknown): never => { console.error(String(e instanceof Error ? e.message : e)); process.exit(1) }
@@ -51,6 +60,86 @@ const resolveProjectId = async (arg: string): Promise<string> => {
   if (!project) project = await api("POST", "/projects", { repoRoot: abs })
   return project.id
 }
+
+const engine = program.command("engine").description("管理 coding engines")
+engine.command("list").action(async () => {
+  try {
+    const config: any = await api("GET", "/config")
+    for (const item of config.engines)
+      console.log(`${item.id}\t${item.enabled ? "enabled" : "disabled"}\t${item.custom ? "custom" : "built-in"}\t${item.displayName}`)
+  } catch (error) { fail(error) }
+})
+engine.command("put <json>")
+  .description("创建/更新 custom engine（JSON 或 @file）")
+  .action(async (source: string) => {
+    try {
+      const text = source.startsWith("@") ? fs.readFileSync(path.resolve(source.slice(1)), "utf8") : source
+      const definition: any = await api("POST", "/engines/custom", JSON.parse(text))
+      console.log(`saved ${definition.id}`)
+    } catch (error) { fail(error) }
+  })
+engine.command("delete <id>").action(async (id: string) => {
+  try { await api("DELETE", `/engines/custom/${encodeURIComponent(id)}`); console.log(`deleted ${id}`) }
+  catch (error) { fail(error) }
+})
+engine.command("detect <id>").action(async (id: string) => {
+  try {
+    const result: any = await api("POST", `/engines/custom/${encodeURIComponent(id)}/detect`, {})
+    console.log(`${result.available ? "available" : "unavailable"}\t${result.accountHint ?? result.error ?? ""}`)
+    if (!result.available) process.exitCode = 1
+  } catch (error) { fail(error) }
+})
+engine.command("copilot").option("--id <id>", "custom engine id", "copilot").action(async (opts: { id: string }) => {
+  try {
+    const definition: any = await api("POST", "/engines/custom/presets/copilot", { id: opts.id })
+    console.log(`saved ${definition.id}`)
+  } catch (error) { fail(error) }
+})
+engine.command("switch <wsId> <engineId>")
+  .option("--tab <tabId>", "要切换的 engine tab（缺省为兼容 primary）")
+  .option("--model <model>")
+  .option("--effort <effort>")
+  .action(async (wsId: string, engineId: string, opts: { tab?: string; model?: string; effort?: string }) => {
+    try {
+      await api("POST", `/workspaces/${wsId}/engine`, {
+        engineId, ...(opts.tab ? { tabId: opts.tab } : {}),
+        ...(opts.model ? { model: opts.model } : {}), ...(opts.effort ? { effort: opts.effort } : {}),
+      })
+      console.log(`switched ${wsId} to ${engineId}`)
+    } catch (error) { fail(error) }
+  })
+
+const tab = program.command("tab").description("管理 workspace chat tabs")
+tab.command("list <wsId>").action(async (wsId: string) => {
+  try {
+    const tabs: any[] = await api("GET", `/workspaces/${wsId}/tabs`)
+    for (const item of tabs) console.log(`${item.id}\t${item.kind}\t${item.engineId ?? "-"}\t${item.status}\t${item.title ?? ""}`)
+  } catch (error) { fail(error) }
+})
+tab.command("create <wsId>")
+  .requiredOption("--engine <engineId>")
+  .option("--model <model>")
+  .option("--effort <effort>")
+  .option("--title <title>")
+  .action(async (wsId: string, opts: { engine: string; model?: string; effort?: string; title?: string }) => {
+    try {
+      const created: any = await api("POST", `/workspaces/${wsId}/tabs`, {
+        kind: "engine", engineId: opts.engine,
+        ...(opts.model ? { model: opts.model } : {}),
+        ...(opts.effort ? { effort: opts.effort } : {}),
+        ...(opts.title ? { title: opts.title } : {}),
+      })
+      console.log(created.id)
+    } catch (error) { fail(error) }
+  })
+tab.command("close <wsId> <tabId>").action(async (wsId: string, tabId: string) => {
+  try { await api("DELETE", `/workspaces/${wsId}/tabs/${tabId}`); console.log(`closed ${tabId}`) }
+  catch (error) { fail(error) }
+})
+tab.command("rename <wsId> <tabId> <title>").action(async (wsId: string, tabId: string, title: string) => {
+  try { await api("POST", `/workspaces/${wsId}/tabs/${tabId}/rename`, { title }); console.log(`renamed ${tabId}`) }
+  catch (error) { fail(error) }
+})
 
 interface ConfigEngine {
   id: string
@@ -108,6 +197,7 @@ program.command("create")
           ...(opts.model ? { model: opts.model } : {}),
           ...(opts.effort ? { effort: opts.effort } : {}),
         }))
+        await api("POST", `/workspaces/${ws.id}/ensure`, {})
         console.log(`created ${ws.name} (${ws.id}) branch=${ws.branch} path=${ws.path}`)
         return
       }
@@ -136,6 +226,7 @@ program.command("create")
               ? { effort: opts.effort }
               : {}),
           }))
+          await api("POST", `/workspaces/${ws.id}/ensure`, {})
           rows.push({ n: index + 1, engineId, status: "created", id: ws.id })
         } catch (error) {
           rows.push({
@@ -157,9 +248,47 @@ program.command("create")
 program.command("list").action(async () => {
   try {
     for (const w of ((await api("GET", "/workspaces")) as unknown[]).map((x) => decodeWorkspace(x)))
-      console.log(`${w.id}\t${w.name}\t${w.status}\t${w.branch}\t${w.path}`)
+      console.log(`${w.id}\t${w.name}\t${w.status}\t${w.branch}\t${w.path}\t${w.kind}\t${w.taskStatus}\t${w.materialized ? "materialized" : "intent"}\t${w.sortOrder}`)
   } catch (e) { fail(e) }
 })
+
+program.command("get <wsId>")
+  .description("读取单个 task/workspace")
+  .action(async (id: string) => {
+    try { process.stdout.write(JSON.stringify(await api("GET", `/workspaces/${encodeURIComponent(id)}`), null, 2) + "\n") }
+    catch (error) { fail(error) }
+  })
+
+program.command("collect [wsId]")
+  .description("刷新并返回 task/runtime/diff/PR/transcript 聚合")
+  .option("--cached", "只读取后台快照，不触发刷新")
+  .action(async (id: string | undefined, opts: { cached?: boolean }) => {
+    try {
+      const result = opts.cached
+        ? await api("GET", `/collect${id ? `?workspace=${encodeURIComponent(id)}` : ""}`)
+        : await api("POST", "/collect", id ? { workspaceId: id } : {})
+      process.stdout.write(JSON.stringify(result, null, 2) + "\n")
+    } catch (error) { fail(error) }
+  })
+
+const addDeliveryCommand = (name: "send" | "dispatch", description: string) =>
+  program.command(`${name} <wsId> <text>`)
+    .description(description)
+    .option("--tab <tabId>", "目标 engine tab")
+    .option("--interrupt", "中断当前 turn 后投递")
+    .action(async (id: string, text: string, opts: { tab?: string; interrupt?: boolean }) => {
+      try {
+        const result: any = await api("POST", `/workspaces/${encodeURIComponent(id)}/input`, {
+          text,
+          mode: opts.interrupt ? "interrupt-send" : "send",
+          ...(opts.tab ? { tabId: opts.tab } : {}),
+        })
+        console.log(result.queued ? `queued ${result.id} position=${result.position}` : `sent ${id}`)
+      } catch (error) { fail(error) }
+    })
+
+addDeliveryCommand("send", "向 task 的 engine tab 安全投递一轮 prompt")
+addDeliveryCommand("dispatch", "通过 daemon 调度 prompt 到指定 task")
 
 program.command("adopt")
   .argument("<projectIdOrPath>", "项目 id 或已注册/待注册仓库路径")
@@ -219,6 +348,43 @@ program.command("pin <wsId>").action(async (id: string) => {
 
 program.command("unpin <wsId>").action(async (id: string) => {
   try { await api("POST", `/workspaces/${id}/pin`, { pinned: false }); console.log(`unpinned ${id}`) }
+  catch (e) { fail(e) }
+})
+
+program.command("rename <wsId> <name>").action(async (id: string, name: string) => {
+  try { await api("POST", `/workspaces/${id}/rename`, { name }); console.log(`renamed ${id}`) }
+  catch (e) { fail(e) }
+})
+
+program.command("task-status <wsId> <status>").action(async (id: string, status: string) => {
+  try { await api("POST", `/workspaces/${id}/task-status`, { status }); console.log(`${id}\t${status}`) }
+  catch (e) { fail(e) }
+})
+
+program.command("set-status <wsId> <status>").action(async (id: string, status: string) => {
+  try { await api("POST", `/workspaces/${id}/task-status`, { status }); console.log(`${id}\t${status}`) }
+  catch (e) { fail(e) }
+})
+
+program.command("branch-rename <wsId> <branch>").action(async (id: string, branch: string) => {
+  try { await api("POST", `/workspaces/${id}/branch`, { branch }); console.log(`${id}\t${branch}`) }
+  catch (e) { fail(e) }
+})
+
+program.command("set-branch <wsId> <branch>").action(async (id: string, branch: string) => {
+  try { await api("POST", `/workspaces/${id}/branch`, { branch }); console.log(`${id}\t${branch}`) }
+  catch (e) { fail(e) }
+})
+
+program.command("ensure-worktree <wsId>").action(async (id: string) => {
+  try {
+    const result: any = await api("POST", `/workspaces/${id}/ensure`, {})
+    console.log(`${id}\t${result.action}\t${result.sessionId}`)
+  } catch (error) { fail(error) }
+})
+
+program.command("reorder <projectId> <workspaceIds...>").action(async (projectId: string, workspaceIds: string[]) => {
+  try { await api("POST", "/workspaces/reorder", { projectId, workspaceIds }); console.log(`reordered ${projectId}`) }
   catch (e) { fail(e) }
 })
 
@@ -306,10 +472,13 @@ program.command("link")
 
 program.command("resume <wsId>")
   .description("engine 退出后原地重启（--resume 续会话；GUI Resume 按钮同款 API）")
-  .action(async (id: string) => {
+  .option("--tab <tabId>", "恢复指定 engine tab")
+  .action(async (id: string, opts: { tab?: string }) => {
     try {
       const tabs: any[] = await api("GET", `/workspaces/${id}/tabs`)
-      const engineTab = tabs.find((t) => t.kind === "engine")
+      const engineTab = opts.tab
+        ? tabs.find((t) => t.id === opts.tab && t.kind === "engine")
+        : tabs.find((t) => t.kind === "engine")
       if (!engineTab) return fail(`workspace ${id} 没有 engine tab`)
       const out = decodeHealOutcome(await api("POST", `/workspaces/${id}/tabs/${engineTab.id}/resume`, {}))
       console.log(`resumed ${id} (action=${out.action} resumed=${out.resumed} session=${out.sessionId})`)
@@ -317,35 +486,58 @@ program.command("resume <wsId>")
   })
 
 const server = program.command("server")
+server.command("start").action(async () => {
+  try {
+    const info = await ensureServer()
+    console.log(`running pid=${info.pid} port=${info.port}`)
+  } catch (error) { fail(error) }
+})
 server.command("status").action(async () => {
   const info = readServerInfo(path.join(home(), "server.json"))
   if (info && (await probeAlive(info))) { console.log(`running pid=${info.pid} port=${info.port}`) }
   else { console.log("stopped"); process.exit(1) }
 })
 server.command("stop").action(async () => {
-  // Deliberately NOT api("POST", "/shutdown") — that goes through ensureServer(),
-  // which auto-spawns a server just to shut it down when none is running. Talk
-  // to the daemon directly instead (same readServerInfo + probeAlive + fetch
-  // /shutdown logic as @coolie/server's own cmdStop); behavior contract
-  // ("stopped", exit 0) is unchanged, but a not-running server is left alone.
-  const info = readServerInfo(path.join(home(), "server.json"))
-  if (!info || !(await probeAlive(info))) { console.log("stopped"); return }
-  try {
-    await fetch(`http://127.0.0.1:${info.port}/shutdown`, {
-      method: "POST",
-      headers: { Authorization: `Bearer ${info.token}` },
-    })
-  } catch {} // server 可能应答后立刻退出/中途消失——目标（停止）已经达成
+  await stopDaemon(home())
   console.log("stopped")
 })
+server.command("restart").action(async () => {
+  try {
+    await stopDaemon(home())
+    const info = await ensureServer()
+    console.log(`restarted pid=${info.pid} port=${info.port}`)
+  } catch (error) { fail(error) }
+})
+server.command("reset")
+  .description("重置 Coolie runtime；保留 DB、worktrees 与 branches")
+  .action(async () => {
+    try {
+      const result = await resetRuntime(home(), tmuxSocketName())
+      console.log(`reset daemon=${result.daemonStopped ? "stopped" : "absent"} tmux=${result.tmuxStopped ? "stopped" : "absent"} cleaned=${result.removed.join(",") || "none"}`)
+    } catch (error) { fail(error) }
+  })
 
-program.command("api").command("schema").action(() => {
+program.command("api").command("schema")
+  .option("--group <group>", "system|projects|events|workspaces|engines|hooks|terminal")
+  .option("--verb <verb>", "GET|POST|DELETE")
+  .option("--all", "显示 request/response shape 与 example")
+  .action((opts: { group?: string; verb?: string; all?: boolean }) => {
+  const validGroups = new Set(["system", "projects", "events", "workspaces", "engines", "hooks", "terminal"])
+  if (opts.group && !validGroups.has(opts.group)) return fail(`unknown schema group: ${opts.group}`)
+  if (opts.verb && !["GET", "POST", "DELETE"].includes(opts.verb.toUpperCase()))
+    return fail(`unknown schema verb: ${opts.verb}`)
   // "METHOD PATH" must appear as a literal single-space substring (tests assert
   // toContain("GET /health") etc.) — pad the combined head, not method/path
   // separately, or the column padding inserts extra spaces between them.
-  for (const r of ROUTES) {
+  for (const r of selectRoutes({ ...(opts.group ? { group: opts.group } : {}), ...(opts.verb ? { verb: opts.verb } : {}) })) {
     const head = `${r.method} ${r.path}`
     console.log(`${head.padEnd(28)} ${r.description}`)
+    if (opts.all) {
+      console.log(`  group: ${routeGroup(r)}`)
+      console.log(`  request: ${routeRequestShape(r)}`)
+      console.log(`  response: ${routeResponseShape(r)}`)
+      console.log(`  example: ${routeExample(r)}`)
+    }
   }
 })
 
@@ -416,6 +608,41 @@ events.command("tail")
         await printBatch()
       }
     } catch (e) { fail(e) }
+  })
+
+program.command("completion <shell>")
+  .description("生成 zsh/bash/fish completion")
+  .action((shell: string) => {
+    if (!["zsh", "bash", "fish"].includes(shell)) return fail("shell must be zsh|bash|fish")
+    process.stdout.write(generateCompletion(shell as CompletionShell))
+  })
+
+program.command("update")
+  .description("只读检查 CLI 更新（从不自动安装）")
+  .option("--timeout <ms>", "超时毫秒", "2000")
+  .action(async (opts: { timeout: string }) => {
+    const result = await checkForUpdate({
+      current: process.env.COOLIE_VERSION ?? "0.0.0",
+      home: home(),
+      ...(process.env.COOLIE_UPDATE_URL ? { endpoint: process.env.COOLIE_UPDATE_URL } : {}),
+      timeoutMs: Number(opts.timeout),
+    })
+    console.log(result.message)
+  })
+
+const skill = program.command("skill").description("导出项目 canonical Cursor Agent Skill")
+skill.command("export [destination]")
+  .option("--force", "覆盖已有文件")
+  .action((destination: string | undefined, opts: { force?: boolean }) => {
+    const source = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../../.cursor/skills/coolie/SKILL.md")
+    if (!fs.existsSync(source)) return fail(`canonical skill not found: ${source}`)
+    const content = fs.readFileSync(source, "utf8")
+    if (!destination) { process.stdout.write(content); return }
+    const target = path.resolve(destination)
+    if (fs.existsSync(target) && !opts.force) return fail(`destination exists: ${target} (use --force)`)
+    fs.mkdirSync(path.dirname(target), { recursive: true })
+    fs.writeFileSync(target, content, { flag: "w", mode: 0o644 })
+    console.log(target)
   })
 
 // ---------- doctor（只读） ----------

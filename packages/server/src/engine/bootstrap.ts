@@ -77,7 +77,7 @@ export const EngineBootstrapHookLive = Layer.effect(
         // F4：serverGeneratedId 可选 → 用 === true 判定（缺省/false 走客户端造 id，同 claude）。
         const sessionId: string | null = engine.serverGeneratedId === true ? null : engine.newSessionId()
 
-        if (engine.capabilities.hooks && !hooksDisabled()) {
+        if (engine.capabilities.hooks && !hooksDisabled() && (engine.id === "claude" || engine.id === "codex")) {
           yield* Effect.try({
             try: () => {
               const scriptPath = ensureHookScript(cfg.home, engine.id)
@@ -132,16 +132,17 @@ export const EngineBootstrapHookLive = Layer.effect(
         // Codex hooks-off lane uses per-session `notify`; hooks-capable versions use the injected hook file above.
         if (engine.id === "codex" && !engine.capabilities.hooks && !hooksDisabled())
           yield* Effect.sync(() => ensureNotifyScript(cfg.home, engine.id))
+        const tab = yield* tabs.insert({
+          workspaceId: ws.id, kind: "engine", engineId: engine.id, engineSessionId: sessionId, tmuxWindow: 0,
+        })
         const { engineCommand } = yield* startEngineSession(tmux, {
           ws, repoRoot: project.repoRoot, engine, sessionId, resume: false, home: cfg.home,
+          tabId: tab.id, tmuxWindow: 0,
           ...(ctx.model !== undefined ? { model: ctx.model } : {}),
           ...(ctx.effort !== undefined ? { effort: ctx.effort } : {}),
         }).pipe(Effect.mapError((e) => new HookError({ message: `tmux session 创建失败：${e.message}` })))
         yield* events.append({ workspaceId: ws.id, type: "workspace.tmux.created", payload: { sessionName: session } })
 
-        const tab = yield* tabs.insert({
-          workspaceId: ws.id, kind: "engine", engineId: engine.id, engineSessionId: sessionId, tmuxWindow: 0,
-        })
         yield* events.append({
           workspaceId: ws.id, type: "engine.started",
           payload: { tabId: tab.id, engineId: engine.id, sessionId, command: engineCommand, wrapped: true },

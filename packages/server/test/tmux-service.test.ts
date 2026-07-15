@@ -50,7 +50,8 @@ describe("TmuxService on dedicated test socket", () => {
     expect(await run(svc.hasSession("coolie-t1"))).toBe(true)
     expect(await run(svc.listSessions())).toContain("coolie-t1")
     const wins = await run(svc.listWindows("coolie-t1"))
-    expect(wins).toEqual([{ index: 0, name: "engine" }])
+    expect(wins).toHaveLength(1)
+    expect(wins[0]).toMatchObject({ index: 0, name: "engine", role: null, workspaceId: null, tabId: null })
   })
 
   it("pasteText + sendKey(Enter) reach the pane (cat echo)", async () => {
@@ -64,6 +65,28 @@ describe("TmuxService on dedicated test socket", () => {
     expect(idx).toBe(1)
     const wins = await run(svc.listWindows("coolie-t1"))
     expect(wins.map((w) => w.name)).toEqual(["engine", "shell"])
+  })
+
+  it("sets role metadata on windows/panes and supports reverse lookup", async () => {
+    await run(svc.setWindowOption("coolie-t1:0", "@role", "engine"))
+    await run(svc.setWindowOption("coolie-t1:0", "@workspace_id", "w1"))
+    await run(svc.setWindowOption("coolie-t1:0", "@tab_id", "t1"))
+    const pane = (await run(svc.listPanes("coolie-t1"))).find((item) => item.window === 0)!
+    await run(svc.setPaneOption(pane.id, "@role", "engine"))
+    const windows = await run(svc.listWindows("coolie-t1"))
+    expect(windows[0]).toMatchObject({ role: "engine", workspaceId: "w1", tabId: "t1" })
+    expect(await run(svc.targetMetadata("coolie-t1:0"))).toEqual({
+      role: "engine", workspaceId: "w1", tabId: "t1",
+    })
+    const afterDaemonRestart = makeTmuxService(SOCK)
+    expect(await run(afterDaemonRestart.targetMetadata("coolie-t1:0"))).toEqual({
+      role: "engine", workspaceId: "w1", tabId: "t1",
+    })
+  })
+
+  it("resizes a window through argv-safe tmux operations", async () => {
+    await run(svc.resizeWindow("coolie-t1:0", 100, 30))
+    expect((await run(svc.listWindows("coolie-t1")))[0]).toMatchObject({ width: 100, height: 30 })
   })
 
   it("session env carries injected vars (COOLIE_PORT_0 visible in pane)", async () => {

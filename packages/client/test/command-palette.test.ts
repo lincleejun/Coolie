@@ -1,17 +1,19 @@
 import { describe, expect, it } from "vitest"
 import { buildCommands, filterCommands, movePaletteSelection } from "../src/chrome/CommandPalette.js"
 import type { HotkeyId } from "../src/hotkeys/registry.js"
+import { t } from "../src/i18n/index.js"
 
 describe("命令面板纯动作表", () => {
   const hits: string[] = []
   const commands = buildCommands({
     hotkeys: [
-      { id: "workspace.new", chord: "meta+n", label: "新建 workspace", category: "Workspace" },
-      { id: "app.commandPalette", chord: "meta+k", label: "命令面板", category: "App" },
+      { id: "workspace.new", chord: "meta+n", labelKey: "hotkey.workspace.new", category: "workspace" },
+      { id: "app.commandPalette", chord: "meta+k", labelKey: "hotkey.app.commandPalette", category: "app" },
     ],
     runnableActionIds: new Set<HotkeyId>(["workspace.new", "app.commandPalette"]),
     workspaces: [{ id: "w1", name: "usa-yellowstone" }, { id: "w2", name: "china-guilin" }],
     checkpointWorkspace: { id: "w1", name: "usa-yellowstone" },
+    translate: (key) => t(key, "en"),
     runHotkey: (id) => hits.push(id),
     selectWs: (id) => hits.push(id),
     createCheckpoint: () => hits.push("checkpoint:create"),
@@ -22,6 +24,8 @@ describe("命令面板纯动作表", () => {
     expect(commands.map((c) => c.id)).toEqual([
       "hk:workspace.new", "ws:w1", "ws:w2", "checkpoint:create", "checkpoint:list",
     ])
+    expect(commands[0]?.title).toBe("Workspace · Create workspace (composer becomes initial prompt)")
+    expect(/\p{Script=Han}/u.test(commands[0]?.title ?? "")).toBe(false)
   })
 
   it("模糊搜索 title 并保持评分顺序", () => {

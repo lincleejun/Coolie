@@ -38,7 +38,10 @@ export interface Engine {
     readonly resume?: boolean
     /** hooks-off lane 的 per-session notify 注入上下文；其他引擎可忽略。 */
     readonly workspaceId?: string
+    readonly tabId?: string
+    readonly tmuxWindow?: number
     readonly home?: string
+    readonly cwd?: string
   }) => string[]
   /** hook 事件 → tab 状态；未知事件返回 null（turnDetector 主路径） */
   readonly statusFromHookEvent: (evt: unknown) => TabStatus | null

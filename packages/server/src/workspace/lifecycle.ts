@@ -1,14 +1,17 @@
 import { Context, Data, Effect, Layer, Option } from "effect"
 import * as fs from "node:fs"
 import * as path from "node:path"
-import { Workspace, tmuxSessionName } from "@coolie/protocol"
+import { Workspace, tmuxSessionName, type HealOutcome, type TaskStatus } from "@coolie/protocol"
 import { CoolieConfig } from "../config.js"
 import { ProjectsRepo } from "../repo/projects.js"
 import { WorkspacesRepo } from "../repo/workspaces.js"
 import { EventsRepo } from "../repo/events.js"
 import { ValidationError, ConflictError, NotFoundError } from "../repo/errors.js"
 import { GitService, GitError } from "../git/service.js"
-import { SetupRunner, SetupScriptError, makeSetupPane, resolveSetupScripts } from "./setup.js"
+import {
+  SetupRunner, SetupScriptError, composeInitialPrompt, makeSetupPane, markInitComplete,
+  resolveInitContract, resolveSetupScripts,
+} from "./setup.js"
 import { customNamePool, getNamePool, pickName, sanitizeSlug } from "./names.js"
 import { allocatePortBase, portEnv } from "./ports.js"
 import { injectInfoExclude, readWorktreeIncludePatterns, copyIncludedFiles } from "./include.js"
@@ -16,6 +19,7 @@ import { TmuxService } from "../tmux/service.js"
 import { TabsRepo } from "../repo/tabs.js"
 import { QueueRepo } from "../repo/queue.js"
 import { SessionEnsurer, type EnsureError } from "./heal.js"
+import { labelTmuxWindow, makeTmuxLayout } from "../tmux/layout.js"
 
 /** Plan 3 插拔点落地：tmux session / engine 启动 / 首条 prompt 投递以 hook 形式挂进 create 流水线末尾。 */
 export class HookError extends Data.TaggedError("HookError")<{ readonly message: string }> {}
@@ -35,11 +39,20 @@ export type RetryError = CreateError | EnsureError
 export type LifecycleError = NotFoundError | ConflictError | GitError
 
 export interface WorkspaceLifecycleShape {
-  readonly create: (opts: {
+  readonly createIntent: (opts: {
     projectId: string; branchSlug?: string; name?: string; initialPrompt?: string; engineId?: string
     model?: string; effort?: string; fanoutGroup?: string; namePool?: string; customNames?: readonly string[]
   }) => Effect.Effect<Workspace, CreateError>
+  readonly create: (opts: {
+    projectId: string; branchSlug?: string; name?: string; initialPrompt?: string; engineId?: string
+    model?: string; effort?: string; fanoutGroup?: string; namePool?: string; customNames?: readonly string[]
+  }) => Effect.Effect<Workspace, RetryError>
   readonly retry: (id: string) => Effect.Effect<Workspace, RetryError>
+  readonly ensure: (id: string) => Effect.Effect<HealOutcome, RetryError>
+  readonly rename: (id: string, name: string) => Effect.Effect<Workspace, LifecycleError | ValidationError>
+  readonly setTaskStatus: (id: string, status: TaskStatus) => Effect.Effect<Workspace, NotFoundError>
+  readonly renameBranch: (id: string, branch: string) => Effect.Effect<Workspace, LifecycleError | ValidationError>
+  readonly reorder: (projectId: string, workspaceIds: readonly string[]) => Effect.Effect<Workspace[], NotFoundError | ConflictError>
   readonly archive: (id: string, opts?: { force?: boolean }) => Effect.Effect<Workspace, LifecycleError>
   readonly unarchive: (id: string) => Effect.Effect<Workspace, LifecycleError>
   readonly delete: (id: string, opts?: { force?: boolean }) => Effect.Effect<void, LifecycleError>
@@ -61,6 +74,25 @@ export const WorkspaceLifecycleLive = Layer.effect(
     const tabsOpt = yield* Effect.serviceOption(TabsRepo)
     const queueOpt = yield* Effect.serviceOption(QueueRepo)
     const ensurerOpt = yield* Effect.serviceOption(SessionEnsurer)
+    const workspaceLocks = new Map<string, Promise<void>>()
+
+    const acquireWorkspaceLock = (id: string): Promise<() => void> => {
+      const previous = workspaceLocks.get(id) ?? Promise.resolve()
+      let release!: () => void
+      const current = new Promise<void>((resolve) => { release = resolve })
+      workspaceLocks.set(id, current)
+      return previous.then(() => () => {
+        release()
+        if (workspaceLocks.get(id) === current) workspaceLocks.delete(id)
+      })
+    }
+
+    const withWorkspaceLock = <A, E, R>(id: string, effect: Effect.Effect<A, E, R>): Effect.Effect<A, E, R> =>
+      Effect.acquireUseRelease(
+        Effect.promise(() => acquireWorkspaceLock(id)),
+        () => effect,
+        (release) => Effect.sync(release),
+      )
 
     const emit = (workspaceId: string | null, type: string, payload: unknown) =>
       events.append({ workspaceId, type, payload })
@@ -133,13 +165,18 @@ export const WorkspaceLifecycleLive = Layer.effect(
           try: () => copyIncludedFiles(repoRoot, ws.path, ignored),
           catch: (e) => new GitError({ op: "worktreeinclude", message: `复制 .worktreeinclude 文件失败：${String(e)}`, exitCode: null, stderr: "" }),
         })
-        const scripts = resolveSetupScripts({ worktreePath: ws.path, repoRoot, projectId: ws.projectId, home: cfg.home })
+        const setupScripts = resolveSetupScripts({ worktreePath: ws.path, repoRoot, projectId: ws.projectId, home: cfg.home })
+        const init = resolveInitContract({ worktreePath: ws.path, home: cfg.home })
+        const scripts = [...setupScripts, ...init.scripts]
         if (scripts.length > 0) {
           yield* emit(ws.id, "workspace.setup.started", { scripts })
           let resultFile: string | undefined
           if (Option.isSome(tmuxOpt) && Option.isSome(tabsOpt)) {
             const pane = yield* Effect.try({
-              try: () => makeSetupPane({ home: cfg.home, workspaceId: ws.id, worktreePath: ws.path, scripts }),
+              try: () => makeSetupPane({
+                home: cfg.home, workspaceId: ws.id, worktreePath: ws.path, scripts,
+                ...(cfg.initTimeoutMs === undefined ? {} : { timeoutMs: cfg.initTimeoutMs }),
+              }),
               catch: (e) => new SetupScriptError({ script: "", exitCode: null, message: `setup runner 准备失败：${String(e)}`, outputTail: "" }),
             })
             resultFile = pane.resultFile
@@ -160,7 +197,7 @@ export const WorkspaceLifecycleLive = Layer.effect(
             })))
             if (setupWindow !== 1)
               return yield* new SetupScriptError({ script: "", exitCode: null, message: `setup window 必须是 1，实际 ${setupWindow}`, outputTail: "" })
-            yield* tabsOpt.value.insert({
+            const setupTab = yield* tabsOpt.value.insert({
               workspaceId: ws.id, kind: "setup", tmuxWindow: setupWindow, title: "setup",
             }).pipe(Effect.catchAllDefect((defect) => Effect.fail(new SetupScriptError({
               script: "",
@@ -168,20 +205,41 @@ export const WorkspaceLifecycleLive = Layer.effect(
               message: `setup tab 持久化失败：${String(defect)}`,
               outputTail: "",
             }))))
+            yield* labelTmuxWindow(tmuxOpt.value, session, setupWindow, {
+              role: "ops", workspaceId: ws.id, tabId: setupTab.id,
+            }).pipe(Effect.mapError((e) => new SetupScriptError({
+              script: "", exitCode: e.exitCode, message: `setup role 标记失败：${e.message}`, outputTail: e.stderr,
+            })))
           }
           const results = yield* setup.run({
             worktreePath: ws.path,
             scripts,
             env: { COOLIE_ROOT: repoRoot, ...portEnv(ws.portBase) },
+            ...(cfg.initTimeoutMs === undefined ? {} : { timeoutMs: cfg.initTimeoutMs }),
             ...(resultFile !== undefined ? { resultFile } : {}),
           })
           for (const r of results) yield* emit(ws.id, "workspace.setup.finished", r)
+          if (init.scripts.length > 0) yield* Effect.try({
+            try: () => markInitComplete(init.marker),
+            catch: (error) => new SetupScriptError({
+              script: init.scripts[0]!, exitCode: null,
+              message: `init marker write failed: ${String(error)}`, outputTail: "",
+            }),
+          })
         }
         // hooks 必须看到 provision 内已写入 baseRef 之后的最新行——ws 参数是 create/retry 调用前的快照
         // （create 上 baseRef=""，retry 上是上次失败尝试记的旧值），直接传它会让 hook 读到假 baseRef。
         // create/retry 走的是同一条 provision 流水线，这一次重读对两条路径统一生效。
         const fresh = yield* repo.get(ws.id)
-        for (const hook of hooks) yield* hook(fresh, ctx)
+        if (Option.isSome(tmuxOpt) && Option.isSome(tabsOpt))
+          yield* makeTmuxLayout(tmuxOpt.value, repo, tabsOpt.value).reconcile(ws.id).pipe(
+            Effect.mapError((e) => new HookError({ message: `tmux layout reconcile 失败：${String(e)}` })),
+          )
+        const initialPrompt = composeInitialPrompt(init.prompt, ctx.initialPrompt)
+        const finalCtx = { ...ctx, ...(initialPrompt === undefined ? {} : { initialPrompt }) }
+        for (const hook of hooks) yield* hook(fresh, finalCtx)
+        yield* repo.setMaterialized(ws.id, true)
+        yield* repo.setTaskStatus(ws.id, "in_progress")
         const active = yield* repo.setStatus(ws.id, "active")
         yield* emit(ws.id, "workspace.created", { id: ws.id, branch: ws.branch, path: ws.path })
         return active
@@ -196,11 +254,12 @@ export const WorkspaceLifecycleLive = Layer.effect(
         yield* git.worktreePrune(repoRoot).pipe(Effect.ignore)
         yield* repo.setLastError(ws.id, { tag: cause._tag, message: cause.message }).pipe(Effect.ignore)
         yield* repo.setStatus(ws.id, "error").pipe(Effect.ignore)
+        yield* repo.setTaskStatus(ws.id, "error").pipe(Effect.ignore)
         yield* emit(ws.id, "workspace.error", { id: ws.id, error: { tag: cause._tag, message: cause.message } }).pipe(Effect.ignore)
         return yield* Effect.fail(cause)
       })
 
-    const create: WorkspaceLifecycleShape["create"] = (opts) =>
+    const createIntent: WorkspaceLifecycleShape["createIntent"] = (opts) =>
       Effect.gen(function* () {
         const project = yield* projects.get(opts.projectId)
         const existing = yield* repo.list({}) // 跨项目全量：同名项目共享路径名字空间，name 必须全局唯一（ledger carry-over）
@@ -236,20 +295,14 @@ export const WorkspaceLifecycleLive = Layer.effect(
           ...(opts.effort !== undefined ? { effort: opts.effort } : {}),
           ...(opts.fanoutGroup !== undefined ? { fanoutGroup: opts.fanoutGroup } : {}),
         })
-        yield* emit(ws.id, "workspace.creating", { id: ws.id, projectId: project.id, name, branch, path: wsPath, portBase })
-        return yield* provision(ws, project.repoRoot, {
-          ...(opts.initialPrompt !== undefined ? { initialPrompt: opts.initialPrompt } : {}),
-          ...(opts.engineId !== undefined ? { engineId: opts.engineId } : {}),
-          ...(opts.model !== undefined ? { model: opts.model } : {}),
-          ...(opts.effort !== undefined ? { effort: opts.effort } : {}),
-          ...(opts.fanoutGroup !== undefined ? { fanoutGroup: opts.fanoutGroup } : {}),
-        }).pipe(
-          Effect.catchAll((e) => rollbackToError(ws, project.repoRoot, e)),
-        )
+        yield* emit(ws.id, "workspace.intent.created", {
+          id: ws.id, projectId: project.id, name, branch, path: wsPath, portBase,
+        })
+        return yield* repo.get(ws.id)
       })
 
     const retry: WorkspaceLifecycleShape["retry"] = (id) =>
-      Effect.gen(function* () {
+      withWorkspaceLock(id, Effect.gen(function* () {
         const ws0 = yield* repo.get(id)
         if (ws0.status !== "error")
           return yield* new ConflictError({ message: `只有 error 状态可重试（当前 ${ws0.status}）` })
@@ -260,11 +313,13 @@ export const WorkspaceLifecycleLive = Layer.effect(
           if (!Option.isSome(ensurerOpt))
             return yield* new ConflictError({ message: "adopted workspace runtime ensure 服务不可用" })
           const active = yield* repo.setStatus(id, "active")
+          yield* repo.setTaskStatus(id, "in_progress")
           return yield* ensurerOpt.value.ensure(id).pipe(
             Effect.as(active),
             Effect.tapError((e) => Effect.gen(function* () {
               yield* repo.setLastError(id, { tag: e._tag, message: e.message }).pipe(Effect.ignore)
               yield* repo.setStatus(id, "error").pipe(Effect.ignore)
+              yield* repo.setTaskStatus(id, "error").pipe(Effect.ignore)
               yield* emit(id, "workspace.error", { id, error: { tag: e._tag, message: e.message } }).pipe(Effect.ignore)
             })),
           )
@@ -274,7 +329,75 @@ export const WorkspaceLifecycleLive = Layer.effect(
         return yield* provision(ws, project.repoRoot, ctx).pipe(
           Effect.catchAll((e) => rollbackToError(ws, project.repoRoot, e)),
         )
+      }))
+
+    const ensure: WorkspaceLifecycleShape["ensure"] = (id) =>
+      withWorkspaceLock(id, Effect.gen(function* () {
+        let ws = yield* repo.get(id)
+        if (ws.kind === "task" && !ws.materialized) {
+          if (ws.status === "error") {
+            ws = yield* repo.setStatus(id, "creating")
+          } else if (ws.status !== "creating") {
+            return yield* new ConflictError({ message: `未物化 task 状态非法：${ws.status}` })
+          }
+          const project = yield* projects.get(ws.projectId)
+          const ctx = yield* repo.getCreateCtx(id)
+          ws = yield* provision(ws, project.repoRoot, ctx).pipe(
+            Effect.catchAll((e) => rollbackToError(ws, project.repoRoot, e)),
+          )
+        }
+        if (ws.status !== "active")
+          return yield* new ConflictError({ message: `只能 ensure active task（当前 ${ws.status}）` })
+        if (Option.isSome(ensurerOpt)) return yield* ensurerOpt.value.ensure(id)
+        return {
+          action: "none", resumed: false, sessionName: tmuxSessionName(id),
+          tabId: null, sessionId: null,
+        } satisfies HealOutcome
+      }))
+
+    const create: WorkspaceLifecycleShape["create"] = (opts) =>
+      Effect.gen(function* () {
+        const intent = yield* createIntent(opts)
+        yield* ensure(intent.id)
+        return yield* repo.get(intent.id)
       })
+
+    const rename: WorkspaceLifecycleShape["rename"] = (id, rawName) =>
+      Effect.gen(function* () {
+        const name = rawName.trim()
+        if (name === "") return yield* new ValidationError({ message: "name 不能为空" })
+        return yield* repo.rename(id, name)
+      })
+
+    const setTaskStatus: WorkspaceLifecycleShape["setTaskStatus"] = (id, status) =>
+      repo.setTaskStatus(id, status)
+
+    const renameBranch: WorkspaceLifecycleShape["renameBranch"] = (id, rawBranch) =>
+      withWorkspaceLock(id, Effect.gen(function* () {
+        const branch = rawBranch.trim()
+        const invalidSegment = branch.split("/").some((segment) =>
+          segment === "" || segment.startsWith(".") || segment.endsWith(".") || segment.endsWith(".lock"))
+        if (branch === "" || branch === "@" || branch.startsWith("-") || branch.endsWith("/") ||
+          branch.includes("..") || branch.includes("@{") || invalidSegment || /[\x00-\x20\x7f~^:?*[\]\\]/.test(branch))
+          return yield* new ValidationError({ message: "branch 名称非法" })
+        const ws = yield* repo.get(id)
+        if (ws.kind === "main") return yield* new ConflictError({ message: "main task 的默认分支不可在 Coolie 中改名" })
+        if (ws.branch === branch) return ws
+        const project = yield* projects.get(ws.projectId)
+        if (yield* git.refExists(project.repoRoot, `refs/heads/${branch}`))
+          return yield* new ConflictError({ message: `branch 已存在：${branch}` })
+        if (!ws.materialized) return yield* repo.setBranch(id, branch)
+        const checkedOut = (yield* git.worktreeList(project.repoRoot))
+          .some((worktree) => path.resolve(worktree.path) === path.resolve(ws.path))
+        const gitCwd = checkedOut ? ws.path : project.repoRoot
+        yield* git.renameBranch(gitCwd, ws.branch, branch)
+        return yield* repo.setBranch(id, branch).pipe(
+          Effect.tapError(() => git.renameBranch(gitCwd, branch, ws.branch).pipe(Effect.ignore)),
+        )
+      }))
+
+    const reorder: WorkspaceLifecycleShape["reorder"] = (projectId, workspaceIds) =>
+      repo.reorder(projectId, workspaceIds)
 
     /** worktree 是否仍在（以 git worktree list 为真源，而非 fs——目录可能被外力挪走） */
     const worktreePresent = (repoRoot: string, wsPath: string) =>
@@ -307,8 +430,9 @@ export const WorkspaceLifecycleLive = Layer.effect(
       })
 
     const archive: WorkspaceLifecycleShape["archive"] = (id, opts) =>
-      Effect.gen(function* () {
+      withWorkspaceLock(id, Effect.gen(function* () {
         const ws = yield* repo.get(id)
+        if (ws.kind === "main") return yield* new ConflictError({ message: "main task 不可归档" })
         if (ws.status !== "active")
           return yield* new ConflictError({ message: `只能归档 active 的 workspace（当前 ${ws.status}）` })
         const project = yield* projects.get(ws.projectId)
@@ -316,6 +440,7 @@ export const WorkspaceLifecycleLive = Layer.effect(
         if (ws.ownership === "adopted") {
           yield* teardownRuntime(ws, "archive")
           const out = yield* repo.setStatus(id, "archived")
+          yield* repo.setTaskStatus(id, "done")
           yield* emit(id, "workspace.archived", { id, force: false, ownership: ws.ownership })
           return out
         }
@@ -325,12 +450,13 @@ export const WorkspaceLifecycleLive = Layer.effect(
         yield* teardownRuntime(ws, "archive")
         yield* removeWorktreeGuarded(project.repoRoot, ws, force, "归档")
         const out = yield* repo.setStatus(id, "archived")
+        yield* repo.setTaskStatus(id, "done")
         yield* emit(id, "workspace.archived", { id, force })
         return out
-      })
+      }))
 
     const unarchive: WorkspaceLifecycleShape["unarchive"] = (id) =>
-      Effect.gen(function* () {
+      withWorkspaceLock(id, Effect.gen(function* () {
         const ws = yield* repo.get(id)
         if (ws.status !== "archived")
           return yield* new ConflictError({ message: `只能恢复 archived 的 workspace（当前 ${ws.status}）` })
@@ -361,6 +487,7 @@ export const WorkspaceLifecycleLive = Layer.effect(
           )
         }
         const out = yield* repo.setStatus(id, "active")
+        yield* repo.setTaskStatus(id, "in_progress")
         // ensure-or-heal（设计文档 §十）：worktree 已恢复，session best-effort 重建——
         // 失败不阻塞 unarchive（enter/GUI attach 会再触发 ensure），只记事件供排查
         if (Option.isSome(ensurerOpt))
@@ -370,11 +497,12 @@ export const WorkspaceLifecycleLive = Layer.effect(
           )
         yield* emit(id, "workspace.unarchived", { id })
         return out
-      })
+      }))
 
     const del: WorkspaceLifecycleShape["delete"] = (id, opts) =>
-      Effect.gen(function* () {
+      withWorkspaceLock(id, Effect.gen(function* () {
         const ws = yield* repo.get(id)
+        if (ws.kind === "main") return yield* new ConflictError({ message: "main task 不可删除" })
         const project = yield* projects.get(ws.projectId)
         const force = opts?.force === true
         if (ws.ownership === "adopted") {
@@ -398,8 +526,11 @@ export const WorkspaceLifecycleLive = Layer.effect(
           catch { /* best-effort: workspace delete remains successful */ }
         })
         yield* emit(id, "workspace.deleted", { id, branch: ws.branch }) // branch 保留，事件记下名字便于追溯
-      })
+      }))
 
-    return { create, retry, archive, unarchive, delete: del }
+    return {
+      createIntent, create, retry, ensure, rename, setTaskStatus, renameBranch, reorder,
+      archive, unarchive, delete: del,
+    }
   }),
 )

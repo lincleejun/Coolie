@@ -1,7 +1,7 @@
 import { create } from "zustand"
 import type { Api } from "../api/client"
 import type { CoolieEventLike } from "../api/sse"
-import type { Project, Workspace, Tab } from "@coolie/protocol"
+import type { Project, Workspace, Tab, TaskStatus, CustomEngineDefinition, EngineAvailability } from "@coolie/protocol"
 import type { DiffStat, ChangesReport, EngineInfo, NamePoolInfo } from "./types"
 import { useUi } from "./ui"
 import { useAttention } from "./attention"
@@ -10,7 +10,7 @@ import { notifyTurnComplete, setBadge } from "../chrome/notify"
 export interface PendingSend { id: number; wsId: string; text: string; mode: string; abort: AbortController }
 /** UI 警告面（prompt.delivery.degraded 等 server 侧降级信号 → toast/badge） */
 export interface Warning { id: number; code: string; message: string }
-export interface QueuedPrompt { id: number; text: string; position: number }
+export interface QueuedPrompt { id: number; tabId: string; text: string; position: number }
 export interface ApplyEventOptions { allowAttention?: boolean }
 
 interface DataState {
@@ -31,6 +31,7 @@ interface DataState {
    *  用注入而非直接 import：session.ts 顶层 import 了 @xterm + xterm.css，直接引会把 DOM/CSS 依赖拖进纯 node store 测试。 */
   setSessionDisposer(fn: (wsId: string) => void): void
   bootstrap(): Promise<void>
+  refreshConfig(): Promise<void>
   refreshProjects(): Promise<void>
   refreshWorkspaces(): Promise<void>
   refreshTabs(wsId: string): Promise<void>
@@ -45,7 +46,17 @@ interface DataState {
   archiveWs(wsId: string, force?: boolean): Promise<void>
   unarchiveWs(wsId: string): Promise<void>
   setPinnedWs(wsId: string, pinned: boolean): Promise<void>
+  renameWs(wsId: string, name: string): Promise<void>
+  setTaskStatusWs(wsId: string, status: TaskStatus): Promise<void>
+  renameBranchWs(wsId: string, branch: string): Promise<void>
+  reorderWs(projectId: string, workspaceIds: readonly string[]): Promise<void>
   deleteWs(wsId: string, force?: boolean): Promise<void>
+  saveCustomEngine(definition: CustomEngineDefinition): Promise<void>
+  deleteCustomEngine(id: string): Promise<void>
+  applyCopilotPreset(id?: string): Promise<void>
+  detectCustomEngine(id: string): Promise<EngineAvailability>
+  switchEngine(wsId: string, engineId: string, model?: string, effort?: string): Promise<void>
+  toggleZen(wsId: string, tabId?: string): Promise<void>
   cancelSend(id: number): void
   pushWarning(code: string, message: string): void
   dismissWarning(id: number): void
@@ -56,6 +67,16 @@ let sendSeq = 0
 let warnSeq = 0
 let disposeWsSessions: (wsId: string) => void = () => {} // F2：默认 noop，Terminal 模块加载时注册真实回收器
 const swallow = (p: Promise<unknown>): void => { void p.catch(() => {}) } // 刷新失败＝下次事件/轮询再试
+
+/** A selected shell/run tab still leaves the workspace composer targeting its primary engine chat. */
+export const resolveSelectedEngineTabId = (
+  tabs: readonly Tab[] | undefined,
+  selectedId: string | undefined,
+): string | undefined => {
+  const selected = tabs?.find((tab) => tab.id === selectedId)
+  if (selected?.kind === "engine") return selected.id
+  return tabs?.find((tab) => tab.kind === "engine")?.id ?? (tabs === undefined ? selectedId : undefined)
+}
 
 export const useData = create<DataState>((set, get) => ({
   status: "connecting",
@@ -77,12 +98,18 @@ export const useData = create<DataState>((set, get) => ({
     for (const w of workspaces as Workspace[])
       if (w.status === "active") { swallow(get().refreshTabs(w.id)); swallow(get().refreshDiffstat(w.id)) }
   },
+  refreshConfig: async () => { if (api) set({ config: await api.req("GET", "/config") }) },
   refreshProjects: async () => { if (api) set({ projects: await api.req("GET", "/projects") }) },
   refreshWorkspaces: async () => { if (api) set({ workspaces: await api.req("GET", "/workspaces") }) },
   refreshTabs: async (wsId) => {
     if (!api) return
-    const tabs = await api.req("GET", `/workspaces/${wsId}/tabs`)
+    const tabs = await api.req("GET", `/workspaces/${wsId}/tabs`) as Tab[]
     set((s) => ({ tabsByWs: { ...s.tabsByWs, [wsId]: tabs } }))
+    const selected = useUi.getState().selectedTabByWs[wsId]
+    if (!tabs.some((tab) => tab.id === selected)) {
+      const fallback = tabs.find((tab) => tab.kind === "engine") ?? tabs[0]
+      if (fallback) useUi.getState().selectTab(wsId, fallback.id)
+    }
   },
   refreshDiffstat: async (wsId) => {
     if (!api) return
@@ -99,7 +126,8 @@ export const useData = create<DataState>((set, get) => ({
   refreshQueue: async (wsId) => {
     if (!api) return
     try {
-      const response = await api.req("GET", `/workspaces/${wsId}/queue`)
+      const selectedTab = resolveSelectedEngineTabId(get().tabsByWs[wsId], useUi.getState().selectedTabByWs[wsId])
+      const response = await api.req("GET", `/workspaces/${wsId}/queue${selectedTab ? `?tabId=${encodeURIComponent(selectedTab)}` : ""}`)
       set((state) => ({ queuedByWs: { ...state.queuedByWs, [wsId]: response.queue } }))
     } catch { /* transient/non-active workspace: retain last known queue until the next event */ }
   },
@@ -157,7 +185,10 @@ export const useData = create<DataState>((set, get) => ({
       const r = await fetch(`http://127.0.0.1:${api.info.port}/workspaces/${wsId}/input`, {
         method: "POST", signal: abort.signal,
         headers: { Authorization: `Bearer ${api.info.token}`, "content-type": "application/json" },
-        body: JSON.stringify(req),
+        body: JSON.stringify({
+          ...req,
+          tabId: resolveSelectedEngineTabId(get().tabsByWs[wsId], useUi.getState().selectedTabByWs[wsId]),
+        }),
       })
       if (!r.ok) {
         const j: any = await r.json().catch(() => ({}))
@@ -174,7 +205,60 @@ export const useData = create<DataState>((set, get) => ({
     if (!api) throw new Error("api 未就绪")
     await api.req("POST", `/workspaces/${wsId}/pin`, { pinned })
   },
+  renameWs: async (wsId, name) => {
+    if (!api) throw new Error("api 未就绪")
+    await api.req("POST", `/workspaces/${wsId}/rename`, { name })
+  },
+  setTaskStatusWs: async (wsId, status) => {
+    if (!api) throw new Error("api 未就绪")
+    await api.req("POST", `/workspaces/${wsId}/task-status`, { status })
+  },
+  renameBranchWs: async (wsId, branch) => {
+    if (!api) throw new Error("api 未就绪")
+    await api.req("POST", `/workspaces/${wsId}/branch`, { branch })
+  },
+  reorderWs: async (projectId, workspaceIds) => {
+    if (!api) throw new Error("api 未就绪")
+    await api.req("POST", "/workspaces/reorder", { projectId, workspaceIds: [...workspaceIds] })
+  },
   deleteWs: async (wsId, force = true) => { if (api) await api.req("DELETE", `/workspaces/${wsId}${force ? "?force=1" : ""}`) },
+  saveCustomEngine: async (definition) => {
+    if (!api) throw new Error("api 未就绪")
+    await api.req("POST", "/engines/custom", definition)
+    await get().refreshConfig()
+  },
+  deleteCustomEngine: async (id) => {
+    if (!api) throw new Error("api 未就绪")
+    await api.req("DELETE", `/engines/custom/${encodeURIComponent(id)}`)
+    await get().refreshConfig()
+  },
+  applyCopilotPreset: async (id = "copilot") => {
+    if (!api) throw new Error("api 未就绪")
+    await api.req("POST", "/engines/custom/presets/copilot", { id })
+    await get().refreshConfig()
+  },
+  detectCustomEngine: async (id) => {
+    if (!api) throw new Error("api 未就绪")
+    return api.req("POST", `/engines/custom/${encodeURIComponent(id)}/detect`, {})
+  },
+  switchEngine: async (wsId, engineId, model, effort) => {
+    if (!api) throw new Error("api 未就绪")
+    await api.req("POST", `/workspaces/${wsId}/engine`, {
+      engineId,
+      tabId: resolveSelectedEngineTabId(get().tabsByWs[wsId], useUi.getState().selectedTabByWs[wsId]),
+      ...(model ? { model } : {}), ...(effort ? { effort } : {}),
+    })
+    await get().refreshTabs(wsId)
+  },
+  toggleZen: async (wsId, tabId) => {
+    if (!api) throw new Error("api 未就绪")
+    const workspace = get().workspaces.find((item) => item.id === wsId)
+    await api.req("POST", `/workspaces/${wsId}/zen`, {
+      zen: !(workspace?.zenMode ?? false),
+      ...(tabId ? { tabId } : {}),
+    })
+    await get().refreshWorkspaces()
+  },
   cancelSend: (id) => {
     const p = get().pendingSends.find((x) => x.id === id)
     p?.abort.abort()

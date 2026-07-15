@@ -1,5 +1,5 @@
 import { useState } from "react"
-import { prettyChord, type HotkeyDef, type HotkeyId } from "../hotkeys/registry"
+import { hotkeyLabel, prettyChord, type HotkeyDef, type HotkeyId } from "../hotkeys/registry"
 import { useSettings } from "../settings/settings"
 import { useUi } from "../stores/ui"
 import { useT } from "../i18n"
@@ -18,11 +18,14 @@ export interface FooterHint {
   readonly label: string
 }
 
-export const footerHints = (registry: readonly HotkeyDef[]): FooterHint[] =>
+export const footerHints = (
+  registry: readonly HotkeyDef[],
+  translate: Parameters<typeof hotkeyLabel>[1],
+): FooterHint[] =>
   FOOTER_IDS.flatMap((id) => {
     const hotkey = registry.find((candidate) => candidate.id === id)
     return hotkey
-      ? [{ id: hotkey.id, chord: prettyChord(hotkey.chord), label: hotkey.label }]
+      ? [{ id: hotkey.id, chord: prettyChord(hotkey.chord), label: hotkeyLabel(hotkey, translate) }]
       : []
   })
 
@@ -30,7 +33,7 @@ export const Footer = () => {
   const tr = useT()
   const registry = useSettings((state) => state.effectiveHotkeys)
   const [collapsed, setCollapsed] = useState(false)
-  const hints = footerHints(registry)
+  const hints = footerHints(registry, tr)
 
   return (
     <footer className={`app-footer${collapsed ? " collapsed" : ""}`}>

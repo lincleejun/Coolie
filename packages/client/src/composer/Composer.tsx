@@ -22,13 +22,14 @@ export const deliverModelSwitch = (wsId: string, model: string, engineWorking: b
   useData.getState().sendInput(wsId, { text: `/model ${model}`, mode: "send", skipStable: engineWorking })
 
 const QueueIndicator = ({ wsId }: { wsId: string }) => {
+  const tr = useT()
   const queued = useData((s) => s.queuedByWs[wsId])
   if (!queued || queued.length === 0) return null
   return (
     <div className="queue-ind">
-      ⏳ {queued.length} 条排队中
+      ⏳ {tr("composer.queue").replace("{count}", String(queued.length))}
       {queued.map((prompt) => (
-        <button key={prompt.id} className="queue-cancel" title={`撤回：${prompt.text.slice(0, 40)}`}
+        <button key={prompt.id} className="queue-cancel" title={tr("composer.withdraw").replace("{prompt}", prompt.text.slice(0, 40))}
           onClick={() => void useData.getState().withdrawQueued(wsId, prompt.id)}>×</button>
       ))}
     </div>
@@ -58,8 +59,12 @@ export const Composer = ({ wsId, onSubmitOverride, placeholder, disabled = false
   } | null>(null)
   const focusNonce = useUi((s) => s.composerFocusNonce)
   const tabs = useData((s) => s.tabsByWs[wsId])
+  const selectedTabId = useUi((s) => s.selectedTabByWs[wsId])
   const config = useData((s) => s.config)
-  const engineTab = tabs?.find((t) => t.kind === "engine")
+  const selectedTab = tabs?.find((t) => t.id === selectedTabId)
+  const engineTab = selectedTab?.kind === "engine"
+    ? selectedTab
+    : tabs?.find((t) => t.kind === "engine")
   const engineWorking = engineTab?.status === "working"
   const engine = config?.engines.find((e) => e.id === (engineTab?.engineId ?? "claude"))
   const [model, setModel] = useState("default")
@@ -70,7 +75,7 @@ export const Composer = ({ wsId, onSubmitOverride, placeholder, disabled = false
 
   // @ 首次触发时懒加载文件/命令列表（workspace 切换时失效）
   useEffect(() => { setFiles([]); setCommands([]); setToken(null) }, [wsId])
-  useEffect(() => { void useData.getState().refreshQueue(wsId) }, [wsId])
+  useEffect(() => { void useData.getState().refreshQueue(wsId) }, [wsId, engineTab?.id])
   const ensureLists = (kind: "file" | "command"): void => {
     const api = useData.getState().getApi()
     if (!api) return
@@ -169,7 +174,10 @@ export const Composer = ({ wsId, onSubmitOverride, placeholder, disabled = false
       await useData.getState().sendInput(wsId, { text: body, mode, skipStable })
     } catch (e: any) {
       update(body)
-      alert(`投递失败：${e?.message ?? e}`)
+      useData.getState().pushWarning(
+        "composer.send",
+        tr("composer.sendFailed").replace("{error}", String(e?.message ?? e)),
+      )
     }
   }
 
@@ -214,7 +222,11 @@ export const Composer = ({ wsId, onSubmitOverride, placeholder, disabled = false
     setModel(m)
     if (m === "default") return
     if (engine?.capabilities.midSessionModelSwitch)
-      void deliverModelSwitch(wsId, m, engineWorking === true).catch((e) => alert(`切换失败：${e.message}`))
+      void deliverModelSwitch(wsId, m, engineWorking === true)
+        .catch((e) => useData.getState().pushWarning(
+          "engine.switch",
+          tr("composer.modelSwitchFailed").replace("{error}", e.message),
+        ))
   }
 
   return (
@@ -273,7 +285,7 @@ export const Composer = ({ wsId, onSubmitOverride, placeholder, disabled = false
           {engine && engine.capabilities.midSessionModelSwitch && !onSubmitOverride && (
             <Dropdown
               className="model-chip"
-              title="模型（投 /model）"
+              title={tr("composer.model")}
               leading={<SparkleIcon size={13} className="mk" />}
               value={model}
               onChange={switchModel}
@@ -286,7 +298,7 @@ export const Composer = ({ wsId, onSubmitOverride, placeholder, disabled = false
           {/* effort 选择器：engine.capabilities.effort=false（claude）→ 不渲染（Noop 降级，M2 codex 启用） */}
           <div className="cbar-sp" />
           {engineWorking && (
-            <button className="cchip stop-chip" title="打断（⌘.）" aria-label="打断" onClick={interrupt}>
+            <button className="cchip stop-chip" title={tr("composer.interruptTitle")} aria-label={tr("composer.interrupt")} onClick={interrupt}>
               <StopIcon size={12} />
             </button>
           )}

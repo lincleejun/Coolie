@@ -90,7 +90,7 @@ export const codexEngine: Engine = {
   efforts: resolvedCodexEfforts,
   // 占位 id：codex 不支持预指定 session id，此值永不传给 codex（serverGeneratedId 分流后 bootstrap 都不会用它）。
   newSessionId: () => randomUUID(),
-  launchCommand: ({ sessionId, model, effort, resume, workspaceId, home }) => {
+  launchCommand: ({ sessionId, model, effort, resume, workspaceId, tabId, tmuxWindow, home }) => {
     const override = (process.env.COOLIE_CODEX_CMD ?? "").trim()
     if (override !== "") return override.split(/\s+/)
     const bin = discoverCodexBinary() ?? "codex"
@@ -98,7 +98,10 @@ export const codexEngine: Engine = {
     args.push("-c", 'tui.terminal_title=["activity","thread-title"]')
     if (resume !== true && workspaceId && home) {
       const script = `${home}/hooks/codex-notify.sh`
-      args.push("-c", `notify=[${JSON.stringify(script)},${JSON.stringify(workspaceId)}]`)
+      const notifyArgs = [script, workspaceId]
+      if (tabId !== undefined || tmuxWindow !== undefined)
+        notifyArgs.push(tabId ?? "", tmuxWindow === undefined ? "" : String(tmuxWindow))
+      args.push("-c", `notify=[${notifyArgs.map((arg) => JSON.stringify(arg)).join(",")}]`)
     }
     if (model) args.push("--model", model)
     if (effort) args.push("-c", `model_reasoning_effort=${effort}`)

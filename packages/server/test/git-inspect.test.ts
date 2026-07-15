@@ -49,6 +49,14 @@ describe("against real repo", () => {
     expect(c.staged).toEqual([])
     expect(c.committed).toEqual([])
   })
+  it("main checkout can use HEAD for diffstat and changes", async () => {
+    const stat = await diffShortstat(repo, "HEAD")
+    const changes = await collectChanges(repo, "HEAD")
+    expect(stat).toMatchObject({ filesChanged: 1, insertions: 1 })
+    expect(changes.againstBase.map((file) => file.path)).toContain("a.txt")
+    expect(changes.unstaged.map((file) => file.path)).toContain("a.txt")
+    expect(changes.committed).toEqual([])
+  })
   it("listFiles: tracked + untracked、不含 ignored", async () => {
     fs.writeFileSync(path.join(repo, ".gitignore"), "ignored.txt\n")
     fs.writeFileSync(path.join(repo, "ignored.txt"), "x\n")

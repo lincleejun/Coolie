@@ -33,6 +33,8 @@ export interface CoolieConfigShape {
    * engineSessionId + engine.session.started。首条 composer 输入可能在 create 数分钟后才来 → 上限
    * 给宽，缺省 30min，超限自停（防永久盯扫）。`COOLIE_ROLLOUT_BACKFILL_MAX_MS` 覆盖，测试用小值。 */
   readonly rolloutBackfillMaxMs?: number
+  /** .coolie setup/init watchdog. */
+  readonly initTimeoutMs?: number
 }
 export class CoolieConfig extends Context.Tag("CoolieConfig")<CoolieConfig, CoolieConfigShape>() {}
 
@@ -52,5 +54,6 @@ export const CoolieConfigLive = Layer.sync(CoolieConfig, () => {
     codexConfigPath: process.env.COOLIE_CODEX_CONFIG,
     promptReadyTimeoutMs: Number(process.env.COOLIE_PROMPT_READY_TIMEOUT_MS ?? 90_000),
     rolloutBackfillMaxMs: Number(process.env.COOLIE_ROLLOUT_BACKFILL_MAX_MS ?? 30 * 60_000),
+    initTimeoutMs: Number(process.env.COOLIE_INIT_TIMEOUT_MS ?? 10 * 60_000),
   }
 })

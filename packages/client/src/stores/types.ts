@@ -14,5 +14,10 @@ export interface EngineInfo {
   models: string[]
   modelEfforts?: Readonly<Record<string, readonly string[]>>
   efforts?: readonly string[]
+  custom?: boolean
+  enabled?: boolean
+  presetId?: string | null
+  availability?: { available: boolean; accountHint: string | null; error: string | null }
+  definition?: import("@coolie/protocol").CustomEngineDefinition
 }
 export interface NamePoolInfo { id: string; displayName: string }

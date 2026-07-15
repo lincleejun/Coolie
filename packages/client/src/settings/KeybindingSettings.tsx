@@ -1,13 +1,20 @@
-import { useEffect, useState } from "react"
+import { useEffect, useRef, useState } from "react"
 import { useSettings, type Lang } from "./settings"
-import { useUi } from "../stores/ui"
+import { consumeModalKey, useUi } from "../stores/ui"
 import { useT } from "../i18n"
 import type { ThemePref } from "./theme"
 import { useData } from "../stores/data"
+import { exportKeybindingsYaml, parseKeybindingsYaml } from "./keybindings"
+import { HOTKEYS_REGISTRY } from "../hotkeys/registry"
+import { playTurnCompleteSound } from "../chrome/notify"
+import { promptDialog, trapTabKey, useAppDialogOpen } from "../chrome/dialogs"
+import { showToast } from "../chrome/Toasts"
 
-export const KeybindingSettings = () => {
+type Section = "general" | "engines" | "accounts" | "keybindings" | "feedback" | "dev"
+
+export const KeybindingSettings = ({ forceOpen = false }: { forceOpen?: boolean }) => {
   const tr = useT()
-  const open = useUi((state) => state.settingsOpen)
+  const open = useUi((state) => state.settingsOpen) || forceOpen
   const theme = useSettings((state) => state.theme)
   const lang = useSettings((state) => state.lang)
   const keybindings = useSettings((state) => state.keybindings)
@@ -17,14 +24,42 @@ export const KeybindingSettings = () => {
   // Default outside the selector: returning a fresh [] inside a zustand selector makes
   // useSyncExternalStore see a new snapshot every render → infinite re-render (blank screen).
   const namePools = useData((state) => state.config?.namePools) ?? []
+  const engines = useData((state) => state.config?.engines) ?? []
+  const selectedWs = useUi((state) => state.selectedWs)
   const [draft, setDraft] = useState("{}")
+  const [engineDraft, setEngineDraft] = useState("")
+  const [engineMessage, setEngineMessage] = useState<string | null>(null)
+  const [section, setSection] = useState<Section>("general")
+  const preferences = useSettings((state) => state.preferences)
+  const firstNav = useRef<HTMLButtonElement>(null)
+  const dialog = useRef<HTMLDivElement>(null)
+  const returnFocus = useRef<HTMLElement | null>(null)
+  const appDialogOpen = useAppDialogOpen()
 
   useEffect(() => {
-    if (open) setDraft(JSON.stringify(keybindings, null, 2))
-  }, [keybindings, open])
+    if (forceOpen) useUi.getState().openModal("settings")
+    return () => { if (forceOpen) useUi.getState().closeModal("settings") }
+  }, [forceOpen])
 
-  if (!open) return null
+  useEffect(() => {
+    if (!open) {
+      const target = returnFocus.current
+      returnFocus.current = null
+      if (target) requestAnimationFrame(() => { if (target.isConnected !== false) target.focus() })
+      return
+    }
+    if (!appDialogOpen) {
+      returnFocus.current ??= document.activeElement as HTMLElement | null
+      setDraft(JSON.stringify(keybindings, null, 2))
+      requestAnimationFrame(() => firstNav.current?.focus())
+    }
+  }, [appDialogOpen, keybindings, open])
+
+  if (!open || appDialogOpen) return null
   const close = (): void => useUi.getState().setSettings(false)
+  const runSettingAction = (code: string, action: () => Promise<unknown>): void => {
+    void action().catch((error: unknown) => showToast(code, error))
+  }
   const apply = (): void => {
     const result = useSettings.getState().applyKeybindingJson(draft)
     if (result.ok) setDraft(JSON.stringify(result.overrides, null, 2))
@@ -33,16 +68,30 @@ export const KeybindingSettings = () => {
   return (
     <div className="modal-backdrop" onClick={close}>
       <div
-        className="modal keybinding-settings"
+        ref={dialog}
+        className="modal keybinding-settings settings-shell"
         role="dialog"
         aria-label={tr("settings.dialog")}
         onClick={(event) => event.stopPropagation()}
+        onKeyDown={(event) => {
+          if (trapTabKey(event.nativeEvent, dialog.current)) return
+          consumeModalKey(event, "Escape", close)
+        }}
       >
         <div className="settings-head">
-          <h2>快捷键 JSON 覆盖</h2>
-          <button className="dim" onClick={close}>关闭</button>
+          <h2>{tr("settings.dialog")}</h2>
+          <button className="dim" onClick={close}>{tr("dialog.close")}</button>
         </div>
-        <fieldset className="settings-preferences">
+        <div className="settings-layout">
+        <nav className="settings-nav" aria-label={tr("settings.dialog")}>
+          {(["general", "engines", "accounts", "keybindings", "feedback", "dev"] as const).map((id) =>
+            <button key={id} ref={id === "general" ? firstNav : undefined}
+              className={section === id ? "active" : ""} onClick={() => setSection(id)}>
+              {tr(`settings.section.${id}`)}
+            </button>)}
+        </nav>
+        <div className="settings-content">
+        {section === "general" && <fieldset className="settings-preferences">
           <legend>{tr("settings.preferences")}</legend>
           <label>
             <span>{tr("settings.theme")}</span>
@@ -86,16 +135,86 @@ export const KeybindingSettings = () => {
               />
             </label>
           )}
+          <label><span>{tr("settings.defaultEngine")}</span><input value={preferences.defaultEngine}
+            onChange={(event) => useSettings.getState().setPreference("defaultEngine", event.target.value)} /></label>
+          <label><span>{tr("settings.defaultModel")}</span><input value={preferences.defaultModel}
+            onChange={(event) => useSettings.getState().setPreference("defaultModel", event.target.value)} /></label>
+          <label><input type="checkbox" checked={preferences.notifications}
+            onChange={(event) => useSettings.getState().setPreference("notifications", event.target.checked)} />{tr("settings.notifications")}</label>
+          <label><input type="checkbox" checked={preferences.turnSound}
+            onChange={(event) => useSettings.getState().setPreference("turnSound", event.target.checked)} />{tr("settings.turnSound")}</label>
+          <button className="btn-secondary" onClick={playTurnCompleteSound}>{tr("settings.testSound")}</button>
         </fieldset>
-        <p className="dim">只填写需要覆盖的 action。格式示例：{`{ "composer.focus": "meta+shift+l" }`}</p>
+        }
+        {section === "accounts" && <fieldset className="settings-preferences"><legend>{tr("settings.section.accounts")}</legend>
+          {engines.map((engine) => <div key={engine.id} className="settings-engine-row"><strong>{engine.displayName}</strong>
+            <span className="dim">{engine.availability?.accountHint ?? engine.availability?.error ?? tr("settings.notDetected")}</span></div>)}
+        </fieldset>}
+        {section === "engines" && <fieldset className="settings-preferences">
+          <legend>{tr("settings.section.engines")}</legend>
+          {engines.map((engine) => (
+            <div key={engine.id} className="settings-engine-row">
+              <strong>{engine.displayName}</strong>
+              <span className="dim">{engine.id} · {engine.enabled ? tr("settings.enabled") : tr("settings.disabled")} · {
+                engine.availability?.accountHint ?? engine.availability?.error ?? tr("settings.notDetected")
+              }</span>
+              {engine.custom && <>
+                <button className="btn-secondary" onClick={() => setEngineDraft(JSON.stringify(engine.definition, null, 2))}>{tr("settings.edit")}</button>
+                <button className="btn-secondary" onClick={() => {
+                  if (!engine.definition) return
+                  runSettingAction("settings.engine.toggle",
+                    () => useData.getState().saveCustomEngine({ ...engine.definition!, enabled: !engine.enabled }))
+                }}>{engine.enabled ? tr("settings.disable") : tr("settings.enable")}</button>
+                <button className="btn-secondary" onClick={() => runSettingAction("settings.engine.detect",
+                  () => useData.getState().detectCustomEngine(engine.id)
+                    .then((result) => { setEngineMessage(result.accountHint ?? result.error ?? tr("settings.notDetected")) }))}>
+                  {tr("settings.detect")}</button>
+                <button className="btn-secondary" onClick={() => runSettingAction("settings.engine.delete",
+                  () => useData.getState().deleteCustomEngine(engine.id))}>{tr("settings.delete")}</button>
+              </>}
+              {selectedWs && engine.enabled &&
+                <button className="btn-secondary" onClick={() => runSettingAction("settings.engine.switch",
+                  () => useData.getState().switchEngine(selectedWs, engine.id))}>
+                  {tr("settings.switchCurrent")}
+                </button>}
+            </div>
+          ))}
+          <div className="settings-actions">
+            <button className="btn-secondary" onClick={() => runSettingAction("settings.engine.preset",
+              () => useData.getState().applyCopilotPreset())}>{tr("settings.copilotPreset")}</button>
+            <button className="btn-secondary" onClick={() => setEngineDraft(JSON.stringify({
+              id: "my-engine", displayName: "My Engine", enabled: true,
+              command: ["my-engine", "--session", "{sessionId}"],
+              capabilities: { nativeQueue: false, midSessionModelSwitch: false, resume: false, hooks: false, effort: false },
+              transcriptStrategy: "none", historyStrategy: "none", turnDetection: "none",
+            }, null, 2))}>{tr("settings.newEngine")}</button>
+          </div>
+          {engineDraft && <>
+            <textarea aria-label="Custom engine JSON" spellCheck={false} value={engineDraft}
+              onChange={(event) => setEngineDraft(event.target.value)} />
+            <button className="btn" onClick={() => {
+              try {
+                void useData.getState().saveCustomEngine(JSON.parse(engineDraft))
+                  .then(() => { setEngineDraft(""); setEngineMessage("saved") })
+                  .catch((error: unknown) => showToast("settings.engine.save", error))
+              } catch (error) { showToast("settings.engine.save", error) }
+            }}>{tr("settings.saveEngine")}</button>
+          </>}
+          {engineMessage && <div className="dim">{engineMessage}</div>}
+        </fieldset>
+        }
+        {section === "keybindings" && <>
+        <p className="dim">{tr("settings.keybindingsHint")}</p>
         <textarea
-          aria-label="快捷键 JSON"
+          aria-label={tr("settings.keybindingsJson")}
           spellCheck={false}
           value={draft}
           onChange={(event) => setDraft(event.target.value)}
           onKeyDown={(event) => {
-            if (event.key === "Escape") { event.preventDefault(); close() }
-            if (event.key === "Enter" && event.metaKey) { event.preventDefault(); apply() }
+            if (consumeModalKey(event, "Escape", close)) return
+            if (event.key === "Enter" && event.metaKey) {
+              consumeModalKey(event, "Enter", apply)
+            }
           }}
         />
         {error && <div className="settings-error" role="alert">{error}</div>}
@@ -103,9 +222,27 @@ export const KeybindingSettings = () => {
           <button className="btn-secondary" onClick={() => {
             useSettings.getState().resetKeybindings()
             setDraft("{}")
-          }}>恢复默认</button>
-          <button className="btn" onClick={apply}>立即应用 ⌘↵</button>
+          }}>{tr("settings.reset")}</button>
+          <button className="btn-secondary" onClick={() => {
+            void promptDialog(tr("settings.yamlTitle"), tr("settings.yamlMessage"),
+              exportKeybindingsYaml(keybindings), true).then((yaml) => {
+              if (!yaml) return
+              const result = parseKeybindingsYaml(HOTKEYS_REGISTRY, yaml)
+              if (result.ok) useSettings.getState().setKeybindingOverrides(result.overrides)
+              else showToast("settings.keybindings.yaml", result.error)
+            })
+          }}>{tr("settings.yaml")}</button>
+          <button className="btn" onClick={apply}>{tr("settings.apply")}</button>
         </div>
+        </>}
+        {section === "feedback" && <fieldset className="settings-preferences"><legend>{tr("settings.section.feedback")}</legend>
+          <p className="dim">{tr("settings.feedbackHint")}</p>
+          <button className="btn-secondary" onClick={() => window.open("https://github.com", "_blank", "noopener")}>{tr("settings.issueTracker")}</button>
+        </fieldset>}
+        {section === "dev" && <fieldset className="settings-preferences"><legend>{tr("settings.devDiagnostics")}</legend>
+          <pre className="settings-diagnostics">{JSON.stringify({ status: useData.getState().status, engines: engines.length }, null, 2)}</pre>
+        </fieldset>}
+        </div></div>
       </div>
     </div>
   )

@@ -169,7 +169,7 @@ describe("coolie CLI e2e", () => {
     expect(out).toMatch(/claude\s+created/)
     expect(out).toMatch(/codex\s+created/)
     const db = new Database(path.join(home, "coolie.db"), { readonly: true })
-    const rows = db.prepare("SELECT id, name, branch, data FROM workspaces WHERE project_id = (SELECT id FROM projects WHERE repo_root = ?) ORDER BY created_at")
+    const rows = db.prepare("SELECT id, name, branch, data FROM workspaces WHERE kind = 'task' AND project_id = (SELECT id FROM projects WHERE repo_root = ?) ORDER BY created_at")
       .all(dir) as Array<{ id: string; name: string; branch: string; data: string }>
     expect(rows.map((row) => row.branch)).toEqual(["coolie/fan-1", "coolie/fan-2", "coolie/fan-3"])
     expect(rows.map((row) => row.name)).toEqual(["fan-name-1", "fan-name-2", "fan-name-3"])
@@ -182,7 +182,7 @@ describe("coolie CLI e2e", () => {
     execFileSync("git", ["init", "-b", "main"], { cwd: dir })
     expect(() => coolie("create", dir, "--agents", "bogus:1")).toThrow(/未知引擎|Command failed/)
     const db = new Database(path.join(home, "coolie.db"), { readonly: true })
-    const count = db.prepare("SELECT count(*) AS n FROM workspaces WHERE project_id = (SELECT id FROM projects WHERE repo_root = ?)")
+    const count = db.prepare("SELECT count(*) AS n FROM workspaces WHERE kind = 'task' AND project_id = (SELECT id FROM projects WHERE repo_root = ?)")
       .get(dir) as { n: number }
     expect(count.n).toBe(0)
     db.close()
@@ -206,7 +206,7 @@ describe("coolie CLI e2e", () => {
     expect(output).toContain("1/2 成功")
     expect(output).toContain("failed:")
     const db = new Database(path.join(home, "coolie.db"), { readonly: true })
-    const rows = db.prepare("SELECT id, status FROM workspaces WHERE project_id = (SELECT id FROM projects WHERE repo_root = ?)")
+    const rows = db.prepare("SELECT id, status FROM workspaces WHERE kind = 'task' AND project_id = (SELECT id FROM projects WHERE repo_root = ?)")
       .all(dir) as Array<{ id: string; status: string }>
     expect(rows.map((row) => row.status).sort()).toEqual(["active", "error"])
     db.close()

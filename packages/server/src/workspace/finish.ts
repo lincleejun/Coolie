@@ -73,6 +73,8 @@ export const WorkspaceFinisherLive = Layer.effect(
       if (request.createPr !== true && request.mergeBack !== true)
         return yield* new ValidationError({ message: "createPr 与 mergeBack 至少选择一个动作" })
       const ws = yield* workspaces.get(workspaceId)
+      if (ws.kind === "main")
+        return yield* new ConflictError({ message: "main task 不可 finish" })
       if (ws.status !== "active")
         return yield* new ConflictError({ message: `只能 finish active workspace（当前 ${ws.status}）` })
       const project = yield* projects.get(ws.projectId)

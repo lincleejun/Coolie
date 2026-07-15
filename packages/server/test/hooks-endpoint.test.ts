@@ -169,6 +169,19 @@ describe("POST /hooks/claude endpoint", () => {
     expect(row.status).toBe("awaiting-input")
   })
 
+  it("multiple same-engine tabs require exact context and never update the wrong sibling", async () => {
+    db.prepare(`INSERT INTO tabs (id, workspace_id, kind, engine_id, engine_session_id, tmux_window, title, status, data)
+      VALUES ('t-sibling','w1','engine','claude','s-sibling',3,NULL,'idle','{}')`).run()
+    const ambiguous = await post("?workspace=w1", { hook_event_name: "UserPromptSubmit" })
+    expect(ambiguous.status).toBe(200)
+    expect(tabRow().status).toBe("idle")
+    expect((db.prepare("SELECT status FROM tabs WHERE id='t-sibling'").get() as any).status).toBe("idle")
+
+    await post(`?workspace=w1&tabId=${tabId}`, { hook_event_name: "UserPromptSubmit", session_id: SESSION_ID })
+    expect(tabRow().status).toBe("working")
+    expect((db.prepare("SELECT status FROM tabs WHERE id='t-sibling'").get() as any).status).toBe("idle")
+  })
+
   it("GET /workspaces/:id/tabs lists tabs", async () => {
     const r = await fetch(`${base}/workspaces/w1/tabs`, { headers: { Authorization: `Bearer ${token}` } })
     expect(r.status).toBe(200)

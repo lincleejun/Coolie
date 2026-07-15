@@ -22,6 +22,27 @@ const failTag = (exit: Exit.Exit<any, any>): string | undefined => {
 }
 
 describe("WorkspacesRepo", () => {
+  it("persists migration-compatible layout and zen state in workspace data", async () => {
+    const { db, run } = make()
+    const exit = await run(Effect.gen(function* () {
+      const repo = yield* WorkspacesRepo
+      const ws = yield* repo.insertCreating(w1)
+      expect((yield* repo.getLayoutState(ws.id)).zen).toBe(false)
+      yield* repo.setLayoutState(ws.id, {
+        version: 1, zen: true, focusedTabId: "tab-2", restoreTabId: "tab-1",
+        geometry: [{ window: 0, layout: "layout", cols: 120, rows: 32 }],
+      })
+      return { state: yield* repo.getLayoutState(ws.id), ws: yield* repo.get(ws.id) }
+    }))
+    expect(Exit.isSuccess(exit)).toBe(true)
+    if (Exit.isSuccess(exit)) {
+      expect(exit.value.state).toMatchObject({ zen: true, focusedTabId: "tab-2" })
+      expect(exit.value.ws.zenMode).toBe(true)
+      expect(JSON.parse((db.prepare("SELECT data FROM workspaces WHERE id = ?").get(exit.value.ws.id) as any).data).layout)
+        .toMatchObject({ zen: true, restoreTabId: "tab-1" })
+    }
+  })
+
   it("insertCreating + get round-trips incl portBase", async () => {
     const { run } = make()
     const exit = await run(Effect.gen(function* () {
@@ -177,6 +198,41 @@ describe("WorkspacesRepo", () => {
     }))
     expect(failTag(exit)).toBe("NotFoundError")
     expect((db.prepare("SELECT count(*) AS n FROM events").get() as { n: number }).n).toBe(0)
+  })
+  it("reorders only regular non-archived tasks and preserves archived/main order", async () => {
+    const { db, run } = make()
+    const exit = await run(Effect.gen(function* () {
+      const repo = yield* WorkspacesRepo
+      const first = yield* repo.insertCreating(w1)
+      const archived = yield* repo.insertCreating({
+        ...w1, name: "usa-yosemite", path: "/tmp/ws/usa-yosemite", branch: "coolie/archived",
+      })
+      const last = yield* repo.insertCreating({
+        ...w1, name: "usa-acadia", path: "/tmp/ws/usa-acadia", branch: "coolie/last",
+      })
+      yield* repo.setStatus(archived.id, "active")
+      yield* repo.setStatus(archived.id, "archived")
+      db.prepare(`INSERT INTO workspaces
+        (id, project_id, name, path, branch, base_branch, base_ref, status, pinned, created_at, archived_at, data,
+         task_status, kind, materialized, sort_order)
+        VALUES ('main-row','p1','main','/tmp/demo','main','main','','active',0,1,NULL,'{}',
+          'in_progress','main',1,7)`).run()
+      const archivedBefore = (db.prepare("SELECT sort_order FROM workspaces WHERE id = ?")
+        .get(archived.id) as { sort_order: number }).sort_order
+      const reordered = yield* repo.reorder("p1", [last.id, first.id])
+      return { first, archived, last, reordered, archivedBefore }
+    }))
+    expect(Exit.isSuccess(exit)).toBe(true)
+    if (Exit.isSuccess(exit)) {
+      const activeTasks = db.prepare(
+        "SELECT id FROM workspaces WHERE project_id = 'p1' AND kind = 'task' AND status <> 'archived' ORDER BY sort_order",
+      ).all() as Array<{ id: string }>
+      expect(activeTasks.map(({ id }) => id)).toEqual([exit.value.last.id, exit.value.first.id])
+      expect((db.prepare("SELECT sort_order FROM workspaces WHERE id = ?").get(exit.value.archived.id) as any).sort_order)
+        .toBe(exit.value.archivedBefore)
+      expect((db.prepare("SELECT sort_order FROM workspaces WHERE id = 'main-row'").get() as any).sort_order).toBe(7)
+      expect(exit.value.reordered).toHaveLength(4)
+    }
   })
   it("setLastError stores shape with tag, message, and numeric at", async () => {
     const { db, run } = make()

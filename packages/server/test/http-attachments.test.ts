@@ -82,6 +82,12 @@ beforeEach(async () => {
     body: JSON.stringify({ projectId }),
   })
   wsId = (await workspace.json()).id
+  const ensured = await fetch(`${base}/workspaces/${wsId}/ensure`, {
+    method: "POST",
+    headers: { "content-type": "application/json", Authorization: `Bearer ${token}` },
+    body: "{}",
+  })
+  if (!ensured.ok) throw new Error(`workspace ensure failed: ${ensured.status}`)
 })
 
 afterEach(async () => {

@@ -12,7 +12,7 @@ export const CenterDiff = ({ wsId, section, path }: {
       wsId={wsId}
       section={section}
       path={path}
-      onComment={(selection) => injectComment(wsId, selection)}
+      onComment={(selection) => { void injectComment(wsId, selection) }}
     />
   </div>
 )

@@ -5,6 +5,8 @@ import {
   mergeKeybindings,
   parseKeybindingJson,
   validateKeybindingOverrides,
+  exportKeybindingsYaml,
+  parseKeybindingsYaml,
 } from "../src/settings/keybindings.js"
 import { useSettings } from "../src/settings/settings.js"
 
@@ -29,6 +31,16 @@ describe("用户快捷键覆盖", () => {
     expect(parseKeybindingJson(HOTKEYS_REGISTRY, "[]").ok).toBe(false)
     expect(parseKeybindingJson(HOTKEYS_REGISTRY, '{"composer.focus":42}').ok).toBe(false)
     expect(parseKeybindingJson(HOTKEYS_REGISTRY, "{").ok).toBe(false)
+  })
+
+  it("supports null unbind and YAML compatibility", () => {
+    const yaml = exportKeybindingsYaml({ "composer.focus": null, "app.settings": "meta+shift+," })
+    const parsed = parseKeybindingsYaml(HOTKEYS_REGISTRY, yaml)
+    expect(parsed.ok).toBe(true)
+    if (parsed.ok) {
+      expect(parsed.overrides["composer.focus"]).toBeNull()
+      expect(mergeKeybindings(HOTKEYS_REGISTRY, parsed.overrides).some((item) => item.id === "composer.focus")).toBe(false)
+    }
   })
 })
 

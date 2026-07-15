@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest"
-import { HOTKEYS_REGISTRY, normalizeChord, resolveHotkey } from "../src/hotkeys/registry.js"
+import { HOTKEYS_REGISTRY, hotkeyCategoryKey, hotkeyLabel, normalizeChord, resolveHotkey } from "../src/hotkeys/registry.js"
 import { pushHotkeyLayer, dispatchHotkey, dispatchHotkeyId, getRunnableHotkeyIds, _resetLayers } from "../src/hotkeys/dispatch.js"
+import { t } from "../src/i18n/index.js"
 
 const ev = (o: Partial<{ metaKey: boolean; shiftKey: boolean; altKey: boolean; ctrlKey: boolean; code: string; key: string }>) =>
   ({ metaKey: false, shiftKey: false, altKey: false, ctrlKey: false, code: "", key: "", ...o })
@@ -11,6 +12,14 @@ describe("registry", () => {
     expect(new Set(chords).size).toBe(chords.length)
     const ids = HOTKEYS_REGISTRY.map((h) => h.id)
     expect(new Set(ids).size).toBe(ids.length)
+  })
+  it("uses stable translation keys and renders English labels/categories without Han text", () => {
+    const labels = HOTKEYS_REGISTRY.map((hotkey) => hotkeyLabel(hotkey, (key) => t(key, "en")))
+    const categories = HOTKEYS_REGISTRY.map((hotkey) => t(hotkeyCategoryKey(hotkey.category), "en"))
+    expect(labels).toContain("Create workspace (composer becomes initial prompt)")
+    expect(labels).toContain("Switch to workspace 9")
+    expect([...labels, ...categories].some((value) => /\p{Script=Han}/u.test(value))).toBe(false)
+    expect(HOTKEYS_REGISTRY.every((hotkey) => hotkey.labelKey.startsWith("hotkey."))).toBe(true)
   })
   it("normalizeChord：物理键（code）匹配；Ctrl/无修饰返回 null", () => {
     expect(normalizeChord(ev({ metaKey: true, code: "KeyN" }))).toBe("meta+n")
@@ -24,6 +33,8 @@ describe("registry", () => {
     expect(resolveHotkey(ev({ metaKey: true, code: "Digit1" }))?.id).toBe("workspace.jump.1")
     expect(resolveHotkey(ev({ metaKey: true, code: "KeyL" }))?.id).toBe("composer.focus")
     expect(resolveHotkey(ev({ metaKey: true, code: "Period" }))?.id).toBe("engine.interrupt")
+    expect(resolveHotkey(ev({ metaKey: true, shiftKey: true, code: "KeyT" }))?.id).toBe("tab.newEngine")
+    expect(resolveHotkey(ev({ metaKey: true, altKey: true, code: "BracketRight" }))?.id).toBe("tab.next")
   })
 })
 

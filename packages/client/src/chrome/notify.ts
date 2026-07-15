@@ -1,4 +1,6 @@
 import { useUi } from "../stores/ui"
+import { useSettings } from "../settings/settings"
+import { t } from "../i18n"
 
 /** OS integrations are optional: WKWebView may expose neither API. */
 export const canOsNotify = (): boolean => {
@@ -33,9 +35,12 @@ export const requestNotifyPermission = (): void => {
 
 export const notifyTurnComplete = (wsName: string, wsId: string): void => {
   try {
+    const prefs = useSettings.getState().preferences
+    if (prefs.turnSound) playTurnCompleteSound()
+    if (!prefs.notifications) return
     if (!canOsNotify() || Notification.permission !== "granted") return
-    const notification = new Notification(`${wsName} 需要你`, {
-      body: "engine 完成一轮，等待你的输入",
+    const notification = new Notification(t("notification.needsYou").replace("{workspace}", wsName), {
+      body: t("notification.turnComplete"),
       tag: `coolie-${wsId}`,
     })
     notification.onclick = () => {
@@ -48,6 +53,26 @@ export const notifyTurnComplete = (wsName: string, wsId: string): void => {
     }
   } catch {
     // OS notifications are progressive enhancement only.
+  }
+}
+
+export const playTurnCompleteSound = (): void => {
+  try {
+    const AudioContextCtor = window.AudioContext
+    if (!AudioContextCtor) return
+    const context = new AudioContextCtor()
+    const oscillator = context.createOscillator()
+    const gain = context.createGain()
+    oscillator.frequency.value = 660
+    gain.gain.setValueAtTime(0.0001, context.currentTime)
+    gain.gain.exponentialRampToValueAtTime(0.055, context.currentTime + 0.01)
+    gain.gain.exponentialRampToValueAtTime(0.0001, context.currentTime + 0.16)
+    oscillator.connect(gain).connect(context.destination)
+    oscillator.start()
+    oscillator.stop(context.currentTime + 0.17)
+    oscillator.onended = () => void context.close()
+  } catch {
+    // Sound is optional and must never interrupt attention handling.
   }
 }
 

@@ -19,8 +19,9 @@ import { TmuxGuide } from "./chrome/TmuxGuide"
 import { Cheatsheet } from "./chrome/Cheatsheet"
 import { CommandPalette } from "./chrome/CommandPalette"
 import { Footer } from "./chrome/Footer"
-import { WarningToasts } from "./chrome/Toasts"
+import { showToast, WarningToasts } from "./chrome/Toasts"
 import { Sidebar } from "./sidebar/Sidebar"
+import { deleteConfirmation } from "./sidebar/taskCommands"
 import { CenterArea } from "./terminal/TabsBar"
 import { Composer } from "./composer/Composer"
 import { DispatchPanel, ErrorActions } from "./composer/Dispatch"
@@ -35,8 +36,10 @@ import { syncTerminalTheme } from "./terminal/session"
 import { useT } from "./i18n"
 import { capabilities } from "./platform"
 import { projectIdFromWindowSearch } from "./chrome/workspaceWindow"
+import { DialogHost, confirmDialog } from "./chrome/dialogs"
 
 const WebServerSetup = ({ onConnect }: { onConnect: () => void }) => {
+  const tr = useT()
   const [value, setValue] = useState("")
   const [remember, setRemember] = useState(false)
   const [invalid, setInvalid] = useState(false)
@@ -65,7 +68,7 @@ const WebServerSetup = ({ onConnect }: { onConnect: () => void }) => {
   }
   return (
     <div className="web-server-setup">
-      <label htmlFor="web-server">现有 server（端口:token）</label>
+      <label htmlFor="web-server">{tr("app.server.label")}</label>
       <input
         id="web-server"
         type="password"
@@ -75,18 +78,18 @@ const WebServerSetup = ({ onConnect }: { onConnect: () => void }) => {
         onChange={(event) => { setValue(event.target.value); setInvalid(false); setStorageError(false) }}
         onKeyDown={(event) => { if (event.key === "Enter") connect() }}
       />
-      {invalid && <span className="ob-err">格式无效；端口须为 1–65535，token 不能为空。</span>}
-      {storageError && <span className="ob-err">浏览器禁止使用 localStorage；请取消保存后连接。</span>}
+      {invalid && <span className="ob-err">{tr("app.server.invalid")}</span>}
+      {storageError && <span className="ob-err">{tr("app.server.storageError")}</span>}
       <label>
         <input type="checkbox" checked={remember} onChange={(event) => setRemember(event.target.checked)} />
-        保存到 localStorage
+        {tr("app.server.remember")}
       </label>
       <p className="dim">
-        保存后 token 可被同源脚本读取，且会一直保留到清除；不保存时 token 只留在本页模块内存，不写入 URL。
+        {tr("app.server.security")}
       </p>
       <div>
-        <button className="btn" onClick={connect}>连接</button>
-        {stored && <button className="btn-secondary" onClick={clear}>清除已保存的 token</button>}
+        <button className="btn" onClick={connect}>{tr("app.server.connect")}</button>
+        {stored && <button className="btn-secondary" onClick={clear}>{tr("app.server.clear")}</button>}
       </div>
     </div>
   )
@@ -203,14 +206,14 @@ export const App = () => {
       <div className="app-frame">
         <Titlebar />
         <div className="boot-error">
-          <h2>无法连接 coolie-server</h2>
+          <h2>{tr("app.connectionFailed")}</h2>
           <pre>{bootErr}</pre>
           {!capabilities.daemonDiscovery && <WebServerSetup onConnect={() => {
             setBootErr(null)
             bootstrapStop.current?.()
             bootstrapStop.current = bootstrapLifecycle.current!.start()
           }} />}
-          <button className="btn" onClick={() => location.reload()}>重试</button>
+          <button className="btn" onClick={() => location.reload()}>{tr("app.retry")}</button>
         </div>
       </div>
     )
@@ -219,7 +222,7 @@ export const App = () => {
       <Titlebar />
       {needsYou.size > 0 && (
         <button className="attention-banner" onClick={selectAttentionWorkspace}>
-          ⚠ {needsYou.size} 个 workspace 需要你
+          ⚠ {tr("app.needsYou").replace("{count}", String(needsYou.size))}
         </button>
       )}
       <div className="columns">
@@ -233,12 +236,16 @@ export const App = () => {
               <ErrorActions wsId={selectedWs} />
             ) : selWs.status === "archived" ? (
               <div className="error-actions">
-                <span className="dim">已归档（branch 保留）</span>
-                <button className="btn" onClick={() => void useData.getState().unarchiveWs(selectedWs)}>恢复</button>
-                <button onClick={() => {
-                  if (window.confirm(`删除 workspace「${selWs.name}」？\nworktree 会被删除，branch ⑂${selWs.branch} 保留。`))
-                    void useData.getState().deleteWs(selectedWs, true)
-                }}>删除…</button>
+                <span className="dim">{tr("app.archivedRetained")}</span>
+                <button className="btn" onClick={() => void useData.getState().unarchiveWs(selectedWs)
+                  .catch((error: unknown) => showToast("task.lifecycle", error))}>{tr("task.restore")}</button>
+                <button onClick={() => void confirmDialog(
+                  tr("task.deleteTitle"),
+                  deleteConfirmation(selWs),
+                  true,
+                ).then((confirmed) => {
+                  if (confirmed) return useData.getState().deleteWs(selectedWs, true)
+                }).catch((error: unknown) => showToast("task.lifecycle", error))}>{tr("task.delete")}</button>
               </div>
             ) : (
               <>
@@ -260,6 +267,7 @@ export const App = () => {
       <CommandPalette />
       <KeybindingSettings />
       <WarningToasts />
+      <DialogHost />
     </div>
   )
 }

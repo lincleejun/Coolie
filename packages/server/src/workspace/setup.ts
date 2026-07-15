@@ -2,6 +2,7 @@ import { Context, Data, Effect, Layer } from "effect"
 import { spawn } from "node:child_process"
 import * as fs from "node:fs"
 import * as path from "node:path"
+import { createHash } from "node:crypto"
 
 export class SetupScriptError extends Data.TaggedError("SetupScriptError")<{
   readonly script: string
@@ -47,6 +48,43 @@ export const resolveSetupScripts = (opts: {
     path.join(opts.repoRoot, ".coolie", "setup.local.sh"),
   ]
   return candidates.filter((p) => fs.existsSync(p))
+}
+
+export interface InitContract {
+  readonly scripts: string[]
+  readonly marker: string
+  readonly prompt: string | null
+}
+
+/** Repo init runs once for a physical worktree. setup.sh remains visible and runs on every provision. */
+export const resolveInitContract = (opts: {
+  readonly worktreePath: string
+  readonly home: string
+}): InitContract => {
+  const key = createHash("sha256").update(path.resolve(opts.worktreePath)).digest("hex")
+  const marker = path.join(opts.home, "init-markers", key)
+  const initScript = path.join(opts.worktreePath, ".coolie", "init.sh")
+  const promptFile = path.join(opts.worktreePath, ".coolie", "init-prompt.md")
+  return {
+    scripts: fs.existsSync(initScript) && !fs.existsSync(marker) ? [initScript] : [],
+    marker,
+    prompt: fs.existsSync(promptFile) && fs.statSync(promptFile).isFile()
+      ? fs.readFileSync(promptFile, "utf8").trim() || null
+      : null,
+  }
+}
+
+export const markInitComplete = (marker: string): void => {
+  fs.mkdirSync(path.dirname(marker), { recursive: true })
+  try { fs.writeFileSync(marker, `${new Date().toISOString()}\n`, { flag: "wx" }) }
+  catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error
+  }
+}
+
+export const composeInitialPrompt = (initPrompt: string | null, userPrompt?: string): string | undefined => {
+  const parts = [initPrompt?.trim(), userPrompt?.trim()].filter((part): part is string => Boolean(part))
+  return parts.length === 0 ? undefined : parts.join("\n\n")
 }
 
 const TAIL_CHARS = 4000

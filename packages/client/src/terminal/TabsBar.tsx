@@ -11,6 +11,8 @@ import { capabilities } from "../platform"
 import { CloseIcon, PlusIcon } from "../chrome/icons"
 import { Dropdown } from "../chrome/Dropdown"
 import { CenterDiff } from "../rightpanel/CenterDiff"
+import { promptDialog } from "../chrome/dialogs"
+import { t as translate, useT } from "../i18n"
 
 export const openInTerminal = async (
   tmuxSocket: string,
@@ -18,7 +20,7 @@ export const openInTerminal = async (
   id: TerminalId,
   customTemplate?: string,
 ): Promise<void> => {
-  if (!capabilities.externalTerminal) throw new Error("Web 模式不支持外部终端")
+  if (!capabilities.externalTerminal) throw new Error(translate("terminal.webExternalUnavailable"))
   const { program, args } = buildTerminalLaunch(id, tmuxSocket, wsId, customTemplate)
   const { invoke } = await import("@tauri-apps/api/core")
   await invoke("spawn_detached", { program, args })
@@ -28,9 +30,19 @@ export const openInTerminal = async (
 const tabLabel = (t: Tab, engineLabel: string): string =>
   t.kind === "engine" ? (t.title ?? engineLabel) : t.kind
 
+export const cycleTabId = (tabs: readonly Tab[], selectedId: string | undefined, delta: -1 | 1): string | null => {
+  if (tabs.length === 0) return null
+  const current = Math.max(0, tabs.findIndex((tab) => tab.id === selectedId))
+  return tabs[(current + delta + tabs.length) % tabs.length]!.id
+}
+
 export const CenterArea = ({ wsId }: { wsId: string }) => {
+  const tr = useT()
+  const report = (error: unknown): void =>
+    useData.getState().pushWarning("terminal.action", error instanceof Error ? error.message : String(error))
   const tabs = useData((s) => s.tabsByWs[wsId]) ?? []
   const config = useData((s) => s.config)
+  const workspace = useData((s) => s.workspaces.find((item) => item.id === wsId))
   const engines = config?.engines ?? []
   const selectedId = useUi((s) => s.selectedTabByWs[wsId]) ?? tabs[0]?.id
   const selected = tabs.find((t) => t.id === selectedId) ?? tabs[0]
@@ -39,11 +51,11 @@ export const CenterArea = ({ wsId }: { wsId: string }) => {
   const terminalApp = useTerminal((s) => s.terminalApp)
   const customTemplate = useTerminal((s) => s.customTemplate)
   const external = useTerminal((s) => capabilities.externalTerminal && s.externalByWs[wsId] === true)
-  const terminalLabel = terminalApp === "iterm2" ? "iTerm2" : terminalApp === "terminal" ? "Terminal.app" : "自定义终端"
+  const terminalLabel = terminalApp === "iterm2" ? "iTerm2" : terminalApp === "terminal" ? "Terminal.app" : tr("terminal.custom")
   const openExternal = (): void => {
     if (!config) return
     void openInTerminal(config.tmuxSocket, wsId, terminalApp, customTemplate)
-      .catch((error: unknown) => alert(error instanceof Error ? error.message : String(error)))
+      .catch(report)
   }
 
   // F3 惰性挂载（spec §五："PTY per 在看的 tab"）：只有被看过的 tab 才挂活 TerminalView/WS；
@@ -60,33 +72,66 @@ export const CenterArea = ({ wsId }: { wsId: string }) => {
     const tab = await api.req("POST", `/workspaces/${wsId}/tabs`, { kind: "shell" })
     useUi.getState().selectTab(wsId, tab.id)
   }
+  const newEngine = async (): Promise<void> => {
+    const api = useData.getState().getApi()
+    const engineId = selected?.kind === "engine" ? selected.engineId : engines[0]?.id
+    if (!api || !engineId) return
+    const tab = await api.req("POST", `/workspaces/${wsId}/tabs`, { kind: "engine", engineId })
+    useUi.getState().selectTab(wsId, tab.id)
+  }
   const run = async (): Promise<void> => {
     const api = useData.getState().getApi()
     if (!api) return
     await openRunTab(api, wsId, (workspaceId, tabId) => useUi.getState().selectTab(workspaceId, tabId))
   }
   const closeTab = async (t: Tab): Promise<void> => {
-    if (t.kind !== "shell") return // engine/setup/run 不可关（tmux window 归 lifecycle 管）
+    if (t.kind !== "shell" && t.kind !== "engine") return
     const api = useData.getState().getApi()
     if (!api) return
     await api.req("DELETE", `/workspaces/${wsId}/tabs/${t.id}`)
+    const next = tabs.find((candidate) => candidate.id !== t.id && candidate.kind === "engine")
+      ?? tabs.find((candidate) => candidate.id !== t.id)
+    if (next) useUi.getState().selectTab(wsId, next.id)
+  }
+  const renameTab = async (t: Tab): Promise<void> => {
+    const api = useData.getState().getApi()
+    if (!api) return
+    const title = (await promptDialog(
+      translate("dialog.renameTab"), translate("dialog.tabTitle"), t.title ?? tabLabel(t, engineName(t.engineId)),
+    ))?.trim()
+    if (!title) return
+    await api.req("POST", `/workspaces/${wsId}/tabs/${t.id}/rename`, { title })
+  }
+  const cycle = (delta: -1 | 1): void => {
+    const id = cycleTabId(tabs, selected?.id, delta)
+    if (id) useUi.getState().selectTab(wsId, id)
+  }
+  const toggleZen = async (): Promise<void> => {
+    const engineTab = selected?.kind === "engine" ? selected : tabs.find((tab) => tab.kind === "engine")
+    if (engineTab && engineTab.id !== selected?.id) useUi.getState().selectTab(wsId, engineTab.id)
+    await useData.getState().toggleZen(wsId, engineTab?.id)
   }
 
   // tab.* 全局键：随 CenterArea 挂载压层（LIFO：晚于 App base layer，优先命中）
   useEffect(() => {
     return pushHotkeyLayer({
-      "tab.newShell": () => void newShell().catch((e) => alert(e.message)),
+      "tab.newShell": () => void newShell().catch(report),
+      "tab.newEngine": () => void newEngine().catch(report),
+      "tab.prev": () => cycle(-1),
+      "tab.next": () => cycle(1),
+      "tab.rename": () => { if (selected) void renameTab(selected).catch(report) },
       "tab.close": () => {
         if (activeDiff) useUi.getState().closeCenterDiff()
-        else if (selected) void closeTab(selected).catch((e) => alert(e.message))
+        else if (selected) void closeTab(selected).catch(report)
       },
+      "workspace.zen": () => void toggleZen().catch(report),
     })
-  }, [wsId, selected?.id, activeDiff?.path, activeDiff?.section])
+  }, [wsId, selected?.id, tabs, activeDiff?.path, activeDiff?.section, workspace?.zenMode])
 
   const engineName = (id: string | null) => engines.find((e) => e.id === id)?.displayName ?? id ?? "engine"
 
   return (
-    <div className="center-area">
+    <div className={`center-area ${workspace?.zenMode ? "zen-mode" : ""}`}>
       <div className="tabsbar">
         {tabs.map((t) => (
           <button
@@ -94,10 +139,12 @@ export const CenterArea = ({ wsId }: { wsId: string }) => {
             className={`tab ${!activeDiff && t.id === selected?.id ? "active" : ""}`}
             title={t.kind === "engine" ? engineName(t.engineId) : t.kind}
             onClick={() => useUi.getState().selectTab(wsId, t.id)}
+            onDoubleClick={() => void renameTab(t)}
           >
             {t.kind === "engine" && <span className={`badge b-${t.status}`}>●</span>}
             <span>{tabLabel(t, engineName(t.engineId))}</span>
-            {t.kind === "shell" && (
+            {t.kind === "engine" && <span className="dim">{engineName(t.engineId)} · {t.status}</span>}
+            {(t.kind === "shell" || (t.kind === "engine" && tabs.filter((tab) => tab.kind === "engine").length > 1)) && (
               <span className="tab-close" onClick={(e) => { e.stopPropagation(); void closeTab(t) }}><CloseIcon size={12} /></span>
             )}
           </button>
@@ -113,32 +160,38 @@ export const CenterArea = ({ wsId }: { wsId: string }) => {
             </span>
           </button>
         )}
-        <button className="tab tab-run" title="运行 .coolie/run.sh" onClick={() => void run().catch((e) => alert(e.message))}>Run</button>
-        <button className="tab tab-new" title="新 shell tab（⌘T）" aria-label="新 shell tab" onClick={() => void newShell()}><PlusIcon size={14} /></button>
+        <button className="tab tab-run" title={tr("terminal.runScript")} onClick={() => void run().catch(report)}>{tr("terminal.run")}</button>
+        <button className="tab tab-new" title={tr("terminal.newEngine")} aria-label={tr("hotkey.tab.newEngine")} onClick={() => void newEngine()}>＋AI</button>
+        <button className="tab tab-new" title={tr("terminal.newShell")} aria-label={tr("hotkey.tab.newShell")} onClick={() => void newShell()}><PlusIcon size={14} /></button>
         <div className="tabsbar-spacer" />
+        <button
+          className={`term-mode-toggle ${workspace?.zenMode ? "active" : ""}`}
+          title={tr("terminal.toggleZen")}
+          onClick={() => void toggleZen().catch(report)}
+        >{workspace?.zenMode ? tr("terminal.exitZen") : "Zen"}</button>
         {capabilities.externalTerminal && (
           <>
             <Dropdown
               className="term-picker-chip"
-              title="选择外部终端"
+              title={tr("terminal.selectExternal")}
               value={terminalApp}
               onChange={(v) => useTerminal.getState().setTerminalApp(v as TerminalId)}
               options={[
                 { value: "iterm2", label: "iTerm2" },
                 { value: "terminal", label: "Terminal.app" },
-                { value: "custom", label: "自定义 argv" },
+                { value: "custom", label: tr("terminal.customArgv") },
               ]}
             />
             <button
               className="iterm-btn"
-              title={`在 ${terminalLabel} 中打开同一 tmux 会话`}
+              title={tr("terminal.openExternal").replace("{terminal}", terminalLabel)}
               onClick={openExternal}
             >↗ {terminalLabel}</button>
             <button
               className="term-mode-toggle"
-              title="切换外部终端模式"
+              title={tr("terminal.toggleExternal")}
               onClick={() => useTerminal.getState().toggleExternal(wsId)}
-            >{external ? "回内嵌" : "外部模式"}</button>
+            >{external ? tr("terminal.embedded") : tr("terminal.externalMode")}</button>
           </>
         )}
       </div>
@@ -148,7 +201,7 @@ export const CenterArea = ({ wsId }: { wsId: string }) => {
         <>
           {capabilities.externalTerminal && terminalApp === "custom" && (
             <label className="term-custom-editor">
-              <span>自定义 JSON argv 模板</span>
+              <span>{tr("terminal.customTemplate")}</span>
               <input
                 value={customTemplate}
                 placeholder={'["/usr/bin/open","-na","WezTerm","--args","sh","-lc","{cmd}"]'}
@@ -159,11 +212,11 @@ export const CenterArea = ({ wsId }: { wsId: string }) => {
           )}
           {external ? (
             <div className="term-external">
-              <p className="dim">外部终端模式已开启。GUI 终端会话与 WebSocket 已释放。</p>
+              <p className="dim">{tr("terminal.externalActive")}</p>
               {config && <code className="attach-cmd">{buildAttachCommand(config.tmuxSocket, wsId)}</code>}
               <div className="term-external-actions">
-                <button className="btn" onClick={openExternal}>在 {terminalLabel} 中打开</button>
-                <button className="btn-secondary" onClick={() => useTerminal.getState().setExternal(wsId, false)}>回内嵌终端</button>
+                <button className="btn" onClick={openExternal}>{tr("terminal.openIn").replace("{terminal}", terminalLabel)}</button>
+                <button className="btn-secondary" onClick={() => useTerminal.getState().setExternal(wsId, false)}>{tr("terminal.backEmbedded")}</button>
               </div>
             </div>
           ) : (
@@ -184,7 +237,7 @@ export const CenterArea = ({ wsId }: { wsId: string }) => {
                   <div key={t.id} className="term-wrap term-placeholder" style={{ visibility: "hidden" }} aria-hidden />
                 ),
               )}
-              {tabs.length === 0 && <div className="dim center-empty">无终端 tab（workspace 可能已归档）</div>}
+              {tabs.length === 0 && <div className="dim center-empty">{tr("terminal.empty")}</div>}
             </div>
           )}
         </>

@@ -3,6 +3,7 @@ import { useData } from "../stores/data"
 import { useUi } from "../stores/ui"
 import { capabilities, pickDirectory } from "../platform"
 import type { Project } from "@coolie/protocol"
+import { useT } from "../i18n"
 
 /**
  * 中央空态引导（conductor 风格 onboarding）：
@@ -39,6 +40,7 @@ export const registerPickedDirectory = async (
 export const ProjectOnboarding = ({ onProjectReady }: {
   onProjectReady?: (project: Project) => void
 }) => {
+  const tr = useT()
   const [mode, setMode] = useState<Mode>("none")
   const [value, setValue] = useState("")
   const [busy, setBusy] = useState(false)
@@ -85,20 +87,20 @@ export const ProjectOnboarding = ({ onProjectReady }: {
   return (
     <div className="onboarding">
       <div className="onboarding-card">
-        <h1 className="onboarding-title">Open Project</h1>
-        <p className="onboarding-sub">打开本地项目，或从远端 repository 创建项目。</p>
+        <h1 className="onboarding-title">{tr("onboarding.openProject")}</h1>
+        <p className="onboarding-sub">{tr("onboarding.openSubtitle")}</p>
         <div className="onboarding-actions">
           {capabilities.directoryPicker && (
             <button className="ob-action" disabled={busy} onClick={openDirectory}>
               <span className="ob-icon">📁</span>
-              <span className="ob-label">Open Project</span>
-              <span className="ob-hint">选择本地 git repository</span>
+              <span className="ob-label">{tr("onboarding.openProject")}</span>
+              <span className="ob-hint">{tr("onboarding.localHint")}</span>
             </button>
           )}
           <button className={`ob-action ${mode === "clone" ? "active" : ""}`} onClick={() => { setMode("clone"); setErr(null) }}>
             <span className="ob-icon">⬇</span>
-            <span className="ob-label">Open Repository</span>
-            <span className="ob-hint">从 URL clone repository</span>
+            <span className="ob-label">{tr("onboarding.openRepository")}</span>
+            <span className="ob-hint">{tr("onboarding.cloneHint")}</span>
           </button>
         </div>
         {mode !== "none" && (
@@ -111,32 +113,34 @@ export const ProjectOnboarding = ({ onProjectReady }: {
               onKeyDown={(e) => { if (e.key === "Enter") submit(); if (e.key === "Escape") setMode("none") }}
             />
             <button className="btn" disabled={busy || value.trim() === ""} onClick={submit}>
-              {busy ? (mode === "clone" ? "克隆中…" : "添加中…") : mode === "clone" ? "Clone" : "添加"}
+              {busy ? (mode === "clone" ? tr("onboarding.cloning") : tr("onboarding.adding"))
+                : mode === "clone" ? tr("onboarding.clone") : tr("onboarding.add")}
             </button>
           </div>
         )}
         {err && <div className="ob-err">{err}</div>}
-        <p className="onboarding-foot dim">Coolie 用 git worktree 为每个任务隔离一个 workspace。</p>
+        <p className="onboarding-foot dim">{tr("onboarding.isolation")}</p>
       </div>
     </div>
   )
 }
 
 const NoWorkspaceHint = () => {
+  const tr = useT()
   const projects = useData((s) => s.projects)
   return (
     <div className="onboarding">
       <div className="onboarding-card">
-        <h1 className="onboarding-title">新建一个 workspace</h1>
-        <p className="onboarding-sub">每个 workspace 是一个隔离的 git worktree + 分支，跑一个 agent 会话。</p>
+        <h1 className="onboarding-title">{tr("onboarding.newTitle")}</h1>
+        <p className="onboarding-sub">{tr("onboarding.newSubtitle")}</p>
         <div className="onboarding-actions">
           <button className="ob-action wide" onClick={() => useUi.getState().setDispatchMode(true, projects[0]?.id ?? null)}>
             <span className="ob-icon">＋</span>
-            <span className="ob-label">新建 workspace</span>
-            <span className="ob-hint">⌘N · 描述任务并派发首条 prompt</span>
+            <span className="ob-label">{tr("sidebar.new")}</span>
+            <span className="ob-hint">{tr("onboarding.newHint")}</span>
           </button>
         </div>
-        <p className="onboarding-foot dim">或从左侧列表选择一个已有 workspace。</p>
+        <p className="onboarding-foot dim">{tr("onboarding.selectExisting")}</p>
       </div>
     </div>
   )

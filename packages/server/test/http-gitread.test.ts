@@ -18,7 +18,10 @@ const fakeGitRead = {
     fakeGitRead.calls.push(["diffstat", wt, baseRef])
     return { filesChanged: 2, insertions: 10, deletions: 3 }
   },
-  changes: async () => ({ againstBase: [], committed: [], staged: [], unstaged: [], untracked: ["u.txt"] }),
+  changes: async (wt: string, baseRef: string) => {
+    fakeGitRead.calls.push(["changes", wt, baseRef])
+    return { againstBase: [], committed: [], staged: [], unstaged: [], untracked: ["u.txt"] }
+  },
   files: async () => ["a.ts", "b.ts"],
   diff: async (wt: string, baseRef: string, section: string, filePath: string) => {
     fakeGitRead.calls.push(["diff", wt, baseRef, section, filePath])
@@ -27,12 +30,15 @@ const fakeGitRead = {
 }
 
 // 直接插一行 workspace（照 hooks-endpoint.test.ts 姿势）；返回 {id, path, baseRef}
-const insertWorkspace = (status: string, wsPath: string, baseRef: string) => {
+const insertWorkspace = (status: string, wsPath: string, baseRef: string, kind = "task") => {
   const id = "ws-" + Math.random().toString(36).slice(2, 10)
   db.prepare(`INSERT INTO projects (id, name, repo_root, default_base_branch, created_at)
     VALUES (?, 'x', ?, 'main', 1)`).run("p-" + id, "/tmp/repo-" + id)
-  db.prepare(`INSERT INTO workspaces (id, project_id, name, path, branch, base_branch, base_ref, status, pinned, created_at, archived_at, data)
-    VALUES (?, ?, ?, ?, 'coolie/a', 'main', ?, ?, 0, 1, NULL, '{}')`).run(id, "p-" + id, "n-" + id, wsPath, baseRef, status)
+  db.prepare(`INSERT INTO workspaces
+    (id, project_id, name, path, branch, base_branch, base_ref, status, pinned, created_at,
+     archived_at, data, kind, materialized)
+    VALUES (?, ?, ?, ?, ?, 'main', ?, ?, 0, 1, NULL, '{}', ?, 1)`)
+    .run(id, "p-" + id, "n-" + id, wsPath, kind === "main" ? "main" : "coolie/a", baseRef, status, kind)
   return { id, path: wsPath, baseRef }
 }
 
@@ -103,6 +109,13 @@ describe("git read routes", () => {
     const f = await get(`/workspaces/${ws.id}/files`)
     expect(f.status).toBe(200)
     expect(f.body).toEqual({ files: ["a.ts", "b.ts"] })
+  })
+  it("main task diffstat and changes always inspect against HEAD", async () => {
+    const ws = insertWorkspace("active", "/tmp/repo-main", "", "main")
+    expect((await get(`/workspaces/${ws.id}/git/diffstat`)).status).toBe(200)
+    expect(fakeGitRead.calls.at(-1)).toEqual(["diffstat", ws.path, "HEAD"])
+    expect((await get(`/workspaces/${ws.id}/git/changes`)).status).toBe(200)
+    expect(fakeGitRead.calls.at(-1)).toEqual(["changes", ws.path, "HEAD"])
   })
   it("single-file diff validates parameters before workspace lookup and delegates section/path", async () => {
     const ws = insertWorkspace("active", "/tmp/wt-diff", "BASE")

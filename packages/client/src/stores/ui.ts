@@ -7,7 +7,16 @@ export interface CenterDiff {
   path: string
 }
 
-interface UiState {
+export type ModalId =
+  | "dialog"
+  | "settings"
+  | "command-palette"
+  | "cheatsheet"
+  | "project-picker"
+  | "tmux-guide"
+  | (string & {})
+
+export interface UiState {
   selectedWs: string | null
   selectedTabByWs: Record<string, string>
   rightPanel: "collapsed" | "changes" | "files"
@@ -18,6 +27,7 @@ interface UiState {
   cheatsheetOpen: boolean
   paletteOpen: boolean
   settingsOpen: boolean
+  modalStack: ModalId[]
   searchQuery: string
   composerFocusNonce: number       // 递增触发 composer focus（Cmd+L / 创建流）
   centerDiff: CenterDiff | null
@@ -32,6 +42,8 @@ interface UiState {
   setCheatsheet(open: boolean): void
   setPalette(open: boolean): void
   setSettings(open: boolean): void
+  openModal(id: ModalId): void
+  closeModal(id: ModalId): void
   setSearch(q: string): void
   focusComposer(): void
   openCenterDiff(diff: CenterDiff): void
@@ -44,6 +56,35 @@ const storage: Pick<Storage, "getItem" | "setItem" | "removeItem"> =
     ? localStorage
     : { getItem: () => null, setItem: () => {}, removeItem: () => {} } // node 测试环境兜底
 
+const withModal = (stack: readonly ModalId[], id: ModalId, open: boolean): ModalId[] =>
+  open
+    ? stack.includes(id) ? [...stack] : [...stack, id]
+    : stack.filter((entry) => entry !== id)
+
+export const selectModalActive = (state: Pick<UiState, "modalStack">): boolean =>
+  state.modalStack.length > 0
+
+export const isModalActive = (): boolean => selectModalActive(useUi.getState())
+
+interface ModalKeyEvent {
+  key: string
+  preventDefault(): void
+  stopPropagation(): void
+  stopImmediatePropagation?(): void
+  nativeEvent?: { stopImmediatePropagation?(): void }
+}
+
+/** Consume a modal-owned key before it can reach application-wide hotkeys. */
+export const consumeModalKey = (event: ModalKeyEvent, key: string, action: () => void): boolean => {
+  if (event.key !== key) return false
+  event.preventDefault()
+  event.stopPropagation()
+  event.stopImmediatePropagation?.()
+  event.nativeEvent?.stopImmediatePropagation?.()
+  action()
+  return true
+}
+
 export const useUi = create<UiState>((set) => ({
   selectedWs: storage.getItem(LS_KEY),
   selectedTabByWs: {},
@@ -55,6 +96,7 @@ export const useUi = create<UiState>((set) => ({
   cheatsheetOpen: false,
   paletteOpen: false,
   settingsOpen: false,
+  modalStack: [],
   searchQuery: "",
   composerFocusNonce: 0,
   centerDiff: null,
@@ -77,18 +119,35 @@ export const useUi = create<UiState>((set) => ({
     set((s) => ({ collapsedProjects: { ...s.collapsedProjects, [projectId]: !s.collapsedProjects[projectId] } })),
   setDispatchMode: (on, projectId = null) =>
     set((s) => ({ dispatchMode: on, dispatchProjectId: projectId, composerFocusNonce: s.composerFocusNonce + 1 })),
-  setCheatsheet: (cheatsheetOpen) => set({
+  setCheatsheet: (cheatsheetOpen) => set((state) => ({
     cheatsheetOpen,
     ...(cheatsheetOpen ? { paletteOpen: false, settingsOpen: false } : {}),
-  }),
-  setPalette: (paletteOpen) => set({
+    modalStack: withModal(
+      withModal(withModal(state.modalStack, "command-palette", false), "settings", false),
+      "cheatsheet",
+      cheatsheetOpen,
+    ),
+  })),
+  setPalette: (paletteOpen) => set((state) => ({
     paletteOpen,
     ...(paletteOpen ? { cheatsheetOpen: false, settingsOpen: false } : {}),
-  }),
-  setSettings: (settingsOpen) => set({
+    modalStack: withModal(
+      withModal(withModal(state.modalStack, "cheatsheet", false), "settings", false),
+      "command-palette",
+      paletteOpen,
+    ),
+  })),
+  setSettings: (settingsOpen) => set((state) => ({
     settingsOpen,
     ...(settingsOpen ? { cheatsheetOpen: false, paletteOpen: false } : {}),
-  }),
+    modalStack: withModal(
+      withModal(withModal(state.modalStack, "cheatsheet", false), "command-palette", false),
+      "settings",
+      settingsOpen,
+    ),
+  })),
+  openModal: (id) => set((state) => ({ modalStack: withModal(state.modalStack, id, true) })),
+  closeModal: (id) => set((state) => ({ modalStack: withModal(state.modalStack, id, false) })),
   setSearch: (searchQuery) => set({ searchQuery }),
   focusComposer: () => set((s) => ({ composerFocusNonce: s.composerFocusNonce + 1 })),
   openCenterDiff: (centerDiff) => set({ centerDiff, dispatchMode: false }),

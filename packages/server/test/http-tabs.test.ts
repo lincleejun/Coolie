@@ -8,7 +8,7 @@ import { Effect, Layer } from "effect"
 import { Db } from "../src/db/sqlite.js"
 import { runMigrations } from "../src/db/migrations.js"
 import { createApp, newToken } from "../src/http/app.js"
-import { TabsRepoLive } from "../src/repo/tabs.js"
+import { TabsRepo, TabsRepoLive } from "../src/repo/tabs.js"
 import { WorkspacesRepoLive } from "../src/repo/workspaces.js"
 import type { ComposerOps } from "../src/tmux/ops.js"
 import { SessionEnsurer } from "../src/workspace/heal.js"
@@ -78,6 +78,12 @@ beforeEach(async () => {
     Layer.succeed(SessionEnsurer, {
       ensure: () => Effect.succeed({ action: "none", resumed: false, sessionName: session, tabId: null, sessionId: null }),
       resumeTab: (workspaceId, tabId) => Effect.promise(() => resumeImpl(workspaceId, tabId)),
+      createEngineTab: (workspaceId, engineId) => Effect.gen(function* () {
+        const created = yield* (yield* TabsRepo)
+          .insert({ workspaceId, kind: "engine", engineId, engineSessionId: "new-session", tmuxWindow: 4 })
+        return { action: "respawned", resumed: false, sessionName: session, tabId: created.id, sessionId: "new-session" }
+      }) as any,
+      switchEngine: null as any,
     }),
   )
     .pipe(Layer.provide(Layer.succeed(Db, db)))
@@ -109,6 +115,11 @@ const createRunTab = () => fetch(`${base}/workspaces/${wsId}/tabs`, {
   method: "POST",
   headers: { Authorization: `Bearer ${token}`, "content-type": "application/json" },
   body: JSON.stringify({ kind: "run" }),
+})
+const createEngineTab = () => fetch(`${base}/workspaces/${wsId}/tabs`, {
+  method: "POST",
+  headers: { Authorization: `Bearer ${token}`, "content-type": "application/json" },
+  body: JSON.stringify({ kind: "engine", engineId: "claude" }),
 })
 const resumeTab = (workspaceId: string, tabId = "engine-tab") => fetch(
   `${base}/workspaces/${workspaceId}/tabs/${tabId}/resume`,
@@ -173,6 +184,29 @@ describe("POST /workspaces/:id/tabs C12 compensation", () => {
     const response = await createShellTab()
     expect(response.status).toBe(201)
     expect(killed).toEqual([])
+  })
+})
+
+describe("engine chat tab lifecycle", () => {
+  it("creates, renames, and only closes an engine tab when a sibling remains", async () => {
+    const firstResponse = await createEngineTab()
+    const first = await firstResponse.json() as { id: string }
+    expect(firstResponse.status).toBe(201)
+    expect((await fetch(`${base}/workspaces/${wsId}/tabs/${first.id}`, {
+      method: "DELETE", headers: { Authorization: `Bearer ${token}` },
+    })).status).toBe(409)
+
+    const second = await (await createEngineTab()).json() as { id: string }
+    const renamed = await fetch(`${base}/workspaces/${wsId}/tabs/${second.id}/rename`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}`, "content-type": "application/json" },
+      body: JSON.stringify({ title: "Review" }),
+    })
+    expect(renamed.status).toBe(200)
+    expect((await renamed.json() as { title: string }).title).toBe("Review")
+    expect((await fetch(`${base}/workspaces/${wsId}/tabs/${second.id}`, {
+      method: "DELETE", headers: { Authorization: `Bearer ${token}` },
+    })).status).toBe(204)
   })
 })
 

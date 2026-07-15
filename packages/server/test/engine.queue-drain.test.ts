@@ -121,6 +121,40 @@ describe("queue drainer", () => {
     expect(deliver).toHaveBeenCalledOnce()
   })
 
+  it("recovers every exact engine-tab queue target after restart", async () => {
+    const resolveEngineTab = vi.fn(async (_workspaceId: string, tabId?: string) => ({
+      tab: { id: tabId, status: "awaiting-input", tmuxWindow: tabId === "t1" ? 1 : 2 } as any,
+      wsActive: true,
+      nativeQueue: false,
+    }))
+    const claimNext = vi.fn(async (workspaceId: string, tabId?: string) => ({
+      id: tabId === "t1" ? 1 : 2,
+      workspaceId,
+      tabId: tabId!,
+      text: tabId!,
+      mode: "send" as const,
+      state: "inflight" as const,
+      createdAt: 1,
+    }))
+    const deliver = vi.fn(async () => {})
+    await resumeQueuedWorkspaces(
+      createWorkspaceSerial(),
+      deps({ resolveEngineTab, claimNext, deliver }),
+      {
+        recoverInflight: async () => 0,
+        listWorkspaceIds: async () => ["w1"],
+        listTargets: async () => [
+          { workspaceId: "w1", tabId: "t1" },
+          { workspaceId: "w1", tabId: "t2" },
+        ],
+      },
+    )
+    expect(deliver.mock.calls).toEqual([
+      ["coolie-w1:1", "t1"],
+      ["coolie-w1:2", "t2"],
+    ])
+  })
+
   it("serializes one workspace without blocking another", async () => {
     const serial = createWorkspaceSerial()
     let open!: () => void

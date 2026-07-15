@@ -2,7 +2,7 @@ import { useEffect, useState } from "react"
 import { useData } from "../stores/data"
 import type { DiffSection, FileDiff } from "../stores/types"
 import { parseUnifiedDiff, type DiffLine } from "./diff"
-import { useT } from "../i18n"
+import { t, useT } from "../i18n"
 
 export interface LineSelection {
   path: string
@@ -34,7 +34,7 @@ export const DiffView = ({ wsId, section, path, onComment }: {
     setHead(null)
     const api = useData.getState().getApi()
     if (!api) {
-      setError("API 未就绪")
+      setError(t("diff.apiUnavailable"))
       return () => { cancelled = true }
     }
     void api.req("GET", `/workspaces/${wsId}/git/diff?section=${section}&path=${encodeURIComponent(path)}`)
@@ -49,7 +49,7 @@ export const DiffView = ({ wsId, section, path, onComment }: {
     return () => { cancelled = true }
   }, [wsId, section, path])
 
-  if (error) return <div className="diff-err">diff 加载失败：{error}</div>
+  if (error) return <div className="diff-err">{tr("diff.loadFailed").replace("{error}", error)}</div>
   if (binary) return <div className="dim">{tr("diff.binary")}</div>
   if (lines === null) return <div className="dim">{tr("diff.loading")}</div>
 

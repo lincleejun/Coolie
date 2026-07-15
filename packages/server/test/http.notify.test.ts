@@ -87,6 +87,19 @@ describe("POST /notify/:engine", () => {
     expect((db.prepare("SELECT count(*) AS n FROM events").get() as any).n).toBe(0)
   })
 
+  it("routes by tabId and degrades safely when legacy context is ambiguous", async () => {
+    db.prepare(`INSERT INTO tabs
+      (id, workspace_id, kind, engine_id, engine_session_id, tmux_window, title, status, data)
+      VALUES ('t2', 'w1', 'engine', 'codex', 's2', 2, NULL, 'working', '{}')`).run()
+    await post("/notify/codex?workspace=w1", { type: "agent-turn-complete" })
+    expect((db.prepare("SELECT status FROM tabs WHERE id='t1'").get() as any).status).toBe("working")
+    expect((db.prepare("SELECT status FROM tabs WHERE id='t2'").get() as any).status).toBe("working")
+
+    await post("/notify/codex?workspace=w1&tabId=t2", { type: "agent-turn-complete" })
+    expect((db.prepare("SELECT status FROM tabs WHERE id='t1'").get() as any).status).toBe("working")
+    expect((db.prepare("SELECT status FROM tabs WHERE id='t2'").get() as any).status).toBe("awaiting-input")
+  })
+
   it("要求 workspace 与 Bearer token，未知引擎静默成功", async () => {
     expect((await post("/notify/codex", { type: "agent-turn-complete" })).status).toBe(400)
     expect((await post("/notify/codex?workspace=w1", { type: "agent-turn-complete" }, "")).status).toBe(401)

@@ -16,4 +16,11 @@ describe("i18n", () => {
   it("keeps zh and en key sets identical", () => {
     expect(Object.keys(DICT.en).sort()).toEqual(Object.keys(DICT.zh).sort())
   })
+
+  it("keeps English UI copy free of untranslated Han text", () => {
+    const intentionallyNativeLanguageNames = new Set(["language.zh"])
+    const untranslated = Object.entries(DICT.en).filter(([key, value]) =>
+      !intentionallyNativeLanguageNames.has(key) && /\p{Script=Han}/u.test(value))
+    expect(untranslated).toEqual([])
+  })
 })

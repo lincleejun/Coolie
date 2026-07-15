@@ -4,6 +4,7 @@ import { TmuxError, type TmuxServiceShape } from "../tmux/service.js"
 import type { Engine } from "./types.js"
 import { ensureKeepAliveScript, wrapEngineCommand } from "./keepalive.js"
 import { portEnv } from "../workspace/ports.js"
+import { labelTmuxWindow } from "../tmux/layout.js"
 
 export interface StartEngineSessionInput {
   readonly ws: Workspace
@@ -14,6 +15,8 @@ export interface StartEngineSessionInput {
   readonly home: string
   readonly model?: string
   readonly effort?: string
+  readonly tabId?: string
+  readonly tmuxWindow?: number
 }
 
 /**
@@ -31,8 +34,12 @@ export const startEngineSession = (
     const engineCommand = i.engine.launchCommand({
       sessionId: i.sessionId ?? "",
       resume: i.resume,
+      cwd: i.ws.path,
       // Hooks-capable lanes report Stop through /hooks; only hooks-off engines receive notify context.
-      ...(!i.engine.capabilities.hooks ? { workspaceId: i.ws.id, home: i.home } : {}),
+      workspaceId: i.ws.id,
+      home: i.home,
+      ...(i.tabId !== undefined ? { tabId: i.tabId } : {}),
+      ...(i.tmuxWindow !== undefined ? { tmuxWindow: i.tmuxWindow } : {}),
       ...(i.model !== undefined ? { model: i.model } : {}),
       ...(i.effort !== undefined ? { effort: i.effort } : {}),
     })
@@ -40,7 +47,10 @@ export const startEngineSession = (
       try: () => ensureKeepAliveScript(i.home),
       catch: (e) => new TmuxError({ op: "keepalive-script", message: `keep-alive 脚本写入失败：${String(e)}`, exitCode: null, stderr: "" }),
     })
-    const command = wrapEngineCommand(i.home, i.ws.id, engineCommand)
+    const command = wrapEngineCommand(i.home, i.ws.id, engineCommand, {
+      ...(i.tabId !== undefined ? { tabId: i.tabId } : {}),
+      ...(i.tmuxWindow !== undefined ? { tmuxWindow: i.tmuxWindow } : {}),
+    })
     if (yield* tmux.hasSession(sessionName)) {
       // setup lane 已提前建立 placeholder engine@0；仅在全部 setup 成功后原位替换。
       yield* tmux.respawnWindow({ session: sessionName, window: 0, cwd: i.ws.path, command })
@@ -51,5 +61,8 @@ export const startEngineSession = (
         env: { COOLIE_ROOT: i.repoRoot, COOLIE_WORKSPACE: i.ws.id, ...portEnv(i.ws.portBase) },
       })
     }
+    yield* labelTmuxWindow(tmux, sessionName, i.tmuxWindow ?? 0, {
+      role: "engine", workspaceId: i.ws.id, tabId: i.tabId ?? null,
+    })
     return { sessionName, engineCommand }
   })

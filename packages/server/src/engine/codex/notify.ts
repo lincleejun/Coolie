@@ -12,7 +12,11 @@ export const ensureNotifyScript = (home: string, engineId: string): string => {
   const script = `#!/bin/sh
 # Coolie ${engineId} notify forwarder (generated).
 WS="$1"
-JSON="$2"
+if [ "$#" -ge 4 ]; then
+  TAB="$2"; WINDOW="$3"; JSON="$4"
+else
+  TAB=""; WINDOW=""; JSON="$2"
+fi
 INFO=${infoPath}
 
 # Workspace is interpolated into a URL, so only Coolie's identifier alphabet is accepted.
@@ -26,7 +30,7 @@ PORT=$(sed -n 's/.*"port": *\\([0-9][0-9]*\\).*/\\1/p' "$INFO")
 TOKEN=$(sed -n 's/.*"token": *"\\([^"]*\\)".*/\\1/p' "$INFO")
 [ -n "$PORT" ] && [ -n "$TOKEN" ] || exit 0
 
-curl -s -m 2 -X POST "http://127.0.0.1:$PORT/notify/${engineId}?workspace=$WS" \\
+curl -s -m 2 -X POST "http://127.0.0.1:$PORT/notify/${engineId}?workspace=$WS&tabId=$TAB&window=$WINDOW" \\
   -H "Authorization: Bearer $TOKEN" \\
   -H "content-type: application/json" \\
   --data-binary "$JSON" >/dev/null 2>&1

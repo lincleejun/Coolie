@@ -60,13 +60,20 @@ const addProject = (repoRoot: string) => Effect.gen(function* () {
 const eventTypes = Effect.gen(function* () {
   return (yield* (yield* EventsRepo).listAfter({ after: 0 })).map((e) => e.type)
 })
+const createActive = (opts: Parameters<import("../src/workspace/lifecycle.js").WorkspaceLifecycleShape["create"]>[0]) =>
+  Effect.gen(function* () {
+    const lifecycle = yield* WorkspaceLifecycle
+    const intent = yield* lifecycle.create(opts)
+    yield* lifecycle.ensure(intent.id)
+    return yield* (yield* WorkspacesRepo).get(intent.id)
+  })
 
 describe("WorkspaceLifecycle.create", () => {
   it("happy path: pool name, coolie/<name> branch, port 40000, branch.base, info/exclude, events", async () => {
     const env = makeEnv()
     const ws = await ok(env, Effect.gen(function* () {
       const p = yield* addProject(env.repoRoot)
-      return yield* (yield* WorkspaceLifecycle).create({ projectId: p.id })
+      return yield* createActive({ projectId: p.id })
     }))
     expect(ws.status).toBe("active")
     expect(NATIONAL_PARKS.names).toContain(ws.name)
@@ -78,14 +85,14 @@ describe("WorkspaceLifecycle.create", () => {
     expect(env.fake.state.branchBases.get(ws.branch)).toBe("origin/main")
     expect(fs.readFileSync(path.join(env.repoRoot, ".git", "info", "exclude"), "utf8")).toContain(".coolie/")
     const types = await ok(env, eventTypes)
-    expect(types).toContain("workspace.creating")
+    expect(types).toContain("workspace.intent.created")
     expect(types).toContain("workspace.created")
   })
   it("sanitizes an explicit branchSlug", async () => {
     const env = makeEnv()
     const ws = await ok(env, Effect.gen(function* () {
       const p = yield* addProject(env.repoRoot)
-      return yield* (yield* WorkspaceLifecycle).create({ projectId: p.id, branchSlug: "Fix Login!!" })
+      return yield* createActive({ projectId: p.id, branchSlug: "Fix Login!!" })
     }))
     expect(ws.branch).toBe("coolie/fix-login")
   })
@@ -105,7 +112,7 @@ describe("WorkspaceLifecycle.create", () => {
     const env = makeEnv({ hasOrigin: false, refs: { main: FAKE_SHA } })
     const ws = await ok(env, Effect.gen(function* () {
       const p = yield* addProject(env.repoRoot)
-      return yield* (yield* WorkspaceLifecycle).create({ projectId: p.id })
+      return yield* createActive({ projectId: p.id })
     }))
     expect(ws.status).toBe("active")
     expect(env.fake.state.calls.some((c) => c[0] === "fetchOrigin")).toBe(false)
@@ -123,7 +130,7 @@ describe("WorkspaceLifecycle.create", () => {
     fs.writeFileSync(path.join(overlayDir, "setup.local.sh"), "#!/bin/bash\nexit 1\n")
     env.setSetup(() => Effect.fail(new SetupScriptError({ script: "setup.local.sh", exitCode: 1, message: "boom", outputTail: "" })))
     const exit = await env.run(Effect.gen(function* () {
-      return yield* (yield* WorkspaceLifecycle).create({ projectId: p.id, branchSlug: "will-fail" })
+      return yield* createActive({ projectId: p.id, branchSlug: "will-fail" })
     }))
     expect(failTag(exit)).toBe("SetupScriptError")
     const rows = await ok(env, Effect.gen(function* () { return yield* (yield* WorkspacesRepo).list() }))
@@ -142,7 +149,7 @@ describe("WorkspaceLifecycle.create", () => {
     fs.writeFileSync(path.join(env.repoRoot, ".coolie", "setup.local.sh"), "#!/bin/bash\nexit 1\n")
     env.setSetup(() => Effect.fail(new SetupScriptError({ script: "x", exitCode: 1, message: "boom", outputTail: "" })))
     await env.run(Effect.gen(function* () {
-      return yield* (yield* WorkspaceLifecycle).create({ projectId: p.id, branchSlug: "retry-me" })
+      return yield* createActive({ projectId: p.id, branchSlug: "retry-me" })
     }))
     env.setSetup(() => Effect.succeed([]))
     const errored = (await ok(env, Effect.gen(function* () { return yield* (yield* WorkspacesRepo).list() })))
@@ -163,7 +170,7 @@ describe("WorkspaceLifecycle.create", () => {
     fs.writeFileSync(path.join(env.repoRoot, ".coolie", "setup.local.sh"), "#!/bin/bash\nexit 1\n")
     env.setSetup(() => Effect.fail(new SetupScriptError({ script: "x", exitCode: 1, message: "boom", outputTail: "" })))
     await env.run(Effect.gen(function* () {
-      return yield* (yield* WorkspaceLifecycle).create({ projectId: p.id, branchSlug: "base-advances" })
+      return yield* createActive({ projectId: p.id, branchSlug: "base-advances" })
     }))
     const errored = (await ok(env, Effect.gen(function* () { return yield* (yield* WorkspacesRepo).list() })))
       .find((w) => w.branch === "coolie/base-advances")!
@@ -195,10 +202,11 @@ describe("WorkspaceLifecycle.create", () => {
     })
     const p = await ok(env, addProject(env.repoRoot))
     const exit = await env.run(Effect.gen(function* () {
-      return yield* (yield* WorkspaceLifecycle).create({ projectId: p.id, engineId: "codex", initialPrompt: "第一句" })
+      return yield* createActive({ projectId: p.id, engineId: "codex", initialPrompt: "第一句" })
     }))
     expect(failTag(exit)).toBe("HookError")
-    const errored = (await ok(env, Effect.gen(function* () { return yield* (yield* WorkspacesRepo).list() })))[0]!
+    const errored = (await ok(env, Effect.gen(function* () { return yield* (yield* WorkspacesRepo).list() })))
+      .find((workspace) => workspace.kind === "task")!
     expect(errored.status).toBe("error")
     seen.length = 0
     await ok(env, Effect.gen(function* () { return yield* (yield* WorkspaceLifecycle).retry(errored.id) }))
@@ -216,7 +224,7 @@ describe("WorkspaceLifecycle.create", () => {
     })
     const p = await ok(env, addProject(env.repoRoot))
     await env.run(Effect.gen(function* () {
-      return yield* (yield* WorkspaceLifecycle).create({
+      return yield* createActive({
         projectId: p.id,
         engineId: "codex",
         fanoutGroup: "fo-abc",
@@ -224,7 +232,7 @@ describe("WorkspaceLifecycle.create", () => {
     }))
     const errored = (await ok(env, Effect.gen(function* () {
       return yield* (yield* WorkspacesRepo).list()
-    })))[0]!
+    }))).find((workspace) => workspace.kind === "task")!
     seen.length = 0
     await ok(env, Effect.gen(function* () {
       return yield* (yield* WorkspaceLifecycle).retry(errored.id)
@@ -235,7 +243,7 @@ describe("WorkspaceLifecycle.create", () => {
     const env = makeEnv()
     const p = await ok(env, addProject(env.repoRoot))
     const ws = await ok(env, Effect.gen(function* () {
-      return yield* (yield* WorkspaceLifecycle).create({ projectId: p.id })
+      return yield* createActive({ projectId: p.id })
     }))
     const exit = await env.run(Effect.gen(function* () {
       return yield* (yield* WorkspaceLifecycle).retry(ws.id)
@@ -247,22 +255,22 @@ describe("WorkspaceLifecycle.create", () => {
     env.fake.state.refs.set("refs/heads/coolie/taken", "f".repeat(40)) // ≠ baseRef
     const p = await ok(env, addProject(env.repoRoot))
     const exit = await env.run(Effect.gen(function* () {
-      return yield* (yield* WorkspaceLifecycle).create({ projectId: p.id, branchSlug: "taken" })
+      return yield* createActive({ projectId: p.id, branchSlug: "taken" })
     }))
     expect(failTag(exit)).toBe("ConflictError")
     const rows = await ok(env, Effect.gen(function* () { return yield* (yield* WorkspacesRepo).list() }))
-    expect(rows[0]!.status).toBe("error")
+    expect(rows.find((workspace) => workspace.kind === "task")!.status).toBe("error")
   })
   it("git failure (worktreeAdd) -> GitError + rollback to error", async () => {
     const env = makeEnv()
     env.fake.state.failOps.add("worktreeAdd")
     const p = await ok(env, addProject(env.repoRoot))
     const exit = await env.run(Effect.gen(function* () {
-      return yield* (yield* WorkspaceLifecycle).create({ projectId: p.id })
+      return yield* createActive({ projectId: p.id })
     }))
     expect(failTag(exit)).toBe("GitError")
     const rows = await ok(env, Effect.gen(function* () { return yield* (yield* WorkspacesRepo).list() }))
-    expect(rows[0]!.status).toBe("error")
+    expect(rows.find((workspace) => workspace.kind === "task")!.status).toBe("error")
     expect(env.fake.state.worktrees.size).toBe(0)
   })
   it("post-create hooks run before active; a failing hook rolls back", async () => {
@@ -277,7 +285,7 @@ describe("WorkspaceLifecycle.create", () => {
     }))
     const p = await ok(env, addProject(env.repoRoot))
     const ws = await ok(env, Effect.gen(function* () {
-      return yield* (yield* WorkspaceLifecycle).create({ projectId: p.id })
+      return yield* createActive({ projectId: p.id })
     }))
     expect(seen).toEqual([ws.id])
     // hook 必须收到 provision 里已写入真实 baseRef 之后的新鲜快照，而非 insertCreating 时 baseRef="" 的旧快照
@@ -286,14 +294,14 @@ describe("WorkspaceLifecycle.create", () => {
     expect(capturedStatus).toBe("creating")
     env.hooks.push(() => Effect.fail(new HookError({ message: "tmux exploded" })))
     const exit = await env.run(Effect.gen(function* () {
-      return yield* (yield* WorkspaceLifecycle).create({ projectId: p.id })
+      return yield* createActive({ projectId: p.id })
     }))
     expect(failTag(exit)).toBe("HookError")
   })
   it("unknown project -> NotFoundError, no row inserted", async () => {
     const env = makeEnv()
     const exit = await env.run(Effect.gen(function* () {
-      return yield* (yield* WorkspaceLifecycle).create({ projectId: "nope" })
+      return yield* createActive({ projectId: "nope" })
     }))
     expect(failTag(exit)).toBe("NotFoundError")
     const rows = await ok(env, Effect.gen(function* () { return yield* (yield* WorkspacesRepo).list() }))

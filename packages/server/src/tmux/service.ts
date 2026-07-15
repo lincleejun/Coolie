@@ -11,7 +11,25 @@ export class TmuxError extends Data.TaggedError("TmuxError")<{
   readonly stderr: string
 }> {}
 
-export interface TmuxWindowInfo { readonly index: number; readonly name: string }
+export interface TmuxRoleInfo {
+  readonly role: string | null
+  readonly workspaceId: string | null
+  readonly tabId: string | null
+}
+export interface TmuxWindowInfo extends TmuxRoleInfo {
+  readonly index: number
+  readonly name: string
+  readonly layout: string | null
+  readonly width: number | null
+  readonly height: number | null
+  readonly active: boolean
+}
+export interface TmuxPaneInfo extends TmuxRoleInfo {
+  readonly id: string
+  readonly window: number
+  readonly index: number
+  readonly active: boolean
+}
 
 export interface TmuxServiceShape {
   readonly socket: string
@@ -35,6 +53,15 @@ export interface TmuxServiceShape {
   /** 无 server 时返回 []（不视为错误） */
   readonly listSessions: () => Effect.Effect<string[], TmuxError>
   readonly listWindows: (session: string) => Effect.Effect<TmuxWindowInfo[], TmuxError>
+  readonly listPanes: (session: string) => Effect.Effect<TmuxPaneInfo[], TmuxError>
+  readonly setWindowOption: (target: string, key: string, value: string | null) => Effect.Effect<void, TmuxError>
+  readonly setPaneOption: (target: string, key: string, value: string | null) => Effect.Effect<void, TmuxError>
+  readonly getWindowOption: (target: string, key: string) => Effect.Effect<string | null, TmuxError>
+  readonly getPaneOption: (target: string, key: string) => Effect.Effect<string | null, TmuxError>
+  readonly selectWindow: (session: string, index: number) => Effect.Effect<void, TmuxError>
+  readonly selectLayout: (target: string, layout: string) => Effect.Effect<void, TmuxError>
+  readonly resizeWindow: (target: string, cols: number, rows: number) => Effect.Effect<void, TmuxError>
+  readonly targetMetadata: (target: string) => Effect.Effect<TmuxRoleInfo, TmuxError>
   readonly listClients: () => Effect.Effect<string[], TmuxError>
   /** ⚠ 仅测试断言与 waitStable 稳定检测可用（Global Constraints：绝不 scrape 状态） */
   readonly capturePane: (target: string) => Effect.Effect<string, TmuxError>
@@ -76,6 +103,20 @@ const runTmux = (
 const benignFalse = (e: TmuxError): Effect.Effect<boolean, TmuxError> =>
   e.exitCode !== null ? Effect.succeed(false) : Effect.fail(e)
 
+const USER_OPTIONS = new Set(["@role", "@workspace_id", "@task_id", "@tab_id"])
+const userOption = (key: string): Effect.Effect<string, TmuxError> =>
+  USER_OPTIONS.has(key)
+    ? Effect.succeed(key)
+    : Effect.fail(new TmuxError({ op: "user-option", message: `unsupported tmux user option: ${key}`, exitCode: null, stderr: "" }))
+const nullable = (value: string): string | null => value === "" ? null : value
+const finiteInt = (value: string): number | null => {
+  const n = Number(value)
+  return Number.isInteger(n) ? n : null
+}
+const exactTarget = (target: string): string => target.startsWith("%") ? target : `=${target}`
+const safeControlTarget = (target: string): boolean => /^(?:%[0-9]+|[A-Za-z0-9_.:-]+)$/.test(target)
+const safeControlKey = (key: string): boolean => /^[A-Za-z0-9_-]+$/.test(key)
+
 export const makeTmuxService = (socket: string, ctl?: ControlClient): TmuxServiceShape => ({
   socket,
   version: () => runTmux(socket, "version", ["-V"]).pipe(Effect.map((s) => s.trim())),
@@ -113,15 +154,62 @@ export const makeTmuxService = (socket: string, ctl?: ControlClient): TmuxServic
       Effect.catchAll((e) => e.exitCode !== null ? Effect.succeed([] as string[]) : Effect.fail(e)),
     ),
   listWindows: (session) =>
-    // tmux 3.6 sanitizes literal control characters in format output (a tab becomes "_"),
-    // so use the first ASCII space as the delimiter; window names may still contain spaces.
-    runTmux(socket, "list-windows", ["list-windows", "-t", `=${session}`, "-F", "#{window_index} #{window_name}"]).pipe(
+    runTmux(socket, "list-windows", ["list-windows", "-t", `=${session}`, "-F",
+      "#{window_index}|#{window_name}|#{@role}|#{@workspace_id}|#{@tab_id}|#{window_layout}|#{window_width}|#{window_height}|#{window_active}"]).pipe(
       Effect.map((out) => out.split("\n").filter((s) => s !== "").map((l) => {
-        const separator = l.indexOf(" ")
-        return separator === -1
-          ? { index: Number(l), name: "" }
-          : { index: Number(l.slice(0, separator)), name: l.slice(separator + 1) }
+        const [index, name, role, workspaceId, tabId, layout, width, height, active] = l.split("|")
+        return {
+          index: Number(index), name: name ?? "", role: nullable(role ?? ""),
+          workspaceId: nullable(workspaceId ?? ""), tabId: nullable(tabId ?? ""),
+          layout: nullable(layout ?? ""), width: finiteInt(width ?? ""), height: finiteInt(height ?? ""),
+          active: active === "1",
+        }
       })),
+    ),
+  listPanes: (session) =>
+    runTmux(socket, "list-panes", ["list-panes", "-s", "-t", `=${session}`, "-F",
+      "#{pane_id}|#{window_index}|#{pane_index}|#{pane_active}|#{@role}|#{@workspace_id}|#{@tab_id}"]).pipe(
+      Effect.map((out) => out.split("\n").filter(Boolean).map((line) => {
+        const [id, window, index, active, role, workspaceId, tabId] = line.split("|")
+        return {
+          id: id ?? "", window: Number(window), index: Number(index), active: active === "1",
+          role: nullable(role ?? ""), workspaceId: nullable(workspaceId ?? ""), tabId: nullable(tabId ?? ""),
+        }
+      })),
+    ),
+  setWindowOption: (target, key, value) => userOption(key).pipe(
+    Effect.flatMap((safe) => runTmux(socket, "set-window-option",
+      ["set-option", "-w", ...(value === null ? ["-u"] : []), "-t", `=${target}`, safe, ...(value === null ? [] : [value])])),
+    Effect.asVoid,
+  ),
+  setPaneOption: (target, key, value) => userOption(key).pipe(
+    Effect.flatMap((safe) => runTmux(socket, "set-pane-option",
+      ["set-option", "-p", ...(value === null ? ["-u"] : []), "-t", exactTarget(target), safe, ...(value === null ? [] : [value])])),
+    Effect.asVoid,
+  ),
+  getWindowOption: (target, key) => userOption(key).pipe(
+    Effect.flatMap((safe) => runTmux(socket, "show-window-option", ["show-options", "-w", "-v", "-t", `=${target}`, safe])),
+    Effect.map((out) => nullable(out.trim())),
+    Effect.catchAll((e) => e.exitCode !== null ? Effect.succeed(null) : Effect.fail(e)),
+  ),
+  getPaneOption: (target, key) => userOption(key).pipe(
+    Effect.flatMap((safe) => runTmux(socket, "show-pane-option", ["show-options", "-p", "-v", "-t", exactTarget(target), safe])),
+    Effect.map((out) => nullable(out.trim())),
+    Effect.catchAll((e) => e.exitCode !== null ? Effect.succeed(null) : Effect.fail(e)),
+  ),
+  selectWindow: (session, index) =>
+    runTmux(socket, "select-window", ["select-window", "-t", `=${session}:${index}`]).pipe(Effect.asVoid),
+  selectLayout: (target, layout) =>
+    runTmux(socket, "select-layout", ["select-layout", "-t", `=${target}`, layout]).pipe(Effect.asVoid),
+  resizeWindow: (target, cols, rows) =>
+    runTmux(socket, "resize-window", ["resize-window", "-t", `=${target}`, "-x", String(cols), "-y", String(rows)]).pipe(Effect.asVoid),
+  targetMetadata: (target) =>
+    runTmux(socket, "display-message", ["display-message", "-p", "-t", exactTarget(target),
+      "#{@role}|#{@workspace_id}|#{@tab_id}"]).pipe(
+      Effect.map((out) => {
+        const [role, workspaceId, tabId] = out.trimEnd().split("|")
+        return { role: nullable(role ?? ""), workspaceId: nullable(workspaceId ?? ""), tabId: nullable(tabId ?? "") }
+      }),
     ),
   listClients: () =>
     runTmux(socket, "list-clients", ["list-clients", "-F", "#{client_tty}"]).pipe(
@@ -139,8 +227,10 @@ export const makeTmuxService = (socket: string, ctl?: ControlClient): TmuxServic
   },
   sendKey: (target, key) =>
     ctl
-      ? Effect.tryPromise({
-          try: () => ctl.exec(`send-keys -t =${target} ${key}`),
+      ? !safeControlTarget(target) || !safeControlKey(key)
+        ? Effect.fail(new TmuxError({ op: "send-keys", message: "unsafe tmux control token", exitCode: null, stderr: "" }))
+        : Effect.tryPromise({
+          try: () => ctl.exec(`send-keys -t ${exactTarget(target)} ${key}`),
           catch: (e) => new TmuxError({ op: "send-keys", message: e instanceof Error ? e.message : String(e), exitCode: null, stderr: "" }),
         })
       : runTmux(socket, "send-keys", ["send-keys", "-t", `=${target}`, key]).pipe(Effect.asVoid),

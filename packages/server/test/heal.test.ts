@@ -222,4 +222,28 @@ describe("SessionEnsurer.ensure（真 tmux）", () => {
       .map((r) => JSON.parse(r.payload))
     expect(closed.some((p) => p.kind === "shell")).toBe(true) // 死 shell tab 发了 tab.closed
   })
+
+  it("recreates every engine sibling after the tmux session is lost", async () => {
+    const layer = buildLayer()
+    const ws = await runIn(layer, Effect.gen(function* () {
+      const projects = yield* (yield* ProjectsRepo).list()
+      return yield* (yield* WorkspaceLifecycle).create({ projectId: projects[0]!.id, name: "heal-multi-engine" })
+    }))
+    const second = await runIn(layer, Effect.gen(function* () {
+      return yield* (yield* SessionEnsurer).createEngineTab(ws.id, "claude", { title: "second" })
+    }))
+    const session = sessionNameFor(ws.id)
+    expect((await Effect.runPromise(tmux.listWindows(session))).length).toBe(2)
+
+    execFileSync("tmux", ["-L", SOCK, "kill-session", "-t", `=${session}`])
+    await runIn(layer, Effect.gen(function* () { yield* (yield* SessionEnsurer).ensure(ws.id) }))
+
+    const rows = db.prepare(
+      "SELECT id, tmux_window FROM tabs WHERE workspace_id = ? AND kind = 'engine' ORDER BY tmux_window",
+    ).all(ws.id) as Array<{ id: string; tmux_window: number }>
+    expect(rows).toHaveLength(2)
+    expect(new Set(rows.map((row) => row.tmux_window)).size).toBe(2)
+    expect(rows.some((row) => row.id === second.tabId)).toBe(true)
+    expect((await Effect.runPromise(tmux.listWindows(session))).length).toBe(2)
+  })
 })

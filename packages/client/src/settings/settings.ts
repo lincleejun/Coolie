@@ -20,6 +20,32 @@ const THEME_STORAGE_KEY = "coolie.theme"
 const LANG_STORAGE_KEY = "coolie.lang"
 const NAME_POOL_STORAGE_KEY = "coolie.namePool"
 const CUSTOM_NAMES_STORAGE_KEY = "coolie.customNames"
+const PREFS_STORAGE_KEY = "coolie.preferences"
+
+export interface AppPreferences {
+  defaultEngine: string
+  defaultModel: string
+  notifications: boolean
+  turnSound: boolean
+}
+
+const DEFAULT_PREFS: AppPreferences = {
+  defaultEngine: "claude", defaultModel: "",
+  notifications: true, turnSound: false,
+}
+const loadPrefs = (): AppPreferences => {
+  try {
+    const saved = typeof localStorage === "undefined" ? null : localStorage.getItem(PREFS_STORAGE_KEY)
+    if (!saved) return DEFAULT_PREFS
+    const parsed = JSON.parse(saved) as Partial<AppPreferences>
+    return {
+      defaultEngine: typeof parsed.defaultEngine === "string" ? parsed.defaultEngine : DEFAULT_PREFS.defaultEngine,
+      defaultModel: typeof parsed.defaultModel === "string" ? parsed.defaultModel : DEFAULT_PREFS.defaultModel,
+      notifications: typeof parsed.notifications === "boolean" ? parsed.notifications : DEFAULT_PREFS.notifications,
+      turnSound: typeof parsed.turnSound === "boolean" ? parsed.turnSound : DEFAULT_PREFS.turnSound,
+    }
+  } catch { return DEFAULT_PREFS }
+}
 
 const loadChoice = <T extends string>(key: string, choices: readonly T[], fallback: T): T => {
   if (typeof localStorage === "undefined") return fallback
@@ -40,16 +66,18 @@ const saveChoice = (key: string, value: string): void => {
 interface SettingsState {
   readonly theme: ThemePref
   readonly lang: Lang
-  readonly keybindings: Record<string, string>
+  readonly keybindings: Record<string, string | null>
   readonly effectiveHotkeys: HotkeyDef[]
   readonly keybindingError: string | null
   readonly namePool: string
   readonly customNames: string[]
+  readonly preferences: AppPreferences
   setTheme(theme: ThemePref): void
   setLang(lang: Lang): void
   setNamePool(namePool: string): void
   setCustomNames(customNames: string[]): void
-  setKeybindingOverrides(overrides: Record<string, string>): KeybindingValidation
+  setKeybindingOverrides(overrides: Record<string, string | null>): KeybindingValidation
+  setPreference<K extends keyof AppPreferences>(key: K, value: AppPreferences[K]): void
   applyKeybindingJson(json: string): KeybindingValidation
   resetKeybindings(): void
 }
@@ -69,7 +97,7 @@ const loadCustomNames = (): string[] => {
   } catch { return [] }
 }
 
-const persist = (overrides: Record<string, string>): string | null => {
+const persist = (overrides: Record<string, string | null>): string | null => {
   try {
     if (typeof localStorage !== "undefined")
       localStorage.setItem(KEYBINDINGS_STORAGE_KEY, JSON.stringify(overrides))
@@ -99,6 +127,7 @@ export const useSettings = create<SettingsState>((set) => {
     lang: loadedLang,
     namePool: loadNamePool(),
     customNames: loadCustomNames(),
+    preferences: loadPrefs(),
     keybindings: loaded.overrides,
     effectiveHotkeys: mergeKeybindings(HOTKEYS_REGISTRY, loaded.overrides),
     keybindingError: loaded.error,
@@ -122,6 +151,11 @@ export const useSettings = create<SettingsState>((set) => {
       } catch { /* retain in-memory preference */ }
       set({ customNames })
     },
+    setPreference: (key, value) => set((state) => {
+      const preferences = { ...state.preferences, [key]: value }
+      try { if (typeof localStorage !== "undefined") localStorage.setItem(PREFS_STORAGE_KEY, JSON.stringify(preferences)) } catch {}
+      return { preferences }
+    }),
     setKeybindingOverrides: (overrides) =>
       applyValidated(validateKeybindingOverrides(HOTKEYS_REGISTRY, overrides)),
     applyKeybindingJson: (json) =>

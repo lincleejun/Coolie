@@ -3,6 +3,7 @@ import { MAX_FANOUT } from "@coolie/protocol"
 import {
   buildFanoutRequests,
   fanoutTotal,
+  resolveDispatchDefaults,
   submitFanoutRequests,
 } from "../src/composer/Dispatch.js"
 import type { EngineInfo } from "../src/stores/types.js"
@@ -28,6 +29,21 @@ const engines: EngineInfo[] = [
 ]
 
 describe("Dispatch fan-out request construction", () => {
+  it("uses persisted engine/model defaults and resets unavailable choices coherently", () => {
+    expect(resolveDispatchDefaults(engines, {
+      defaultEngine: "codex", defaultModel: "gpt-5",
+    })).toEqual({ engineId: "codex", model: "gpt-5" })
+    expect(resolveDispatchDefaults(engines, {
+      defaultEngine: "missing", defaultModel: "gpt-5",
+    })).toEqual({ engineId: "claude", model: "default" })
+    expect(resolveDispatchDefaults([
+      { ...engines[0]!, availability: { available: false, accountHint: null, error: "missing" } },
+      engines[1]!,
+    ], {
+      defaultEngine: "claude", defaultModel: "opus",
+    })).toEqual({ engineId: "codex", model: "default" })
+  })
+
   it("expands per-engine counts and adds one shared fanoutGroup", () => {
     const requests = buildFanoutRequests(
       { projectId: "p1", engineId: "codex", prompt: "ship", model: "default", effort: "default" },

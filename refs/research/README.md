@@ -129,64 +129,70 @@
 
 ## 4. kobe 功能追平清单
 
-提炼自 [kobe.md](./kobe.md) §9（完整细节见原文），按 Coolie 里程碑分组。勾选表示 Coolie 已实现对等能力（当前全部未实现）。
+提炼自 [kobe.md](./kobe.md) §9（完整细节见原文），按 Coolie 里程碑分组。勾选表示
+**当前工作树已有本地实现**，不是发布/云端可用性声明。标有“兼容差异”的项目采用了 Coolie
+自己的 HTTP/SSE、ChatTab-per-window 或桌面存储契约，不要求逐字复制 kobe。
 
 ### M1 核心循环（task 生命周期）
-- [ ] 创建 task（懒 worktree：先记意图，首次进入才 `worktree add`）
-- [ ] slug 分配器（随机名池 + 占用集去重 + 失败回滚）
-- [ ] 自动 branch 命名（`coolie/<title-slug>-<id6>` 式）+ 手动改 branch
-- [ ] 进入/切换 task（ensure-or-heal session → attach；observe→decide→apply 三段式）
-- [ ] task 状态机：backlog / in_progress / in_review / done / canceled / error
-- [ ] archive（非破坏翻 flag）/ delete（脏树二次确认、失败保留索引）/ pin
-- [ ] main task（项目行：钉在 repo 根、无 worktree、不可删）
-- [ ] 自动标题（转录首条 user 消息派生，无模型调用）
-- [ ] adopt 已有 worktree（`worktree list --porcelain` 枚举 + 收养）
-- [ ] 保存/忘记项目（`add` / `remove`，canonical key 匹配）
+- [x] 创建 task（`POST /workspaces` 先记 intent；`ensure`/CLI create 首次物化）
+- [x] slug 分配器（national-parks/cities/animals/custom 名池 + 占用集去重 + 失败回滚）
+- [x] 自动 branch 命名 + 手动改 branch（兼容差异：`coolie/<slug>`，不强制追加 id6）
+- [x] 进入/切换 task（ensure-or-heal session → attach；observe→decide→apply）
+- [x] task 状态机：backlog / in_progress / in_review / done / canceled / error
+- [x] archive / delete / pin（兼容差异：managed archive 移除 worktree、保留 branch 和 engine tabs；adopted 永不删除外部 worktree）
+- [x] main task（项目行：钉在 repo 根、不可改 branch/删除）
+- [ ] task 自动标题（当前仅 engine ChatTab 可从转录首条 user 消息派生标题，不自动改 task 名）
+- [x] adopt 已有 worktree（`worktree list --porcelain` 枚举 + 精确路径收养）
+- [x] 保存/忘记项目（`project add/remove`；仍有非-main task 时拒绝 remove）
 
 ### M2 engine 集成
-- [ ] Engine Registry：claude / codex（/ copilot）+ custom engine（id + 启动命令）
-- [ ] 能力位六件套：defaultCommand / history reader / detectAccount / hook adapter / turn detector / capabilities（+ Noop/Unknown/EMPTY 降级）
-- [ ] 启动命令流水线：用户覆盖 → default → effort 注入 → terminal title 注入 → session-id 注入（claude）→ system prompt 协议注入
-- [ ] keep-alive 包装（engine 退出落 shell 不塌布局 + 非零退出横幅）+ SIGINT guard
-- [ ] 首条消息投递（画面稳定检测 + bracketed paste + 150ms 延迟 Enter）
-- [ ] hooks 注入（幂等、可 opt-out、绝不拉起 daemon、永远 exit 0）→ 活动徽标
-- [ ] turn 状态检测（hook 事件 + 转录 mtime 轮询兜底 + tab 状态 ●/✓/!/○）
-- [ ] vendor 切换（respawn engine pane 保住兄弟 tab）
-- [ ] 会话 resume（死 engine tab 用 `--resume <sessionId>` 拉回）
+- [x] Engine Registry：claude / codex + custom engine；Copilot 以 custom preset 提供
+- [x] adapter 能力面：launch/history/account availability/hooks/turn detector/capabilities；缺失可选能力按 Noop guard 降级
+- [ ] 完整 kobe 启动命令流水线（已有 user/default、model/effort、title、session-id/resume；没有统一 system-prompt 协议注入）
+- [x] keep-alive 包装（engine 退出落 shell、不塌布局 + 非零退出横幅/状态）与 interrupt guard
+- [x] 首条消息投递（就绪/稳定检测 + bracketed paste + 延迟 Enter）
+- [x] hooks/notify 注入（可 opt-out、回调不拉起 daemon）→ 活动徽标
+- [x] turn 状态检测（hook/notify + 转录 mtime/rollout watcher + tab 状态 ●/✓/!/○）
+- [x] vendor 切换（原地 respawn 指定 engine ChatTab，保留兄弟 tab）
+- [x] 会话 resume（死 engine tab 优先使用 engine resume 语义拉回）
 
 ### M3 会话层（tmux/PTY）
-- [ ] 专用 tmux socket（`-L coolie`）+ session 命名 `coolie-<task-id>`
-- [ ] ChatTab（一 worktree 多条并行 engine 会话）+ 新开/关闭/重命名/循环切换
-- [ ] pane 角色标签（`@role=tasks|engine|ops|shell`）+ session 标签反查任务
-- [ ] 布局：固定宽 rail + engine 主 pane + ops/shell 列；用户拖动几何持久化
-- [ ] attach 前 fit + heal 布局（防首帧 reflow 闪烁）+ resize hook 自愈三件套
-- [ ] Zen 模式（折叠到 engine pane，会话级持久）
-- [ ] PTY Host 独立进程（ring buffer 重放 + idle 自退 + PTY parking）——GUI 路线的 tmux 替代层
-- [ ] daemon 重启不杀 engine 会话（进程所有权分离）
+- [x] 专用 tmux socket（`-L coolie`）+ session 命名 `coolie-<task-id>`
+- [x] ChatTab（一 worktree 多条并行 engine 会话）+ 新开/关闭/重命名/循环切换
+- [x] window/pane 角色元数据 + workspace/task/tab 反查（词表含 `tasks|engine|ops|shell`；当前 task runtime 实际使用 engine/ops/shell）
+- [ ] kobe 固定 rail + engine + ops/shell pane 布局（**兼容差异**：Coolie 是 ChatTab-per-window；保存并恢复 tmux window layout/尺寸，不建固定 tasks rail）
+- [ ] 完整 attach-fit + resize-hook 自愈三件套（已有 ensure/reconcile 与 geometry 恢复，未实现独立 resize hook 契约）
+- [x] Zen 模式（持久化 focused/restore tab 与 geometry，聚焦 engine window）
+- [ ] **独立 PTY Host 刻意排除**：当前由 server 通过 terminal WS attach 到 tmux，不做 ring buffer/parking sidecar
+- [x] daemon/client 重启不杀 engine 会话（进程所有权归 tmux）
 
 ### M4 daemon / CLI / API
-- [ ] 单写者 daemon + Unix socket RPC + 通道快照推送（last-value replay）
-- [ ] role 化 refcount（gui 持有生命周期 / pane 不持有）+ 惰性关停
-- [ ] `coolie api` 脚本化面：list/get/collect/add/fan-out/send/dispatch/rename/set-status/archive/pin/delete/ensure-worktree/adopt…
-- [ ] fan-out（一个 prompt 并行 N 任务，`--agents claude:2,codex:1`）
-- [ ] 分级 schema 发现（紧凑索引 / --verb / --group）+ agent skill 分发
-- [ ] daemon start/stop/status/restart、doctor（只读诊断）、reset（永不碰 worktree）
-- [ ] 后台 collector：PR 状态、worktree 未提交变更计数、转录活动、auto-title
-- [ ] shell 补全、自更新检查、export（csv/json）
+- [x] 单写者 daemon + Unix socket/TCP HTTP + durable SSE replay（兼容差异：不用 kobe 私有 RPC last-value channel；collector 快照另有 GET/POST `/collect`）
+- [x] role 化 refcount（gui SSE 持有生命周期 / terminal 与 CLI 不持有）+ 惰性关停
+- [x] CLI 脚本化面：list/get/collect/project add/fan-out/send/dispatch/rename/set-status/archive/pin/delete/ensure-worktree/adopt 等
+- [x] fan-out（一个 prompt 并行 N tasks，`--agents claude:2,codex:1`，上限 16）
+- [x] 分级 schema 发现（紧凑索引 / `--verb` / `--group` / `--all`）+ canonical agent skill export
+- [x] daemon start/stop/status/restart、doctor（只读诊断）、reset（保留 DB/worktree/branch）
+- [x] 后台 collector：runtime/task status、PR、diffstat、转录活动与转录标题快照（不自动重命名 task）
+- [x] zsh/bash/fish completion、只读 update check、JSON/CSV/table export
 
 ### M5 面板与 UX
-- [ ] Tasks 面板全键位（n 新建/a 归档/d 删除/r 改名/b 改分支/v 换引擎/搜索/项目过滤/手动排序/置顶）
-- [ ] Ops/Files 面板：文件树 + diff 查看 + `@<path>` 注入 engine + Create PR prompt 模板（可被 repo 内文件覆盖）
-- [ ] Settings 六节：General / Engines / Accounts / Keybindings / Feedback / Dev
-- [ ] keymap 单表 + binding stack + modal barrier + keybindings.yaml 用户覆盖（平台 overlay / null 解绑 / 校验拒绝坏键）
-- [ ] repo init 契约：`.coolie/init.sh` + `init-prompt.md` + watchdog 超时 + once-per-worktree 标记
-- [ ] 主题 / i18n / toast / 声音
-- [ ] web dashboard（同 daemon 的浏览器前端，可后置）
+- [x] Tasks 面板键位与操作：n/a/d/r/b/v、搜索、项目过滤、拖动/Shift+方向排序、置顶
+- [x] Changes/Files：文件树、分区 diff、`@<path>`、选行评论写回、repo 可覆写 Create PR prompt
+- [x] Settings 六节：General / Engines / Accounts / Keybindings / Feedback / Dev
+- [x] keymap 单表 + LIFO binding stack + modal barrier + `null` 解绑 + 冲突/坏键校验
+  - **兼容差异**：偏好持久化为 localStorage JSON；设置页提供 YAML 文本导入/导出，不监视磁盘 `keybindings.yaml`，也没有独立 platform overlay 文件。
+- [x] repo init：`.coolie/init.sh` + `.coolie/init-prompt.md` + server watchdog + once-per-physical-worktree marker
+  - Desktop Dev Settings 的 timeout 当前只保存偏好；daemon 真正读取 `COOLIE_INIT_TIMEOUT_MS`。
+- [x] 主题 / 中英文 i18n / toast / turn-complete 声音
+- [x] browser/web client（连接用户显式配置的 loopback daemon；桌面 editor/外部终端能力不可用）
 
 ### 刻意不追（kobe 有但 Coolie 不需要）
 - 双 UI 栈并存（tmux Handover + Workspace Host 的 parity 维护税——Coolie 定死 Tauri client 避开）
 - dispatcher/field-notes 知识路由（实验特性）
-- SSH 远程项目（后置；CS 架构做好后近乎免费）
+- 云端执行与 SSH 远程项目（后置；当前只支持本机 git checkout/worktree）
+- self-rendered/headless 对话流（当前坚持 engine TUI in tmux；旁路只读取 hooks/notify/transcript 状态）
+- 独立 PTY Host（当前 server terminal WS 直接 attach tmux；不实现 ring buffer、parking 或 PTY sidecar）
 
 ---
 
