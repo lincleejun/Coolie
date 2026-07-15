@@ -1,6 +1,11 @@
 # Coolie
 
-coding agent 的干净开发环境伴侣（= repo + branch）。设计文档：`docs/superpowers/specs/2026-07-11-coolie-design.md`。
+coding agent 的干净开发环境伴侣（= repo + branch）。
+
+- 当前实现与原始设计：`docs/superpowers/specs/2026-07-11-coolie-design.md`
+- 0.1.0 产品需求：`docs/superpowers/specs/2026-07-15-coolie-v0.1.0-prd.md`
+- 0.1.0 实施路线图：`docs/superpowers/plans/2026-07-15-coolie-v0.1.0-roadmap.md`
+- 架构决策日志：`docs/architecture-decision-log.md`
 
 ## 开发快速开始
 
@@ -17,9 +22,10 @@ Coolie 目前是 local-first 的任务编排器：一个 project 对应一个已
 worktree、tmux session 和 engine。云端执行、SSH remote、自渲染聊天流和独立 PTY Host
 不在当前实现内。
 
-这也是 M2 roadmap 的当前完成记录。`docs/superpowers/plans/2026-07-12-coolie-m2-roadmap.md`
+`docs/superpowers/plans/2026-07-12-coolie-m2-roadmap.md`
 保留为历史计划/验收目标，不作为现状清单；其中 codex hooks 的理想路径、固定 pane 布局等条目
-应以本节和 `refs/research/README.md` 的兼容差异/排除项为准。
+应以本节和 `refs/research/README.md` 的兼容差异/排除项为准。0.1.0 的新增范围与发布门禁
+以 `docs/superpowers/specs/2026-07-15-coolie-v0.1.0-prd.md` 为准。
 
 ### Task 生命周期与 worktree
 
