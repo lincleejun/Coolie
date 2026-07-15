@@ -283,12 +283,19 @@ const addDeliveryCommand = (name: "send" | "dispatch", description: string) =>
           mode: opts.interrupt ? "interrupt-send" : "send",
           ...(opts.tab ? { tabId: opts.tab } : {}),
         })
-        console.log(result.queued ? `queued ${result.id} position=${result.position}` : `sent ${id}`)
+        if (result.queued) {
+          const contract = typeof result.messageId === "string" && typeof result.deliveryGuarantee === "string"
+            ? ` message=${result.messageId} delivery=${result.deliveryGuarantee}`
+            : ""
+          console.log(`queued ${result.id} position=${result.position}${contract}`)
+        } else {
+          console.log(`sent ${id}`)
+        }
       } catch (error) { fail(error) }
     })
 
-addDeliveryCommand("send", "向 task 的 engine tab 安全投递一轮 prompt")
-addDeliveryCommand("dispatch", "通过 daemon 调度 prompt 到指定 task")
+addDeliveryCommand("send", "向 task 投递 prompt；忙时 SQLite queue 为 at-least-once，receipt 前 crash 可能重投")
+addDeliveryCommand("dispatch", "调度 prompt；忙时 SQLite queue 为 at-least-once，receipt 前 crash 可能重投")
 
 program.command("adopt")
   .argument("<projectIdOrPath>", "项目 id 或已注册/待注册仓库路径")

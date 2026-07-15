@@ -18,7 +18,13 @@ export interface DrainDeps {
   readonly onFailed: (workspaceId: string, queueId: number, error: unknown) => Promise<void>
 }
 
-/** A turn-complete edge may start at most one queued turn. */
+/**
+ * A turn-complete edge may start at most one queued turn.
+ *
+ * Delivery is at-least-once: PTY acceptance happens before the durable delivered receipt.
+ * If the process crashes in that window, startup recovery requeues the inflight row and the
+ * same queue/message identity can be delivered again.
+ */
 export const drainWorkspace = async (deps: DrainDeps, workspaceId: string, tabId?: string): Promise<boolean> => {
   const resolved = await deps.resolveEngineTab(workspaceId, tabId)
   if (!resolved || !resolved.wsActive || resolved.nativeQueue || resolved.tab.status !== "awaiting-input") return false

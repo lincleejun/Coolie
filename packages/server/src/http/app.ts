@@ -4,7 +4,12 @@ import { randomUUID } from "node:crypto"
 import * as fs from "node:fs"
 import * as path from "node:path"
 import { Effect, Exit, Cause, Option } from "effect"
-import type { ApiErrorBody } from "@coolie/protocol"
+import {
+  QUEUE_DELIVERY_GUARANTEE,
+  type ApiErrorBody,
+  type QueueAcceptedResponse,
+  type QueueListResponse,
+} from "@coolie/protocol"
 import type { ClientRegistry } from "../daemon/clients.js"
 import type { ClientRole, TaskStatus } from "@coolie/protocol"
 import { ProjectsRepo } from "../repo/projects.js"
@@ -1254,10 +1259,19 @@ export const createApp = ({ runtime, token, onShutdown, onError, bus, sseHeartbe
               const tabId = url.searchParams.get("tabId") ?? undefined
               const items = yield* (yield* QueueRepo).listQueued(queueList[1]!, tabId)
               return {
+                deliveryGuarantee: QUEUE_DELIVERY_GUARANTEE,
                 queue: items.map((item, index) => ({
-                  id: item.id, tabId: item.tabId, text: item.text, mode: item.mode, createdAt: item.createdAt, position: index + 1,
+                  id: item.id,
+                  queueId: item.queueId,
+                  messageId: item.messageId,
+                  tabId: item.tabId,
+                  text: item.text,
+                  mode: item.mode,
+                  createdAt: item.createdAt,
+                  position: index + 1,
+                  deliveryGuarantee: QUEUE_DELIVERY_GUARANTEE,
                 })),
-              }
+              } satisfies QueueListResponse
             }),
             (body) => send(res, 200, body),
             onError,
@@ -1318,7 +1332,14 @@ export const createApp = ({ runtime, token, onShutdown, onError, bus, sseHeartbe
                   return yield* (yield* QueueRepo).enqueue({ workspaceId: ws.id, tabId: tab.id, text: body.text })
                 }))
                 return Exit.match(exit, {
-                  onSuccess: (queued) => send(res, 202, { queued: true, id: queued.id, position: queued.position }),
+                  onSuccess: (queued) => send(res, 202, {
+                    queued: true,
+                    id: queued.id,
+                    queueId: queued.queueId,
+                    messageId: queued.messageId,
+                    position: queued.position,
+                    deliveryGuarantee: queued.deliveryGuarantee,
+                  } satisfies QueueAcceptedResponse),
                   onFailure: (cause) => {
                     const mapped = errorFromCause(cause, onError)
                     send(res, mapped.status, mapped.body)

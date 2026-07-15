@@ -127,6 +127,11 @@ describe("server prompt queue（非 nativeQueue 引擎）", () => {
     const tabId = insertEngineTab(id, "codex", "working", 0)
     const first = await post(`/workspaces/${id}/input`, { text: "一", mode: "send" })
     expect(first).toMatchObject({ status: 202, body: { queued: true, position: 1 } })
+    expect(first.body).toMatchObject({
+      id: first.body.queueId,
+      messageId: `queue:${first.body.queueId}`,
+      deliveryGuarantee: "at-least-once",
+    })
     db.prepare("UPDATE tabs SET status = 'awaiting-input' WHERE id = ?").run(tabId)
     const second = await post(`/workspaces/${id}/input`, { text: "二", mode: "send" })
     expect(second).toMatchObject({ status: 202, body: { queued: true, position: 2 } })
@@ -190,7 +195,14 @@ describe("server prompt queue（非 nativeQueue 引擎）", () => {
     const first = await post(`/workspaces/${id}/input`, { text: "一", mode: "send" })
     await post(`/workspaces/${id}/input`, { text: "二", mode: "send" })
     const listed = await req("GET", `/workspaces/${id}/queue`)
+    expect(listed.body.deliveryGuarantee).toBe("at-least-once")
     expect(listed.body.queue.map((q: any) => [q.position, q.text])).toEqual([[1, "一"], [2, "二"]])
+    expect(listed.body.queue[0]).toMatchObject({
+      id: first.body.id,
+      queueId: first.body.queueId,
+      messageId: first.body.messageId,
+      deliveryGuarantee: "at-least-once",
+    })
     expect((await del(`/workspaces/${id}/queue/${first.body.id}`)).status).toBe(200)
     expect((await del(`/workspaces/${id}/queue/${first.body.id}`)).status).toBe(404)
     expect((await del(`/workspaces/${id}/queue/nope`)).status).toBe(400)

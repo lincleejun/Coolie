@@ -102,6 +102,45 @@ export class Tab extends Schema.Class<Tab>("Tab")({
 }) {}
 export const decodeTab = Schema.decodeUnknownSync(Tab)
 
+/** SQLite prompt queues acknowledge delivery after PTY input, so a crash can redeliver the same message. */
+export const QueueDeliveryGuarantee = Schema.Literal("at-least-once")
+export type QueueDeliveryGuarantee = typeof QueueDeliveryGuarantee.Type
+export const QUEUE_DELIVERY_GUARANTEE: QueueDeliveryGuarantee = "at-least-once"
+
+/** Stable identity shared by queue DTOs and every lifecycle event for one queued message. */
+export const queueMessageId = (queueId: number): string => `queue:${queueId}`
+
+export const QueuedPromptDto = Schema.Struct({
+  /** Backward-compatible alias for queueId. */
+  id: Schema.Number,
+  queueId: Schema.Number,
+  messageId: Schema.String,
+  tabId: Schema.String,
+  text: Schema.String,
+  mode: Schema.Literal("send"),
+  createdAt: Schema.Number,
+  position: Schema.Number,
+  deliveryGuarantee: QueueDeliveryGuarantee,
+})
+export type QueuedPromptDto = typeof QueuedPromptDto.Type
+
+export const QueueListResponse = Schema.Struct({
+  deliveryGuarantee: QueueDeliveryGuarantee,
+  queue: Schema.Array(QueuedPromptDto),
+})
+export type QueueListResponse = typeof QueueListResponse.Type
+
+export const QueueAcceptedResponse = Schema.Struct({
+  queued: Schema.Literal(true),
+  /** Backward-compatible alias for queueId. */
+  id: Schema.Number,
+  queueId: Schema.Number,
+  messageId: Schema.String,
+  position: Schema.Number,
+  deliveryGuarantee: QueueDeliveryGuarantee,
+})
+export type QueueAcceptedResponse = typeof QueueAcceptedResponse.Type
+
 /** tmux session 命名唯一真源（设计文档 §五）：server bootstrap、CLI enter/open、WS resolveSession 共用。 */
 export const tmuxSessionName = (wsId: string): string => `coolie-${wsId}`
 

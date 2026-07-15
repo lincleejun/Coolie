@@ -15,7 +15,17 @@ const deps = (overrides: Partial<DrainDeps> = {}): DrainDeps => ({
     wsActive: true,
     nativeQueue: false,
   }),
-  claimNext: async () => ({ id: 7, workspaceId: "w1", tabId: "t1", text: "下一条", mode: "send", state: "inflight", createdAt: 1 }),
+  claimNext: async () => ({
+    id: 7,
+    queueId: 7,
+    messageId: "queue:7",
+    workspaceId: "w1",
+    tabId: "t1",
+    text: "下一条",
+    mode: "send",
+    state: "inflight",
+    createdAt: 1,
+  }),
   release: async () => {},
   deliver: async () => {},
   markWorking: async () => {},
@@ -121,6 +131,59 @@ describe("queue drainer", () => {
     expect(deliver).toHaveBeenCalledOnce()
   })
 
+  it("redelivers the same message after PTY acceptance when the durable receipt did not commit", async () => {
+    let state: "queued" | "inflight" | "deleted" = "queued"
+    let receiptAttempts = 0
+    const claimedMessageIds: string[] = []
+    const deliver = vi.fn(async () => {})
+    const crashWindowDeps = deps({
+      claimNext: async () => {
+        if (state !== "queued") return null
+        state = "inflight"
+        const prompt = {
+          id: 7,
+          queueId: 7,
+          messageId: "queue:7",
+          workspaceId: "w1",
+          tabId: "t1",
+          text: "可能重投",
+          mode: "send" as const,
+          state: "inflight" as const,
+          createdAt: 1,
+        }
+        claimedMessageIds.push(prompt.messageId)
+        return prompt
+      },
+      deliver,
+      onDelivered: async (queueId) => {
+        expect(queueId).toBe(7)
+        receiptAttempts += 1
+        if (receiptAttempts === 1) throw new Error("crash before queue receipt commit")
+        state = "deleted"
+      },
+    })
+
+    await expect(drainWorkspace(crashWindowDeps, "w1", "t1"))
+      .rejects.toThrow("crash before queue receipt commit")
+    expect(state).toBe("inflight")
+    expect(deliver).toHaveBeenCalledOnce()
+
+    await resumeQueuedWorkspaces(createWorkspaceSerial(), crashWindowDeps, {
+      recoverInflight: async () => {
+        if (state !== "inflight") return 0
+        state = "queued"
+        return 1
+      },
+      listWorkspaceIds: async () => ["w1"],
+      listTargets: async () => [{ workspaceId: "w1", tabId: "t1" }],
+    })
+
+    expect(deliver).toHaveBeenCalledTimes(2)
+    expect(claimedMessageIds).toEqual(["queue:7", "queue:7"])
+    expect(receiptAttempts).toBe(2)
+    expect(state).toBe("deleted")
+  })
+
   it("recovers every exact engine-tab queue target after restart", async () => {
     const resolveEngineTab = vi.fn(async (_workspaceId: string, tabId?: string) => ({
       tab: { id: tabId, status: "awaiting-input", tmuxWindow: tabId === "t1" ? 1 : 2 } as any,
@@ -129,6 +192,8 @@ describe("queue drainer", () => {
     }))
     const claimNext = vi.fn(async (workspaceId: string, tabId?: string) => ({
       id: tabId === "t1" ? 1 : 2,
+      queueId: tabId === "t1" ? 1 : 2,
+      messageId: `queue:${tabId === "t1" ? 1 : 2}`,
       workspaceId,
       tabId: tabId!,
       text: tabId!,
