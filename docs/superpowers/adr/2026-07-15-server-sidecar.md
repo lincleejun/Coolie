@@ -100,11 +100,26 @@ changes, the new resource must be explicit in this manifest.
 `packages/server/scripts/build-sidecar-spike.mjs`:
 
 - bundles the server with Bun's build tool targeting Node/CommonJS;
-- builds option A by copying the exact runtime used to invoke the script;
+- builds option A by copying the exact `COOLIE_SIDECAR_NODE` candidate;
 - builds option B with Node SEA and pinned `postject@1.0.0-alpha.6`;
 - copies a pruned native runtime closure and emits per-file SHA-256 manifests;
 - supports `COOLIE_SIDECAR_NATIVE_MODULES` so native packages can be installed
-  with the exact target Node ABI.
+  with the exact target Node ABI;
+- fails before writing output unless the candidate is Node 22.22.3 / modules
+  ABI 127, the host architecture matches, package.json and `bun.lock` both pin
+  the expected postject version, the installed postject version matches, and
+  both native addons load under that candidate.
+
+Reproducible setup and the single build + smoke command:
+
+```bash
+export COOLIE_SIDECAR_NODE=/absolute/path/to/node-v22.22.3/bin/node
+PATH="$(dirname "$COOLIE_SIDECAR_NODE"):$PATH" bun install --frozen-lockfile
+COOLIE_SIDECAR_NODE="$COOLIE_SIDECAR_NODE" bun run sidecar:spike
+```
+
+`bun run sidecar:spike:self-check` runs only dependency/runtime/ABI preflight.
+The build never downloads postject through implicit `npx` or a global install.
 
 `packages/server/scripts/smoke-sidecar-spike.mjs` creates a clean temporary
 home/repository, starts each artifact with its working directory outside the

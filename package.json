@@ -7,6 +7,8 @@
   "scripts": {
     "test": "vitest run",
     "typecheck": "tsc -b packages/protocol packages/server packages/cli && tsc --noEmit -p packages/client",
+    "sidecar:spike": "node packages/server/scripts/build-sidecar-spike.mjs && node packages/server/scripts/smoke-sidecar-spike.mjs",
+    "sidecar:spike:self-check": "node packages/server/scripts/build-sidecar-spike.mjs --self-check",
     "postinstall": "find node_modules -path '*node-pty*' -name spawn-helper -exec chmod +x {} + 2>/dev/null || true"
   },
   "devDependencies": {
