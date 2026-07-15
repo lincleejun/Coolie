@@ -125,3 +125,28 @@ coolie finish <taskId> --merge-back
 - Tauri real-daemon suite 必须覆盖 session restart/reattach/resize。
 - Structured transcript 是 tmux 旁路的只读能力，不改变 engine process ownership。
 
+---
+
+## AD-005 — daemon sidecar 随包固定版本 Node runtime
+
+- **日期**：2026-07-15
+- **状态**：Accepted
+- **详细 ADR**：[`superpowers/adr/2026-07-15-server-sidecar.md`](superpowers/adr/2026-07-15-server-sidecar.md)
+
+### Context
+
+0.1.0 artifact 必须在没有 checkout、repo `node_modules`、全局 Node 或 `tsx` 的环境启动 server，同时继续用 Node 承载 `node-pty`。Task 0.6 实测了“随包 Node + compiled JS/native resources”和 Node SEA 两条路径。
+
+### Decision
+
+- Wave 4 随 app 打包固定 patch 版本的 Node、bundled CommonJS、显式 native addon/resources manifest。
+- 每个 macOS architecture 用同一 Node ABI 安装/构建并 smoke `better-sqlite3`、`node-pty`；禁止跨 ABI 复用 native addon。
+- 0.1.0 不采用 Node SEA。SEA 仍需相同外置 native resources，体积收益不足 0.3%，却增加实验性注入、filesystem require bridge 和注入后签名步骤。
+- Bun 只可作为构建工具，不得运行 Coolie server。
+
+### Consequences
+
+- arm64 Node 22.22.3 clean-room artifact 已通过 `/health`、SQLite 写入和 terminal WebSocket → `node-pty` → tmux attach。
+- Wave 4 仍须完成 x64、macOS 12、Tauri lifecycle、精确 allowlisted manifest、license/provenance 和最终 artifact smoke。
+- sidecar 未压缩约 116 MB，主要由 Node runtime 构成；SEA 不会实质降低该成本。
+
