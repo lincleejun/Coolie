@@ -15,6 +15,12 @@ import { useT, t } from "../i18n"
 
 export { archiveForceConfirmation, deleteConfirmation } from "./taskCommands"
 
+export const matchesSidebarSearch = (query: string, ...values: string[]): boolean => {
+  const normalizedQuery = query.trim().toLocaleLowerCase()
+  return normalizedQuery === ""
+    || values.some((value) => value.toLocaleLowerCase().includes(normalizedQuery))
+}
+
 /** 状态徽标（spec §六）：workspace 状态优先，active 时取 engine tab 状态 */
 export const wsBadge = (ws: Workspace, tabs: Tab[] | undefined): { glyph: string; cls: string; title: string } => {
   if (ws.status === "creating") return { glyph: "◌", cls: "b-creating", title: t("sidebar.status.creating") }
@@ -223,8 +229,9 @@ export const Sidebar = () => {
     return () => clearInterval(t)
   }, [])
 
+  const projectNames = new Map(projects.map((project) => [project.id, project.name]))
   const match = (w: Workspace) =>
-    query === "" || w.name.includes(query) || w.branch.includes(query)
+    matchesSidebarSearch(query, w.name, w.branch, projectNames.get(w.projectId) ?? "")
   const ordered = orderedActiveWs().filter(match)
   const archived = pinnedFirst(workspaces.filter((w) => w.status === "archived" && match(w)))
   const visible = useMemo(() => ordered.filter((workspace) =>
@@ -328,7 +335,7 @@ export const Sidebar = () => {
           const rows = visible.filter((w) => w.projectId === p.id)
           const creatingHere = dispatchMode && dispatchProjectId === p.id
           const showNewAgent = creatingHere && !rows.some((workspace) => workspace.status === "creating")
-          if (rows.length === 0 && query !== "" && !creatingHere) return null
+          if (rows.length === 0 && !matchesSidebarSearch(query, p.name) && !creatingHere) return null
           const collapsed = collapsedProjects[p.id] === true
           return (
             <section key={p.id}>
