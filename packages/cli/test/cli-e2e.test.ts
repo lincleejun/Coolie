@@ -2,10 +2,11 @@ import { describe, it, expect, beforeAll, afterAll } from "vitest"
 import { execFileSync, spawnSync } from "node:child_process"
 import * as fs from "node:fs"; import * as os from "node:os"; import * as path from "node:path"
 import Database from "better-sqlite3"
+import { runtimeTmuxKillSessions } from "./helpers/runtime-env.js"
 
 const TSX = path.resolve(__dirname, "../../../node_modules/.bin/tsx")
 const CLI = path.resolve(__dirname, "../src/main.ts")
-const TMUX_SOCK = `coolie-test-${process.pid}-cli`
+const TMUX_SOCK = process.env.COOLIE_TMUX_SOCKET!
 let home: string, repo: string
 
 const coolie = (...args: string[]) =>
@@ -29,7 +30,7 @@ beforeAll(() => {
 })
 afterAll(() => {
   try { coolie("server", "stop") } catch {}
-  try { execFileSync("tmux", ["-L", TMUX_SOCK, "kill-server"]) } catch { /* gone */ }
+  runtimeTmuxKillSessions()
 })
 
 describe("coolie CLI e2e", () => {

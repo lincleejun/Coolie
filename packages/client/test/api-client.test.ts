@@ -2,13 +2,14 @@ import { describe, it, expect, beforeAll, afterAll } from "vitest"
 import { spawn, execFileSync } from "node:child_process"
 import * as fs from "node:fs"; import * as os from "node:os"; import * as path from "node:path"
 import { makeApi, probeHealth, ApiError, type ServerInfo } from "../src/api/client.js"
+import { runtimeTmuxKillSessions } from "../../server/test/helpers/runtime-env.js"
 
 // 真 daemon 集成（模式抄 packages/cli/test/cli-e2e.test.ts / sse-e2e.test.ts 的环境隔离）。
 // 注：T3 并发新增 POST /workspaces/:id/input + shell-tab（POST/DELETE tabs）路由——本分支尚无，
 // 故这些 wrapper 的 request shape 在 api-client-shapes.test.ts 里用 mock fetch 单测（见该文件与报告）。
 const TSX = path.resolve(__dirname, "../../../node_modules/.bin/tsx")
 const SERVER_MAIN = path.resolve(__dirname, "../../server/src/main.ts")
-const TMUX_SOCK = `coolie-test-${process.pid}-client`
+const TMUX_SOCK = process.env.COOLIE_TMUX_SOCKET!
 let home: string, repo: string, info: ServerInfo, child: ReturnType<typeof spawn>
 
 beforeAll(async () => {
@@ -40,7 +41,7 @@ beforeAll(async () => {
 
 afterAll(() => {
   try { child.kill("SIGTERM") } catch { /* gone */ }
-  try { execFileSync("tmux", ["-L", TMUX_SOCK, "kill-server"]) } catch { /* gone */ }
+  runtimeTmuxKillSessions()
 })
 
 describe("makeApi against real daemon", () => {

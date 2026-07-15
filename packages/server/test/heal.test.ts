@@ -43,8 +43,9 @@ import { EngineRegistry } from "../src/engine/registry.js"
 import type { Engine } from "../src/engine/types.js"
 import { EngineBootstrapHookLive, sessionNameFor } from "../src/engine/bootstrap.js"
 import { makeTmuxService, TmuxService } from "../src/tmux/service.js"
+import { runtimeTmuxKillSessions } from "./helpers/runtime-env.js"
 
-const SOCK = `coolie-test-${process.pid}-${Math.random().toString(36).slice(2, 8)}`
+const SOCK = process.env.COOLIE_TMUX_SOCKET!
 const tmux = makeTmuxService(SOCK)
 let home: string, wsRoot: string, repoRoot: string, db: Database.Database
 const launches: Array<{ sessionId: string; resume?: boolean }> = []
@@ -92,7 +93,7 @@ beforeAll(() => {
   db = new Database(":memory:"); runMigrations(db)
 })
 afterAll(() => {
-  try { execFileSync("tmux", ["-L", SOCK, "kill-server"]) } catch { /* gone */ }
+  runtimeTmuxKillSessions()
   db.close()
   for (const dir of [home, wsRoot, repoRoot]) fs.rmSync(dir, { recursive: true, force: true })
 })

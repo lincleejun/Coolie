@@ -3,8 +3,9 @@ import { execFileSync } from "node:child_process"
 import { Effect } from "effect"
 import { makeTmuxService } from "../src/tmux/service.js"
 import { makeComposerOps } from "../src/tmux/ops.js"
+import { runtimeTmuxKillSessions } from "./helpers/runtime-env.js"
 
-const SOCK = `coolie-test-${process.pid}-ops`
+const SOCK = process.env.COOLIE_TMUX_SOCKET!
 const SESSION = "ops-session"
 const tmux = makeTmuxService(SOCK)
 const ops = makeComposerOps(tmux)
@@ -14,7 +15,7 @@ beforeAll(async () => {
   await Effect.runPromise(tmux.newSession({ name: SESSION, cwd: process.cwd(), windowName: "engine", command: ["cat"] }))
   await new Promise((r) => setTimeout(r, 300))
 })
-afterAll(() => { try { execFileSync("tmux", ["-L", SOCK, "kill-server"]) } catch {} })
+afterAll(() => { runtimeTmuxKillSessions() })
 
 describe("makeComposerOps", () => {
   it("send（完整管线）把文本投进 pane 并回车", async () => {

@@ -3,7 +3,7 @@ import { Effect, Layer, Exit } from "effect"
 import { EventEmitter } from "node:events"
 import * as http from "node:http"
 import Database from "better-sqlite3"
-import { execFileSync } from "node:child_process"
+import { execFileSync, spawnSync } from "node:child_process"
 import * as fs from "node:fs"; import * as os from "node:os"; import * as path from "node:path"
 import { Db } from "../src/db/sqlite.js"
 import { runMigrations } from "../src/db/migrations.js"
@@ -24,6 +24,7 @@ import { createApp, newToken } from "../src/http/app.js"
 import { codexDeriveTitle } from "../src/engine/codex/transcript.js"
 import { SessionReadiness, makeSessionReadiness, type SessionReadinessShape } from "../src/engine/readiness.js"
 import { createWorkspaceSerial } from "../src/engine/queue-drain.js"
+import { runtimeTmuxKillSessions } from "./helpers/runtime-env.js"
 
 /**
  * Plan3 Task15：首条 prompt 投递按 SessionStart hook 就绪信号门控（回归修复）。
@@ -40,7 +41,7 @@ import { createWorkspaceSerial } from "../src/engine/queue-drain.js"
  * （「hook 已响但 reader 还没接管」），而不是在验证门控本身。
  */
 
-const SOCK = `coolie-test-${process.pid}-${Math.random().toString(36).slice(2, 8)}-hg`
+const SOCK = process.env.COOLIE_TMUX_SOCKET!
 const tmux = makeTmuxService(SOCK)
 let home: string, wsRoot: string, repoRoot: string, db: Database.Database
 const bus = new EventEmitter()
@@ -88,7 +89,7 @@ beforeAll(() => {
   execFileSync("git", ["-c", "user.email=t@t", "-c", "user.name=t", "commit", "--allow-empty", "-m", "init"], { cwd: repoRoot })
   db = new Database(":memory:"); runMigrations(db)
 })
-afterAll(() => { try { execFileSync("tmux", ["-L", SOCK, "kill-server"]) } catch { /* gone */ } })
+afterAll(() => { runtimeTmuxKillSessions() })
 
 const cap = (target: string) => Effect.runPromise(tmux.capturePane(target))
 const echoCount = (text: string, needle: string) => (text.match(new RegExp(needle, "g")) ?? []).length
@@ -120,6 +121,7 @@ describe("bootstrap：首条 prompt 投递按 SessionStart hook 就绪信号门�
     await waitForValue(() => (db.prepare("SELECT id FROM tabs WHERE workspace_id = ?").get(wsId) as any)?.id)
 
     const session = sessionNameFor(wsId)
+    await waitForValue(() => spawnSync("tmux", ["-L", SOCK, "has-session", "-t", `=${session}`]).status === 0 ? true : undefined)
     // 门控生效的证据之一：信号发出前（仍在过渡期读者窗口内），pane 里不该出现我们的 prompt 文本
     await new Promise((r) => setTimeout(r, 300))
     expect(await cap(`${session}:0`)).not.toContain("gate-me")
@@ -135,7 +137,7 @@ describe("bootstrap：首条 prompt 投递按 SessionStart hook 就绪信号门�
     expect(Exit.isSuccess(exit)).toBe(true)
 
     let text = ""
-    const deadline = Date.now() + 5000
+    const deadline = Date.now() + 8_000
     while (Date.now() < deadline) {
       text = await cap(`${session}:0`)
       if (echoCount(text, "gate-me") >= 2) break

@@ -2,13 +2,14 @@ import { describe, it, expect, beforeAll, afterAll } from "vitest"
 import { spawn, execFileSync } from "node:child_process"
 import * as fs from "node:fs"; import * as os from "node:os"; import * as path from "node:path"
 import { startEventStream } from "../src/api/sse.js"
+import { runtimeTmuxKillSessions } from "../../server/test/helpers/runtime-env.js"
 
 // 真 daemon 集成（模式抄 packages/cli/test/cli-e2e.test.ts 的环境隔离）。
 // Task 4（makeApi/probeHealth/ServerInfo）尚未在本分支落地，故本文件自带 daemon 起停 +
 // 用裸 fetch 触发 project.added，只依赖 Task 5 自身的 startEventStream。
 const TSX = path.resolve(__dirname, "../../../node_modules/.bin/tsx")
 const SERVER_MAIN = path.resolve(__dirname, "../../server/src/main.ts")
-const TMUX_SOCK = `coolie-test-${process.pid}-client-sse`
+const TMUX_SOCK = process.env.COOLIE_TMUX_SOCKET!
 let home: string, info: { port: number; token: string }, child: ReturnType<typeof spawn>
 
 const probe = async (port: number): Promise<boolean> => {
@@ -43,7 +44,7 @@ beforeAll(async () => {
 
 afterAll(() => {
   try { child.kill("SIGTERM") } catch { /* gone */ }
-  try { execFileSync("tmux", ["-L", TMUX_SOCK, "kill-server"]) } catch { /* gone */ }
+  runtimeTmuxKillSessions()
 })
 
 describe("startEventStream against real daemon", () => {

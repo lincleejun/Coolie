@@ -5,11 +5,12 @@ import * as fs from "node:fs"; import * as os from "node:os"; import * as path f
 import { sanitizePromptForPty } from "../src/tmux/sanitize.js"
 import { waitStable, deliverPrompt } from "../src/tmux/delivery.js"
 import { makeTmuxService } from "../src/tmux/service.js"
+import { runtimeTmuxKillSessions } from "./helpers/runtime-env.js"
 
-const SOCK = `coolie-test-${process.pid}-${Math.random().toString(36).slice(2, 8)}`
+const SOCK = process.env.COOLIE_TMUX_SOCKET!
 const svc = makeTmuxService(SOCK)
 const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "coolie-dlv-"))
-afterAll(() => { try { execFileSync("tmux", ["-L", SOCK, "kill-server"]) } catch { /* gone */ } })
+afterAll(() => { runtimeTmuxKillSessions() })
 
 describe("sanitizePromptForPty（纯函数，Superset 语义）", () => {
   it("normalizes CRLF and bare CR to LF", () => {

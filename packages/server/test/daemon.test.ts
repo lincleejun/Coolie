@@ -5,15 +5,18 @@ import * as fs from "node:fs"; import * as os from "node:os"; import * as path f
 import { readServerInfo } from "../src/daemon/info.js"
 import Database from "better-sqlite3"
 import { runMigrations } from "../src/db/migrations.js"
+import { runtimeTmuxKillSessions } from "./helpers/runtime-env.js"
 
 let child: ChildProcess | undefined
 let home: string
+let childStderr = ""
 const MAIN = path.resolve(__dirname, "../src/main.ts")
 const TSX = path.resolve(__dirname, "../../../node_modules/.bin/tsx")
-const DAEMON_TMUX_SOCK = `coolie-test-${process.pid}-d`
+const DAEMON_TMUX_SOCK = process.env.COOLIE_TMUX_SOCKET!
 
 const startServer = async (extraEnv: Record<string, string> = {}, preparedHome?: string) => {
   home = preparedHome ?? fs.mkdtempSync(path.join(os.tmpdir(), "coolie-daemon-"))
+  childStderr = ""
   // detached: true → child leads its own process group. tsx's CLI re-execs into a
   // grandchild node process, so killing only child.pid orphans the actual server;
   // cleanup must kill the whole group (see afterEach).
@@ -25,6 +28,7 @@ const startServer = async (extraEnv: Record<string, string> = {}, preparedHome?:
     },
     stdio: "pipe", detached: true,
   })
+  child.stderr?.on("data", (chunk) => { childStderr += String(chunk) })
   const deadline = Date.now() + 15_000
   while (Date.now() < deadline) {
     const info = readServerInfo(path.join(home, "server.json"))
@@ -34,7 +38,7 @@ const startServer = async (extraEnv: Record<string, string> = {}, preparedHome?:
     }
     await new Promise((r) => setTimeout(r, 100))
   }
-  throw new Error("server did not become healthy")
+  throw new Error(`server did not become healthy${childStderr ? `: ${childStderr.trim()}` : ""}`)
 }
 afterEach(() => {
   // Kill the entire process group (negative pid) to reach tsx's re-exec'd grandchild,
@@ -46,7 +50,7 @@ afterEach(() => {
 afterAll(() => {
   // best-effort: control client is lazy-spawned (only on first sendKey), so daemon-only
   // tests likely never created this tmux server — this is just a safety net.
-  try { execFileSync("tmux", ["-L", DAEMON_TMUX_SOCK, "kill-server"]) } catch { /* gone */ }
+  runtimeTmuxKillSessions()
 })
 
 describe("daemon", () => {
@@ -154,7 +158,7 @@ describe("unix socket listener", () => {
 
 describe("engine ownership（不可违背原则）", () => {
   it("tmux session survives server SIGKILL", async () => {
-    const sock = `coolie-test-${process.pid}-srv`
+    const sock = process.env.COOLIE_TMUX_SOCKET!
     const home2 = fs.mkdtempSync(path.join(os.tmpdir(), "coolie-surv-home-"))
     const wsRoot = fs.mkdtempSync(path.join(os.tmpdir(), "coolie-surv-ws-"))
     const repo = fs.mkdtempSync(path.join(os.tmpdir(), "coolie-surv-repo-"))
@@ -198,14 +202,14 @@ describe("engine ownership（不可违背原则）", () => {
       expect(spawnSync("tmux", ["-L", sock, "has-session", "-t", `=${session}`]).status).toBe(0)
     } finally {
       try { process.kill(-srv.pid!, "SIGKILL") } catch { /* already dead */ }
-      try { execFileSync("tmux", ["-L", sock, "kill-server"]) } catch { /* gone */ }
+      runtimeTmuxKillSessions()
     }
   })
 })
 
 describe("keep-alive 闭环（wrapper → /hooks/engine-exit → engine.exited）", () => {
   it("engine 非零退出：事件落库 + tab=error + session 不塌", async () => {
-    const sock = `coolie-test-${process.pid}-ka`
+    const sock = process.env.COOLIE_TMUX_SOCKET!
     const home2 = fs.mkdtempSync(path.join(os.tmpdir(), "coolie-ka2-home-"))
     const wsRoot = fs.mkdtempSync(path.join(os.tmpdir(), "coolie-ka2-ws-"))
     const repo = fs.mkdtempSync(path.join(os.tmpdir(), "coolie-ka2-repo-"))
@@ -260,7 +264,7 @@ describe("keep-alive 闭环（wrapper → /hooks/engine-exit → engine.exited�
       expect(spawnSync("tmux", ["-L", sock, "has-session", "-t", `=coolie-${ws.id}`]).status).toBe(0)
     } finally {
       try { process.kill(-srv.pid!, "SIGKILL") } catch { /* dead */ }
-      try { execFileSync("tmux", ["-L", sock, "kill-server"]) } catch { /* gone */ }
+      runtimeTmuxKillSessions()
     }
   })
 })
@@ -335,7 +339,10 @@ describe("refcount 惰性退出（真实 SSE 客户端 + 短 grace）", () => {
   const serverGone = async (ms: number): Promise<boolean> => {
     const deadline = Date.now() + ms
     while (Date.now() < deadline) {
-      if (!fs.existsSync(path.join(home, "server.json"))) return true
+      if (
+        !fs.existsSync(path.join(home, "server.json")) &&
+        !fs.existsSync(path.join(home, "coolie.sock"))
+      ) return true
       await new Promise((r) => setTimeout(r, 100))
     }
     return false

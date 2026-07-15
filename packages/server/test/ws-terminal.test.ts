@@ -7,6 +7,7 @@ import { Effect } from "effect"
 import { makeTmuxService } from "../src/tmux/service.js"
 import { attachTerminalWs } from "../src/http/ws.js"
 import { newToken } from "../src/http/app.js"
+import { runtimeTmuxKillSessions } from "./helpers/runtime-env.js"
 
 // 注入点：默认委托真 pty；置入 fakePtyHolder.current 后该 conn 用 fake pty 捕获 write 入参。
 // 让「二进制输入原样透传」用例能字节级断言 ws.ts 交给 p.write 的内容，而其余用例仍跑真 tmux。
@@ -20,7 +21,7 @@ vi.mock("../src/pty/attach.js", async (importOriginal) => {
   }
 })
 
-const SOCK = `coolie-test-${process.pid}-${Math.random().toString(36).slice(2, 8)}`
+const SOCK = process.env.COOLIE_TMUX_SOCKET!
 const svc = makeTmuxService(SOCK)
 const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "coolie-ws-"))
 let server: http.Server, base: string
@@ -38,7 +39,7 @@ beforeAll(async () => {
 })
 afterAll(() => {
   server.close()
-  try { execFileSync("tmux", ["-L", SOCK, "kill-server"]) } catch { /* gone */ }
+  runtimeTmuxKillSessions()
 })
 
 const collectUntil = (ws: WebSocket, pred: (all: string) => boolean, ms = 8000): Promise<string> =>

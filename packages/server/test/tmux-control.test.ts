@@ -4,15 +4,16 @@ import { execFileSync } from "node:child_process"
 import * as fs from "node:fs"; import * as os from "node:os"; import * as path from "node:path"
 import { makeControlClient } from "../src/tmux/control.js"
 import { makeTmuxService } from "../src/tmux/service.js"
+import { runtimeTmuxKillSessions } from "./helpers/runtime-env.js"
 
-const SOCK = `coolie-test-${process.pid}-${Math.random().toString(36).slice(2, 8)}`
+const SOCK = process.env.COOLIE_TMUX_SOCKET!
 const ctl = makeControlClient(SOCK)
 const svc = makeTmuxService(SOCK, ctl)
 const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "coolie-ctl-"))
 
 afterAll(() => {
   ctl.dispose()
-  try { execFileSync("tmux", ["-L", SOCK, "kill-server"]) } catch { /* gone */ }
+  runtimeTmuxKillSessions()
 })
 
 const waitFor = async (fn: () => Promise<boolean>, ms = 5000): Promise<void> => {

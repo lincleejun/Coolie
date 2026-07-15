@@ -5,6 +5,7 @@ import { Workspace } from "@coolie/protocol"
 import { createApp, newToken } from "../src/http/app.js"
 import { WorkspaceAdopter } from "../src/workspace/adopt.js"
 import { WorkspaceFinisher } from "../src/workspace/finish.js"
+import { WorkspacesRepo } from "../src/repo/workspaces.js"
 
 let server: http.Server
 let base: string
@@ -32,6 +33,12 @@ beforeEach(async () => {
         return { mergedBack: false, prUrl: "https://example.test/pr/1", warnings: [] }
       }),
     }),
+    Layer.succeed(WorkspacesRepo, {
+      get: (id: string) => Effect.sync(() => {
+        if (id !== workspace.id) throw new Error(`unexpected workspace ${id}`)
+        return workspace
+      }),
+    } as any),
   )
   token = newToken()
   server = http.createServer(createApp({
