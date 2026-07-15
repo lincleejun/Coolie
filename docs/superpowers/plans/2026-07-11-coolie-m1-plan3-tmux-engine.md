@@ -182,7 +182,7 @@ git commit -m "chore(server): add node-pty + ws deps with pty smoke test"
 **Interfaces:**
 - Consumes: 现有 `Schema`（effect）、`ROUTES` 表结构。
 - Produces（后续所有任务消费）:
-  - `TabKind = "engine" | "setup" | "run" | "shell"`（Schema.Literal）
+  - `TabKind = "engine" | "setup" | "shell"`（Schema.Literal）
   - `TabStatus = "working" | "awaiting-input" | "error" | "idle"`（Schema.Literal）
   - `Tab`（Schema.Class）：`{ id: string; workspaceId: string; kind: TabKind; engineId: string | null; engineSessionId: string | null; tmuxWindow: number | null; title: string | null; status: TabStatus; lastHookAt: number | null }`
   - `decodeTab(u: unknown): Tab`
@@ -226,7 +226,7 @@ git commit -m "chore(server): add node-pty + ws deps with pty smoke test"
 
 `packages/protocol/src/domain.ts` 追加（放在 `Workspace` 之后）：
 ```ts
-export const TabKind = Schema.Literal("engine", "setup", "run", "shell")
+export const TabKind = Schema.Literal("engine", "setup", "shell")
 export type TabKind = typeof TabKind.Type
 
 /** 状态徽标（设计文档 §六）：working=●工作中 / awaiting-input=✓等输入 / error=!错误 / idle=○空闲 */

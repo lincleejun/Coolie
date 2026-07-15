@@ -15,7 +15,7 @@ export interface TerminalRecovery {
   readonly pending: () => boolean
 }
 
-type TerminalKind = "engine" | "setup" | "run" | "shell"
+type TerminalKind = "engine" | "setup" | "shell"
 type TerminalConnectionState = "connecting" | "open" | "exited" | "dead"
 type TerminalTabStatus = "working" | "awaiting-input" | "error" | "idle"
 

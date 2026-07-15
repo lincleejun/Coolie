@@ -30,6 +30,7 @@ interface DataState {
   /** 终端会话回收钩子（依赖注入）：App 侧接 terminal/session 的 disposeWorkspaceSessions；node 测试注入 spy。
    *  用注入而非直接 import：session.ts 顶层 import 了 @xterm + xterm.css，直接引会把 DOM/CSS 依赖拖进纯 node store 测试。 */
   setSessionDisposer(fn: (wsId: string) => void): void
+  setTabSessionDisposer(fn: (wsId: string, tabId: string) => void): void
   bootstrap(): Promise<void>
   refreshConfig(): Promise<void>
   refreshProjects(): Promise<void>
@@ -66,9 +67,10 @@ let api: Api | null = null
 let sendSeq = 0
 let warnSeq = 0
 let disposeWsSessions: (wsId: string) => void = () => {} // F2：默认 noop，Terminal 模块加载时注册真实回收器
+let disposeTabTermSession: (wsId: string, tabId: string) => void = () => {}
 const swallow = (p: Promise<unknown>): void => { void p.catch(() => {}) } // 刷新失败＝下次事件/轮询再试
 
-/** A selected shell/run tab still leaves the workspace composer targeting its primary engine chat. */
+/** A selected non-engine tab still leaves the workspace composer targeting its primary engine chat. */
 export const resolveSelectedEngineTabId = (
   tabs: readonly Tab[] | undefined,
   selectedId: string | undefined,
@@ -89,6 +91,7 @@ export const useData = create<DataState>((set, get) => ({
   getApi: () => api,
   setStatus: (status) => set({ status }),
   setSessionDisposer: (fn) => { disposeWsSessions = fn },
+  setTabSessionDisposer: (fn) => { disposeTabTermSession = fn },
   bootstrap: async () => {
     if (!api) return
     const [config, projects, workspaces] = await Promise.all([
@@ -149,6 +152,10 @@ export const useData = create<DataState>((set, get) => ({
         if (e.type === "workspace.deleted" && e.workspaceId) useUi.getState().clearWsIfSelected(e.workspaceId)
       } else if (e.workspaceId) swallow(refreshTabs(e.workspaceId))
     } else if (e.workspaceId && (e.type.startsWith("tab.") || e.type.startsWith("engine.") || e.type.startsWith("composer."))) {
+      if (e.type === "tab.closed") {
+        const tabId = (e.payload as { tabId?: unknown } | null)?.tabId
+        if (typeof tabId === "string") disposeTabTermSession(e.workspaceId, tabId)
+      }
       swallow(refreshTabs(e.workspaceId))
       if (e.type === "engine.turn.finished") swallow(refreshDiffstat(e.workspaceId)) // turn 结束大概率有新 diff
       if (options.allowAttention !== false &&

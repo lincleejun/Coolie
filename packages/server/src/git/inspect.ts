@@ -61,15 +61,16 @@ export const listFiles = (worktree: string): Promise<string[]> =>
   run(worktree, ["ls-files", "--cached", "--others", "--exclude-standard", "-z"])
     .then((out) => out.split("\0").filter((s) => s !== ""))
 
+export const parseBranches = (out: string): string[] =>
+  [...new Set(out.split("\n")
+    .map((branch) => branch.trim().replace(/^remotes\//, ""))
+    .filter((branch) => branch !== "" && branch !== "origin" && !branch.endsWith("/HEAD"))
+    // origin branches are accepted without a remote prefix by workspace provisioning.
+    .map((branch) => branch.replace(/^origin\//, "")))].sort()
+
+/** Mirrors `git branch -a`: local branches plus branches from every configured remote. */
 export const listBranches = (repoRoot: string): Promise<string[]> =>
-  run(repoRoot, [
-    "for-each-ref",
-    "--format=%(refname:short)",
-    "refs/heads",
-    "refs/remotes/origin",
-  ]).then((out) => [...new Set(out.split("\n")
-    .map((branch) => branch.trim().replace(/^origin\//, ""))
-    .filter((branch) => branch !== "" && branch !== "HEAD"))].sort())
+  run(repoRoot, ["branch", "--all", "--format=%(refname:short)"]).then(parseBranches)
 
 export type DiffSection = "againstBase" | "committed" | "staged" | "unstaged"
 export interface FileDiff { path: string; section: DiffSection; unified: string; binary: boolean }

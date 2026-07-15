@@ -38,6 +38,11 @@ export interface AttachmentUploadResult {
   readonly errors: AttachmentUploadError[]
 }
 
+export interface AttachmentReference {
+  readonly label: string
+  readonly path: string
+}
+
 export const isSupportedImage = (file: Pick<AttachmentFile, "type">): file is AttachmentFile & { type: SupportedImageMime } =>
   SUPPORTED.has(file.type)
 
@@ -60,7 +65,7 @@ export const uploadImageFiles = async (
   api: AttachmentUploadApi | Pick<Api, "req">,
   workspaceId: string,
   files: readonly AttachmentFile[],
-  options: { onProgress?: (done: number, total: number, name: string) => void } = {},
+  options: { onProgress?: (done: number, total: number, name: string) => void; staging?: boolean } = {},
 ): Promise<AttachmentUploadResult> => {
   const paths: string[] = []
   const errors: AttachmentUploadError[] = []
@@ -96,7 +101,10 @@ export const uploadImageFiles = async (
     }
 
     try {
-      const uploaded = await api.req("POST", `/workspaces/${encodeURIComponent(workspaceId)}/attachments`, {
+      const endpoint = options.staging
+        ? "/attachments"
+        : `/workspaces/${encodeURIComponent(workspaceId)}/attachments`
+      const uploaded = await api.req("POST", endpoint, {
         name: file.name,
         mime: file.type,
         dataBase64,
@@ -111,16 +119,16 @@ export const uploadImageFiles = async (
   return { paths, errors }
 }
 
-export const insertAttachmentPaths = (
+const insertTokens = (
   text: string,
   selectionStart: number,
   selectionEnd: number,
-  paths: readonly string[],
+  tokens: readonly string[],
 ): { text: string; caret: number } => {
-  if (paths.length === 0) return { text, caret: selectionEnd }
+  if (tokens.length === 0) return { text, caret: selectionEnd }
   const start = Math.max(0, Math.min(selectionStart, text.length))
   const end = Math.max(start, Math.min(selectionEnd, text.length))
-  const insertion = paths.map((attachmentPath) => `@${attachmentPath}`).join(" ")
+  const insertion = tokens.join(" ")
   const prefix = text.slice(0, start)
   const suffix = text.slice(end)
   const before = prefix !== "" && !/\s$/.test(prefix) ? " " : ""
@@ -128,3 +136,36 @@ export const insertAttachmentPaths = (
   const next = `${prefix}${before}${insertion}${after}${suffix}`
   return { text: next, caret: prefix.length + before.length + insertion.length }
 }
+
+export const insertAttachmentPaths = (
+  text: string,
+  selectionStart: number,
+  selectionEnd: number,
+  paths: readonly string[],
+): { text: string; caret: number } =>
+  insertTokens(text, selectionStart, selectionEnd, paths.map((attachmentPath) => `@${attachmentPath}`))
+
+export const makeAttachmentReferences = (
+  paths: readonly string[],
+  offset = 0,
+  label = (index: number): string => `[图片 ${index}]`,
+): AttachmentReference[] =>
+  paths.map((attachmentPath, index) => ({ label: label(offset + index + 1), path: attachmentPath }))
+
+export const insertAttachmentReferences = (
+  text: string,
+  selectionStart: number,
+  selectionEnd: number,
+  references: readonly AttachmentReference[],
+): { text: string; caret: number } =>
+  insertTokens(text, selectionStart, selectionEnd, references.map((reference) => reference.label))
+
+/** Keep the composer readable, then expand labels to engine-readable absolute file references at submit time. */
+export const translateAttachmentReferences = (
+  text: string,
+  references: readonly AttachmentReference[],
+): string =>
+  references.reduce(
+    (prompt, reference) => prompt.split(reference.label).join(`${reference.label} @${reference.path}`),
+    text,
+  )

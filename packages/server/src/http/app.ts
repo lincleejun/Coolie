@@ -221,6 +221,20 @@ const writeAttachmentAtomic = (root: string, workspaceId: string, mime: string, 
   }
 }
 
+const pruneStagedAttachments = (root: string, maxAgeMs = 24 * 60 * 60 * 1000): void => {
+  const dir = path.join(root, "staging")
+  let names: string[]
+  try { names = fs.readdirSync(dir) } catch { return }
+  const cutoff = Date.now() - maxAgeMs
+  for (const name of names) {
+    const candidate = path.join(dir, name)
+    try {
+      const stat = fs.lstatSync(candidate)
+      if (stat.isFile() && stat.mtimeMs < cutoff) fs.rmSync(candidate, { force: true })
+    } catch { /* best-effort expiry */ }
+  }
+}
+
 const errorFromCause = (
   cause: Cause.Cause<unknown>,
   onError?: (e: unknown) => void,
@@ -917,7 +931,8 @@ export const createApp = ({ runtime, token, onShutdown, onError, bus, sseHeartbe
           )
         }
         const attachmentRoute = url.pathname.match(/^\/workspaces\/([^/]+)\/attachments$/)
-        if (req.method === "POST" && attachmentRoute) {
+        const stagingAttachmentRoute = url.pathname === "/attachments"
+        if (req.method === "POST" && (attachmentRoute || stagingAttachmentRoute)) {
           if (!attachmentsDir) return err(res, 501, "Internal", "attachments unavailable")
           const body = await readJson(req, MAX_ATTACHMENT_BODY_BYTES)
           if (body === null || typeof body !== "object" || Array.isArray(body))
@@ -932,11 +947,20 @@ export const createApp = ({ runtime, token, onShutdown, onError, bus, sseHeartbe
           const detectedMime = imageMimeFromMagic(data)
           if (detectedMime === null || detectedMime !== body.mime)
             return err(res, 400, "Validation", "image magic bytes do not match mime")
+          if (stagingAttachmentRoute) {
+            try {
+              pruneStagedAttachments(attachmentsDir)
+              const attachmentPath = writeAttachmentAtomic(attachmentsDir, "staging", detectedMime, data)
+              return send(res, 201, { path: attachmentPath, mime: detectedMime, size: data.byteLength })
+            } catch (error) {
+              return err(res, 500, "Internal", error instanceof Error ? error.message : String(error))
+            }
+          }
           return await runRoute(
             res,
             runtime,
             Effect.gen(function* () {
-              const ws = yield* (yield* WorkspacesRepo).get(attachmentRoute[1]!)
+              const ws = yield* (yield* WorkspacesRepo).get(attachmentRoute![1]!)
               if (ws.status !== "active")
                 return yield* new ConflictError({ message: `workspace 非 active（当前 ${ws.status}）` })
               return ws
@@ -1153,9 +1177,7 @@ export const createApp = ({ runtime, token, onShutdown, onError, bus, sseHeartbe
             return await (workspaceSerial ? workspaceSerial.run(tabsCreate[1]!, action) : action())
           }
           if (!composerOps) return err(res, 501, "Internal", "composerOps unavailable")
-          if (body.kind !== "shell" && body.kind !== "run") return err(res, 400, "Validation", "kind 必须是 engine|shell|run")
-          if (body.kind === "run" && (!composerOps.listWindows || !composerOps.newRunWindow || !composerOps.respawnRunWindow))
-            return err(res, 501, "Internal", "run tab unavailable")
+          if (body.kind !== "shell") return err(res, 400, "Validation", "kind 必须是 engine|shell")
           const handleTabsCreate = () => runRoute(
             res, runtime,
             Effect.gen(function* () {
@@ -1167,47 +1189,6 @@ export const createApp = ({ runtime, token, onShutdown, onError, bus, sseHeartbe
             async (ws) => {
               try {
                 const session = tmuxSessionName(ws.id)
-                if (body.kind === "run") {
-                  const ensured = await runtime(Effect.gen(function* () {
-                    yield* (yield* SessionEnsurer).ensure(ws.id)
-                    return yield* (yield* TabsRepo).listByWorkspace(ws.id)
-                  }))
-                  if (Exit.isFailure(ensured)) {
-                    const mapped = errorFromCause(ensured.cause, onError)
-                    send(res, mapped.status, mapped.body)
-                    return
-                  }
-                  const script = path.join(ws.path, ".coolie", "run.sh")
-                  let stat: fs.Stats
-                  try { stat = fs.statSync(script) }
-                  catch { return err(res, 409, "Conflict", `.coolie/run.sh 不存在：${script}`) }
-                  if (!stat.isFile()) return err(res, 409, "Conflict", `.coolie/run.sh 不是普通文件：${script}`)
-
-                  const live = new Set((await composerOps.listWindows!(session)).map((w) => w.index))
-                  const runTabs = ensured.value.filter((t) => t.kind === "run")
-                  const existing = runTabs[0]
-                  for (const duplicate of runTabs.slice(1)) {
-                    if (duplicate.tmuxWindow !== null && live.has(duplicate.tmuxWindow))
-                      await composerOps.killWindow(session, duplicate.tmuxWindow)
-                    await runtime(Effect.gen(function* () { yield* (yield* TabsRepo).remove(duplicate.id) }))
-                  }
-                  if (existing?.tmuxWindow !== null && existing?.tmuxWindow !== undefined && live.has(existing.tmuxWindow)) {
-                    await composerOps.respawnRunWindow!(session, existing.tmuxWindow, ws.path, script)
-                    return send(res, 200, existing)
-                  }
-                  if (existing) await runtime(Effect.gen(function* () { yield* (yield* TabsRepo).remove(existing.id) }))
-                  const idx = await composerOps.newRunWindow!(session, ws.path, script)
-                  const inserted = await runtime(Effect.gen(function* () {
-                    return yield* (yield* TabsRepo).insert({ workspaceId: ws.id, kind: "run", tmuxWindow: idx, title: "run" })
-                  }))
-                  if (Exit.isFailure(inserted)) {
-                    try { await composerOps.killWindow(session, idx) } catch { /* original insert error wins */ }
-                    const mapped = errorFromCause(inserted.cause, onError)
-                    return send(res, mapped.status, mapped.body)
-                  }
-                  await layoutOps?.reconcile(ws.id)
-                  return send(res, 201, inserted.value)
-                }
                 const idx = await composerOps.newShellWindow(session, ws.path)
                 const exit = await runtime(Effect.gen(function* () {
                   return yield* (yield* TabsRepo).insert({ workspaceId: ws.id, kind: "shell", tmuxWindow: idx })

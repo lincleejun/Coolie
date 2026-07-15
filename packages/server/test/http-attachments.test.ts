@@ -96,6 +96,16 @@ afterEach(async () => {
 })
 
 describe("POST /workspaces/:id/attachments", () => {
+  it("stores dispatch images in staging without requiring a workspace", async () => {
+    const response = await request("/attachments", {
+      name: "clipboard.png", mime: "image/png", dataBase64: PNG.toString("base64"),
+    })
+    expect(response.status).toBe(201)
+    const body = await response.json()
+    expect(path.dirname(body.path)).toBe(path.join(home, "attachments", "staging"))
+    expect(fs.readFileSync(body.path)).toEqual(PNG)
+  })
+
   it("requires bearer auth and an active workspace", async () => {
     expect((await request(`/workspaces/${wsId}/attachments`, {
       name: "shot.png", mime: "image/png", dataBase64: PNG.toString("base64"),

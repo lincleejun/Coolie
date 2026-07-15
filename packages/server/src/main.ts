@@ -6,7 +6,8 @@ import { execFile } from "node:child_process"
 import { Context, Effect, Layer, Exit, Option, Scope } from "effect"
 import { tmuxSessionName } from "@coolie/protocol"
 import { CoolieConfig, CoolieConfigLive } from "./config.js"
-import { DbLive } from "./db/sqlite.js"
+import { Db, DbLive } from "./db/sqlite.js"
+import { cleanupRemovedRunTabs } from "./db/cleanup.js"
 import { ProjectsRepoLive } from "./repo/projects.js"
 import { EventsRepo, EventsRepoLive } from "./repo/events.js"
 import { WorkspacesRepo, WorkspacesRepoLive } from "./repo/workspaces.js"
@@ -95,6 +96,12 @@ const cmdStart = async (): Promise<void> => {
 
   // tmux 首启检测（设计文档 §十二）：不阻启动，warn 进日志；doctor 同口径
   const tmuxSvc = Context.get(runtimeCtx, TmuxService)
+  const removedRunTabs = await cleanupRemovedRunTabs(
+    Context.get(runtimeCtx, Db),
+    (session, window) => Effect.runPromise(tmuxSvc.killWindow(session, window)),
+    (error) => logger.warn(`清理旧 run tab 的 tmux window 失败：${String(error)}`),
+  )
+  if (removedRunTabs > 0) logger.info(`已清理 ${removedRunTabs} 个旧 run tab`)
   const composerOps = makeComposerOps(tmuxSvc)
   const tmuxLayout = makeTmuxLayout(
     tmuxSvc,

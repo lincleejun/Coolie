@@ -33,6 +33,7 @@ const EXPECTED_ENDPOINTS = [
   "GET /workspaces/:id/queue",
   "GET /workspaces/:id/tabs",
   "GET /ws/terminal",
+  "POST /attachments",
   "POST /collect",
   "POST /engines/custom",
   "POST /engines/custom/:id/detect",

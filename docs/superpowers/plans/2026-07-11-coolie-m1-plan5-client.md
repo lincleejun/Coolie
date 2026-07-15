@@ -1084,7 +1084,7 @@ Expected: PASS（含既有 tmux-service 测试不回归）
 
 ```ts
   { method: "POST",   path: "/workspaces/:id/tabs",        description: "新建 shell tab {kind:shell}（tmux new-window）" },
-  { method: "DELETE", path: "/workspaces/:id/tabs/:tabId", description: "关 shell tab（kill-window；engine/setup/run 拒绝）" },
+  { method: "DELETE", path: "/workspaces/:id/tabs/:tabId", description: "关 shell tab（kill-window；engine/setup 拒绝）" },
   { method: "POST",   path: "/workspaces/:id/input",       description: "composer 投递 {text, mode: send|interrupt-send|insert|interrupt, skipStable?}" },
 ```
 
@@ -3150,9 +3150,9 @@ git commit -m "feat(client): xterm 终端会话——WS 二进制/fit+fonts-heal
 
 ---
 
-### Task 11: 终端 TabsBar（engine/setup/run/shell + New Shell + 关 tab + Open in iTerm2）
+### Task 11: 终端 TabsBar（engine/setup/shell + New Shell + 关 tab + Open in iTerm2）
 
-中央区顶部 tabs 栏：tabs 来自 tabs API（GUI tab ↔ tmux window 映射），tab 徽标同 `wsBadge` 规则；`＋`/Cmd+T 新建 shell tab（POST）、Cmd+W 关当前 shell tab（DELETE，engine/setup/run 不可关）；**Open in iTerm2** 一等公民按钮（`tmux -L <socket> attach -t coolie-<wsId>`，spec §五：里外同一画面）。
+中央区顶部 tabs 栏：tabs 来自 tabs API（GUI tab ↔ tmux window 映射），tab 徽标同 `wsBadge` 规则；`＋`/Cmd+T 新建 shell tab（POST）、Cmd+W 关当前 shell tab（DELETE，engine/setup 不可关）；**Open in iTerm2** 一等公民按钮（`tmux -L <socket> attach -t coolie-<wsId>`，spec §五：里外同一画面）。
 
 **Files:**
 - Create: `packages/client/src/terminal/TabsBar.tsx`
@@ -3219,7 +3219,7 @@ export const CenterArea = ({ wsId }: { wsId: string }) => {
     useUi.getState().selectTab(wsId, tab.id)
   }
   const closeTab = async (t: Tab): Promise<void> => {
-    if (t.kind !== "shell") return // engine/setup/run 不可关（tmux window 归 lifecycle 管）
+    if (t.kind !== "shell") return // engine/setup 不可关（tmux window 归 lifecycle 管）
     const api = useData.getState().getApi()
     if (!api) return
     await api.req("DELETE", `/workspaces/${wsId}/tabs/${t.id}`)
@@ -4289,7 +4289,7 @@ Tauri 2 + React + xterm.js 桌面壳，纯 protocol 消费者（REST + WS 二进
     cd packages/client && bunx tauri dev   # 自动发现/拉起 coolie-server（读 ~/.coolie/server.json）
 
 - 左栏：project → workspace 两层列表；状态徽标（●工作中 ✓等输入 !错误 ○空闲）+ `+N−M`（git diff --shortstat 5s 轮询）
-- 中央：xterm.js 6（WebGL→DOM fallback）挂 tmux window；tabs = engine/setup/run/shell；`↗ Open in iTerm2` 同画面逃生舱
+- 中央：xterm.js 6（WebGL→DOM fallback）挂 tmux window；tabs = engine/setup/shell；`↗ Open in iTerm2` 同画面逃生舱
 - Composer 三档：Enter 发送/排队（claude nativeQueue 忙时直投）、⌘Enter 打断并发送、⌥Enter 仅插入、⇧Enter 换行；⌘. 打断；@文件、/命令、每 workspace 草稿、模型选择器（/model 投递）
 - 快捷键：⌘N 新建、⌘T/⌘W shell tab、⌘1..9/⌘[/⌘] 切 workspace、⌘L 聚焦 composer、⌘/ 快捷键表；终端内 Cmd 系不进 PTY，Ctrl 系全透传
 - server 崩溃：SSE 指数退避 + 自动重新拉起 daemon；终端画面因 tmux 无损

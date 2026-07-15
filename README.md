@@ -74,7 +74,7 @@ window。GUI 支持新建、关闭、重命名和前后循环；最后一个 eng
 - 专属 socket 默认为 `tmux -L coolie`，session 名为 `coolie-<taskId>`；daemon/client 重启不拥有
   或杀死仍在运行的 engine。
 - window 与 pane 写入 `@role`、`@workspace_id`/`@task_id`、`@tab_id`。角色词表为
-  `tasks | engine | ops | shell`；当前 UI 采用 **ChatTab-per-window**，setup/run 映射为 `ops`，
+  `tasks | engine | ops | shell`；当前 UI 采用 **ChatTab-per-window**，setup 映射为 `ops`，
   并非固定 tasks rail + 多 pane 三栏。
 - reconcile 会重贴元数据并恢复已保存的 tmux layout/尺寸。Zen 是 task 级持久状态：
   `POST /workspaces/:id/zen {zen,tabId?}` 聚焦 engine window，退出时恢复先前 tab/geometry。
@@ -188,7 +188,7 @@ coolie finish <wsId> --merge-back
 ### GUI / Web 完成度
 
 - Changes 支持 unified diff、选行评论写回 composer；Composer 支持图片粘贴/拖拽。
-- setup 在可见 setup tab 中执行，`.coolie/run.sh` 使用单一 run tab；engine 固定 window 0。
+- setup 在可见 setup tab 中执行；engine 固定 window 0，用户可按需创建 shell tab。
 - `⌘K` 命令面板、用户 JSON 键位覆盖、footer cheatsheet、主题与中英文切换已接入。
 - `coolie://workspace/<id>[/tab/<id>]` 深链及可配置外部终端模式可用。
 - `bun --cwd packages/client run build:web` 构建纯 Web client；Web 只连接用户显式指定的 loopback server，不具备任意文件系统权限。
@@ -324,7 +324,7 @@ cd packages/client && bunx tauri dev   # 自动发现/拉起 coolie-server（读
 ```
 
 - 左栏：project → workspace 两层列表；状态徽标（●工作中 ✓等输入 !错误 ○空闲）+ `+N−M`（server `git/diffstat` 端点 5s 轮询，client 无 git 访问）；搜索、pin 排序、归档区。
-- 中央：xterm.js 6（WebGL 渲染，context loss 时回落 DOM canvas）挂 tmux window；tabs = engine / setup / run / shell；`↗ Open in iTerm2`（osascript attach 同一 tmux session）同画面逃生舱。**惰性挂载**：只有被看过的 tab 才建会话/WS，未看过的后台 tab 是零连接占位符；切走保活（只摘 DOM，scrollback/连接不丢）；workspace 归档/删除时其全部 tab 连接一并回收。
+- 中央：xterm.js 6（WebGL 渲染，context loss 时回落 DOM canvas）挂 tmux window；tabs = engine / setup / shell；`↗ Open in iTerm2`（osascript attach 同一 tmux session）同画面逃生舱。**惰性挂载**：只有被看过的 tab 才建会话/WS，未看过的后台 tab 是零连接占位符；切走保活（只摘 DOM，scrollback/连接不丢）；workspace 归档/删除时其全部 tab 连接一并回收。
 - Composer 三档：Enter 发送/排队（engine 忙时 `skipStable` 直投 claude nativeQueue）、⌘Enter 打断并发送、⌥Enter 仅插入、⇧Enter 换行；⌘. 打断；@文件（模糊排序 Enter 插入）、/命令（内置 + repo `.claude/commands` 扫描）、每 workspace 草稿（持久化，重启仍在）、模型选择器（切模型后 `/model` 补投，midSessionModelSwitch）。
 - 快捷键：⌘N 新建（composer 变首条 prompt）、⌘T/⌘W 开关 shell tab、⌘1..9 跳 workspace、⌘[/⌘] 上/下一个 workspace、⌘L 聚焦 composer、⌘/ 快捷键表（cheatsheet）；终端聚焦时 Cmd 系全局键不进 PTY，Ctrl 系全透传（三层仲裁 + LIFO 注册表）。
 - server 崩溃：SSE fetch 流指数退避（500ms→8s 封顶）+ `getInfo()` 自动重新拉起 daemon；offline 横幅 → 恢复即消；终端画面因 tmux 无损。GUI 的 SSE 连接带 `role=gui`（持有 server 惰性退出生命周期）。

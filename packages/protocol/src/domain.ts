@@ -31,7 +31,7 @@ export class Workspace extends Schema.Class<Workspace>("Workspace")({
 }) {}
 export const decodeWorkspace = Schema.decodeUnknownSync(Workspace)
 
-export const TabKind = Schema.Literal("engine", "setup", "run", "shell")
+export const TabKind = Schema.Literal("engine", "setup", "shell")
 export type TabKind = typeof TabKind.Type
 
 /** 状态徽标（设计文档 §六）：working=●工作中 / awaiting-input=✓等输入 / error=!错误 / idle=○空闲 */

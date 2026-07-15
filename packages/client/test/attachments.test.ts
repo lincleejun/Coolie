@@ -2,7 +2,10 @@ import { describe, expect, it, vi } from "vitest"
 import {
   MAX_ATTACHMENT_BYTES,
   collectSupportedImages,
+  insertAttachmentReferences,
   insertAttachmentPaths,
+  makeAttachmentReferences,
+  translateAttachmentReferences,
   uploadImageFiles,
   type AttachmentFile,
   type AttachmentUploadApi,
@@ -51,6 +54,18 @@ describe("composer attachments", () => {
     expect(progress).toEqual([[0, 2, "first.png"], [1, 2, "first.png"], [2, 2, "second.png"]])
   })
 
+  it("uploads dispatch images to staging without requiring a workspace", async () => {
+    const paths: string[] = []
+    const api: AttachmentUploadApi = {
+      req: vi.fn(async (_method, requestPath, body) => {
+        paths.push(requestPath)
+        return { path: `/staging/${body.name}`, mime: body.mime, size: 8 }
+      }),
+    }
+    await uploadImageFiles(api, "dispatch:project", [png("first.png")], { staging: true })
+    expect(paths).toEqual(["/attachments"])
+  })
+
   it("does not read or upload files over the decoded limit and reports the error", async () => {
     const read = vi.fn(async () => new ArrayBuffer(0))
     const api: AttachmentUploadApi = { req: vi.fn() }
@@ -85,5 +100,16 @@ describe("composer attachments", () => {
       caret: 25,
     })
     expect(insertAttachmentPaths("", 0, 0, ["/a.png"])).toEqual({ text: "@/a.png", caret: 7 })
+  })
+
+  it("shows numbered image labels and translates them to engine-readable path references", () => {
+    const references = makeAttachmentReferences(["/tmp/a.png", "/tmp/b.png"])
+    expect(references.map((reference) => reference.label)).toEqual(["[图片 1]", "[图片 2]"])
+    expect(insertAttachmentReferences("review", 6, 6, references)).toEqual({
+      text: "review [图片 1] [图片 2]",
+      caret: 20,
+    })
+    expect(translateAttachmentReferences("review [图片 1]", references))
+      .toBe("review [图片 1] @/tmp/a.png")
   })
 })

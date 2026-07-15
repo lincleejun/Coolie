@@ -115,7 +115,7 @@ describe("archive", () => {
       const tabs = yield* TabsRepo
       yield* tabs.insert({ workspaceId: ws.id, kind: "engine", engineSessionId: "resume-me", tmuxWindow: 0 })
       yield* tabs.insert({ workspaceId: ws.id, kind: "setup", tmuxWindow: 1 })
-      yield* tabs.insert({ workspaceId: ws.id, kind: "run", tmuxWindow: 2 })
+      yield* tabs.insert({ workspaceId: ws.id, kind: "shell", tmuxWindow: 2 })
       yield* (yield* WorkspaceLifecycle).archive(ws.id)
     }))
     const tabs = await ok(env, Effect.gen(function* () { return yield* (yield* TabsRepo).listByWorkspace(ws.id) }))

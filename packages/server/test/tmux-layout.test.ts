@@ -28,7 +28,6 @@ describe("tmux layout decisions", () => {
   it("maps tab kinds to stable Kobe roles", () => {
     expect(roleForTabKind("engine")).toBe("engine")
     expect(roleForTabKind("setup")).toBe("ops")
-    expect(roleForTabKind("run")).toBe("ops")
     expect(roleForTabKind("shell")).toBe("shell")
   })
 

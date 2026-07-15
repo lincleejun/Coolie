@@ -71,7 +71,7 @@ SQLite 单库（`~/.coolie/coolie.db`），server 单写者。索引列提升 + 
 |---|---|---|
 | `projects` | id, name, repo_root, default_base_branch | repo_root 指向用户已有 checkout，不搬家 |
 | `workspaces` | id, project_id, name, path, branch, base_branch, base_ref, status, pinned | name = 目录名（**国家公园名池**）；branch = `coolie/<语义slug>`；base_ref 记录创建基点供 diff 用 |
-| `tabs` | id, workspace_id, kind(engine/setup/run/shell), engine_id, engine_session_id, tmux_window | GUI tab ↔ tmux window 映射 |
+| `tabs` | id, workspace_id, kind(engine/setup/shell), engine_id, engine_session_id, tmux_window | GUI tab ↔ tmux window 映射 |
 | `events` | seq, workspace_id, type, payload(JSON), ts | durable 事件流，SSE replay 数据源 |
 
 写库纪律（agent-deck 防误删三件套）：拒绝空条件 sweep、破坏性写前 `.bak`、幂等 migration。
@@ -89,7 +89,6 @@ creating ──成功──▶ active ──archive──▶ archived ──unar
 
 - **create**：`git fetch` → `git worktree prune` → `git worktree add --no-track -b coolie/<slug> ~/coolie/workspaces/<repo>/<园名> origin/<base>` → 写 `branch.<name>.base` → `.git/info/exclude` 注入工具目录 → 按 `.worktreeinclude` 复制 gitignored 文件（.env 等）→ 分配 10 端口段（`$COOLIE_PORT_0..9`）→ setup script 在 setup tab **可见执行** → 建 tmux session → 启 engine → 投递首条 prompt（若有）。任何一步失败：自动回滚删半成品 worktree，绝不留孤儿，status=error 可重试。
 - **setup script 三层合并**：repo `.coolie/setup.sh`（可提交）→ 本机覆盖（`~/.coolie/projects/<id>/`）→ local overlay；注入 `$COOLIE_ROOT`、`$COOLIE_PORT_*`。
-- **run**：`.coolie/run.sh` 跑在 run tab，端口从本 workspace 端口段注入。
 - **archive**：杀 tmux session → 删 worktree → **branch 一律保留** → 记录留档；unarchive 从 branch 重建。
 - **delete**：脏树二次确认后删 worktree + 记录（branch 保留）。只走 `git worktree remove`（脏树自动拒绝），绝不裸 rm。
 - **finish**：Create PR（`gh pr create`，prompt 模板可被 repo 内文件覆盖）+ merge back（回主 checkout merge，脏树保护）。
@@ -98,7 +97,7 @@ creating ──成功──▶ active ──archive──▶ archived ──unar
 
 ## 五、tmux 链路与终端
 
-- 专属 socket `tmux -L coolie`；session = `coolie-<wsId>`；**window 0 = engine，setup/run/shell 各占 window，即 GUI 的 tabs**；tmux 内原生分屏用户随意用。
+- 专属 socket `tmux -L coolie`；session = `coolie-<wsId>`；**window 0 = engine，setup/shell 各占 window，即 GUI 的 tabs**；tmux 内原生分屏用户随意用。
 - server 为每个在看的 GUI 终端 tab 起一个 node-pty attach；attach 前 fit + heal 防首帧 reflow；resize 防抖。
 - 发键走**持久 tmux control-mode client**（macOS 上每次 fork+exec 有 10–50ms 延迟，agent-deck 实测）。
 - prompt 投递（kobe 踩坑结晶）：画面稳定检测（连续两帧稳定）→ 消毒（CRLF 归一、剥 CSI/OSC/控制字符、tab 展开，Superset `sanitizePromptForPty`）→ bracketed paste `send-keys -l --` → 停 150ms → Enter。

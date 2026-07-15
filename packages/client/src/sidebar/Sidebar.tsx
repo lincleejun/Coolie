@@ -7,7 +7,6 @@ import { ApiError } from "../api/client"
 import { orderedActiveWs, pinnedFirst } from "../hotkeys/useGlobalHotkeys"
 import { CaretRightIcon, ChevronDownIcon, FolderPlusIcon, GitBranchIcon, HelpIcon, PlusIcon, SearchIcon, SettingsIcon } from "../chrome/icons"
 import { ProjectOnboarding } from "../chrome/EmptyState"
-import { openWorkspaceWindow } from "../chrome/workspaceWindow"
 import { archiveForceConfirmation, buildTaskCommands, deleteConfirmation } from "./taskCommands"
 import { confirmDialog, promptDialog, trapTabKey, useAppDialogOpen } from "../chrome/dialogs"
 import { showToast } from "../chrome/Toasts"
@@ -278,8 +277,7 @@ export const Sidebar = () => {
     }
   }
   const startWorkspace = (projectId: string): void => {
-    void openWorkspaceWindow(projectId)
-      .catch((error: unknown) => showToast("workspace.open", error))
+    useUi.getState().setDispatchMode(true, projectId)
   }
   const adopt = async (projectId: string): Promise<void> => {
     const data = useData.getState()

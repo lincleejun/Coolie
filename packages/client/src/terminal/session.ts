@@ -147,14 +147,17 @@ export const createTermSession = (api: Api, workspaceId: string, windowIdx: numb
 
 /* ---- 会话注册表：tab 切换/组件卸载不销毁（终端保活归 GUI 生命周期，engine 保活归 tmux） ----
  * 生命周期上界（F2/F3）：会话只在 (a) workspace 归档/删除 → disposeWorkspaceSessions（data store applyEvent 调用），
- *   或 (b) 手动关 shell tab → disposeSession 时回收；从不在 tab 切换/卸载时断连。
+ *   或 (b) 手动关 tab → disposeTabSession 时回收；从不在 tab 切换/卸载时断连。
  * 惰性挂载（F3）：只有被看过的 tab 才进注册表——CenterArea 只给 active/已看过的 tab 渲染 TerminalView，
  *   未看过的后台 tab 是占位符、零 WS。因此活会话数 ≤ 用户实际看过的 tab 数（人手频度，天然有界）。
  * LRU 上界（可选，cheap）：若某 workspace tab 极多，可在 getOrCreateSession 里对同 wsId 前缀的会话按最近 mount 时间
  *   淘汰到 N（如 8）个——M1 不实装（Map 迭代顺序即插入序，加一个 lastTouch 时间戳与阈值即可），记为已知延展点。 */
 const sessions = new Map<string, TermSession>()
 
-export const sessionKey = (wsId: string, windowIdx: number): string => `${wsId}:${windowIdx}`
+// Both identities matter: tmux may reuse an index for a replacement tab, while
+// heal may move the same tab to another index.
+export const sessionKey = (wsId: string, tabId: string, windowIdx: number): string =>
+  `${wsId}:${tabId}:${windowIdx}`
 export const getOrCreateSession = (key: string, make: () => TermSession): TermSession => {
   // dead/exited 会话刻意保留复用（Reconnect 走 session.reconnect()，xterm 画面不清空）
   let s = sessions.get(key)
@@ -162,6 +165,14 @@ export const getOrCreateSession = (key: string, make: () => TermSession): TermSe
   return s
 }
 export const disposeSession = (key: string): void => { sessions.get(key)?.dispose(); sessions.delete(key) }
+export const disposeTabSession = (wsId: string, tabId: string): void => {
+  const prefix = `${wsId}:${tabId}:`
+  for (const [key, session] of sessions) {
+    if (!key.startsWith(prefix)) continue
+    session.dispose()
+    sessions.delete(key)
+  }
+}
 export const disposeWorkspaceSessions = (wsId: string): void => {
   for (const [k, s] of sessions) if (k.startsWith(`${wsId}:`)) { s.dispose(); sessions.delete(k) }
 }

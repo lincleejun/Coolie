@@ -35,7 +35,6 @@ import { applyResolvedTheme, resolveTheme, systemIsDark, watchSystemTheme } from
 import { syncTerminalTheme } from "./terminal/session"
 import { useT } from "./i18n"
 import { capabilities } from "./platform"
-import { projectIdFromWindowSearch } from "./chrome/workspaceWindow"
 import { DialogHost, confirmDialog } from "./chrome/dialogs"
 
 const WebServerSetup = ({ onConnect }: { onConnect: () => void }) => {
@@ -111,9 +110,6 @@ export const App = () => {
       useData.getState().setApi(api)
       await useData.getState().bootstrap()
       if (!owner.isCurrent()) return
-      const requestedProjectId = projectIdFromWindowSearch(window.location.search)
-      if (requestedProjectId && useData.getState().projects.some((project) => project.id === requestedProjectId))
-        useUi.getState().setDispatchMode(true, requestedProjectId)
       useData.getState().setStatus("online")
       owner.own(startEventStream({
         after: 0,

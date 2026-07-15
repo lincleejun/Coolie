@@ -3,7 +3,7 @@ import { execFileSync } from "node:child_process"
 import * as fs from "node:fs"; import * as os from "node:os"; import * as path from "node:path"
 import {
   parseShortstat, parseNumstat, diffShortstat, collectChanges, listFiles,
-  sectionDiffArgs, fileDiff, isSafeRelPath,
+  parseBranches, sectionDiffArgs, fileDiff, isSafeRelPath,
 } from "../src/git/inspect.js"
 
 describe("parsers", () => {
@@ -21,6 +21,17 @@ describe("parsers", () => {
       { path: "src/a.ts", insertions: 12, deletions: 3 },
       { path: "logo.png", insertions: 0, deletions: 0 },
     ])
+  })
+  it("parseBranches: includes local and all remotes, deduplicating origin", () => {
+    expect(parseBranches([
+      "main",
+      "origin",
+      "origin/HEAD",
+      "origin/main",
+      "origin/release",
+      "upstream/feature",
+      "remotes/fork/topic",
+    ].join("\n"))).toEqual(["fork/topic", "main", "release", "upstream/feature"])
   })
 })
 

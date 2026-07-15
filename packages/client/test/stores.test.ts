@@ -21,6 +21,7 @@ describe("useData.applyEvent", () => {
   beforeEach(() => {
     useData.setState({ projects: [], workspaces: [], tabsByWs: {}, diffstatByWs: {}, pendingSends: [], warnings: [] } as any)
     useData.getState().setSessionDisposer(() => {}) // 复位注入的回收器，避免用例间串味
+    useData.getState().setTabSessionDisposer(() => {})
   })
   it("workspace.* 触发 workspaces 重拉", async () => {
     const api = fakeApi(); useData.getState().setApi(api)
@@ -33,6 +34,15 @@ describe("useData.applyEvent", () => {
     useData.getState().applyEvent({ seq: 2, workspaceId: "W", type: "tab.status.changed", payload: {}, ts: 0 })
     await new Promise((r) => setTimeout(r, 20))
     expect(api.calls).toContain("GET /workspaces/W/tabs")
+  })
+  it("tab.closed 回收对应 tab 的终端会话，避免 tmux window 索引复用串台", () => {
+    const api = fakeApi(); useData.getState().setApi(api)
+    const disposed: Array<[string, string]> = []
+    useData.getState().setTabSessionDisposer((wsId, tabId) => disposed.push([wsId, tabId]))
+    useData.getState().applyEvent({
+      seq: 9, workspaceId: "W", type: "tab.closed", payload: { tabId: "T" }, ts: 0,
+    })
+    expect(disposed).toEqual([["W", "T"]])
   })
   it("project.* 触发 projects 重拉", async () => {
     const api = fakeApi(); useData.getState().setApi(api)

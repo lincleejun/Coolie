@@ -326,7 +326,9 @@ button { font: inherit; color: inherit; background: none; border: none; cursor: 
 .dispatch-head h2 { font-size: 16px; }
 .dispatch-row { display: flex; gap: 10px; align-items: center; }
 .dispatch-row label { color: var(--fg-dim); font-size: 12px; }
-.dispatch-row select { background: var(--input-bg); color: var(--fg); border: 1px solid var(--border); border-radius: 6px; padding: 4px 8px; }
+.dispatch-row select, .dispatch-row input { background: var(--input-bg); color: var(--fg); border: 1px solid var(--border); border-radius: 6px; padding: 4px 8px; }
+.dispatch-branch { width: 150px; }
+.dispatch-row > span { font-size: 11px; }
 .dispatch-busy { color: var(--warn); padding: 20px 0; animation: pulse 1.2s infinite; }
 .dispatch-err { color: var(--danger); font-size: 12px; }
 .offline-banner { flex: none; text-align: center; font-size: 12px; padding: 5px; background: rgba(224,175,104,0.15); color: var(--warn); border-bottom: 1px solid var(--warn); }

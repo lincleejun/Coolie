@@ -21,9 +21,6 @@ let db: Database.Database
 let killed: Array<{ session: string; index: number }>
 let killError: Error | null
 let wsPath: string
-let liveWindows: number[]
-let respawned: number[]
-let synchronizeRunLists: boolean
 let resumeImpl: (workspaceId: string, tabId: string) => Promise<any>
 
 const wsId = "ws-c12"
@@ -46,9 +43,6 @@ beforeEach(async () => {
     .run(otherWsId, `${wsPath}-other`)
 
   killed = []
-  liveWindows = [0]
-  respawned = []
-  synchronizeRunLists = false
   killError = null
   resumeImpl = async (workspaceId, tabId) => ({
     action: "respawned", resumed: false, sessionName: `coolie-${workspaceId}`, tabId, sessionId: "session",
@@ -56,19 +50,8 @@ beforeEach(async () => {
   const composerOps: ComposerOps = {
     input: async () => {},
     newShellWindow: async () => 3,
-    listWindows: async () => {
-      if (synchronizeRunLists) await new Promise((resolve) => setTimeout(resolve, 20))
-      return liveWindows.map((index) => ({ index, name: index === 0 ? "engine" : "run" }))
-    },
-    newRunWindow: async () => {
-      const index = Math.max(...liveWindows) + 1
-      liveWindows.push(index)
-      return index
-    },
-    respawnRunWindow: async (_session, index) => { respawned.push(index) },
     killWindow: async (targetSession, index) => {
       killed.push({ session: targetSession, index })
-      liveWindows = liveWindows.filter((w) => w !== index)
       if (killError) throw killError
     },
   }
@@ -110,11 +93,6 @@ const createShellTab = () => fetch(`${base}/workspaces/${wsId}/tabs`, {
   method: "POST",
   headers: { Authorization: `Bearer ${token}`, "content-type": "application/json" },
   body: JSON.stringify({ kind: "shell" }),
-})
-const createRunTab = () => fetch(`${base}/workspaces/${wsId}/tabs`, {
-  method: "POST",
-  headers: { Authorization: `Bearer ${token}`, "content-type": "application/json" },
-  body: JSON.stringify({ kind: "run" }),
 })
 const createEngineTab = () => fetch(`${base}/workspaces/${wsId}/tabs`, {
   method: "POST",
@@ -166,6 +144,15 @@ describe("POST /workspaces/:id/tabs/:tabId/resume serialization", () => {
 })
 
 describe("POST /workspaces/:id/tabs C12 compensation", () => {
+  it("rejects the removed run tab kind", async () => {
+    const response = await fetch(`${base}/workspaces/${wsId}/tabs`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}`, "content-type": "application/json" },
+      body: JSON.stringify({ kind: "run" }),
+    })
+    expect(response.status).toBe(400)
+  })
+
   it("kills the exact window and preserves the original DB error when insert fails", async () => {
     db.exec(`CREATE TRIGGER fail_shell_tab BEFORE INSERT ON tabs
       WHEN NEW.kind = 'shell' BEGIN SELECT RAISE(ABORT, 'C12 original insert failure'); END`)
@@ -207,57 +194,5 @@ describe("engine chat tab lifecycle", () => {
     expect((await fetch(`${base}/workspaces/${wsId}/tabs/${second.id}`, {
       method: "DELETE", headers: { Authorization: `Bearer ${token}` },
     })).status).toBe(204)
-  })
-})
-
-describe("POST /workspaces/:id/tabs run singleton", () => {
-  it("returns 409 when .coolie/run.sh is missing", async () => {
-    const response = await createRunTab()
-    expect(response.status).toBe(409)
-    expect(liveWindows).toEqual([0])
-  })
-
-  it("creates one run tab then respawns that window in place", async () => {
-    fs.mkdirSync(path.join(wsPath, ".coolie"), { recursive: true })
-    fs.writeFileSync(path.join(wsPath, ".coolie", "run.sh"), "echo run\n")
-    const first = await createRunTab()
-    const firstTab = await first.json() as { id: string }
-    const second = await createRunTab()
-    const secondTab = await second.json() as { id: string }
-    expect(first.status).toBe(201)
-    expect(second.status).toBe(200)
-    expect(secondTab.id).toBe(firstTab.id)
-    expect(respawned).toEqual([1])
-    expect((db.prepare("SELECT COUNT(*) c FROM tabs WHERE kind='run'").get() as any).c).toBe(1)
-  })
-
-  it("serializes concurrent requests into one run tab and window", async () => {
-    fs.mkdirSync(path.join(wsPath, ".coolie"), { recursive: true })
-    fs.writeFileSync(path.join(wsPath, ".coolie", "run.sh"), "echo run\n")
-    synchronizeRunLists = true
-
-    const first = createRunTab()
-    const second = createRunTab()
-    const [firstResponse, secondResponse] = await Promise.all([first, second])
-    const [firstTab, secondTab] = await Promise.all([
-      firstResponse.json() as Promise<{ id: string }>,
-      secondResponse.json() as Promise<{ id: string }>,
-    ])
-
-    expect([firstResponse.status, secondResponse.status].sort()).toEqual([200, 201])
-    expect(secondTab.id).toBe(firstTab.id)
-    expect(liveWindows).toEqual([0, 1])
-    expect((db.prepare("SELECT COUNT(*) c FROM tabs WHERE kind='run'").get() as any).c).toBe(1)
-  })
-
-  it("kills the new run window when DB insert fails", async () => {
-    fs.mkdirSync(path.join(wsPath, ".coolie"), { recursive: true })
-    fs.writeFileSync(path.join(wsPath, ".coolie", "run.sh"), "echo run\n")
-    db.exec(`CREATE TRIGGER fail_run_tab BEFORE INSERT ON tabs
-      WHEN NEW.kind = 'run' BEGIN SELECT RAISE(ABORT, 'run insert failure'); END`)
-    const response = await createRunTab()
-    expect(response.status).toBe(500)
-    expect(killed).toContainEqual({ session, index: 1 })
-    expect(liveWindows).toEqual([0])
   })
 })

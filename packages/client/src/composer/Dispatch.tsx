@@ -70,6 +70,7 @@ export const DispatchPanel = () => {
   const [branches, setBranches] = useState<string[]>(
     project?.defaultBaseBranch ? [project.defaultBaseBranch] : [],
   )
+  const [branchLoad, setBranchLoad] = useState<"loading" | "ready" | "error">("loading")
   const [creating, setCreating] = useState(false)
   const [err, setErr] = useState<string | null>(null)
   const namePool = useSettings((state) => state.namePool)
@@ -97,8 +98,12 @@ export const DispatchPanel = () => {
     const fallback = project?.defaultBaseBranch ?? ""
     setBaseBranch(fallback)
     setBranches(fallback ? [fallback] : [])
+    setBranchLoad("loading")
     const api = useData.getState().getApi()
-    if (!api || !projectId) return
+    if (!api || !projectId) {
+      setBranchLoad("error")
+      return
+    }
     let active = true
     void api.req("GET", `/projects/${projectId}/branches`).then((response) => {
       if (!active) return
@@ -108,7 +113,10 @@ export const DispatchPanel = () => {
       const next = [...new Set([fallback, ...listed].filter(Boolean))]
       setBranches(next)
       setBaseBranch((current) => next.includes(current) ? current : fallback)
-    }).catch(() => {})
+      setBranchLoad("ready")
+    }).catch(() => {
+      if (active) setBranchLoad("error")
+    })
     return () => { active = false }
   }, [projectId, project?.defaultBaseBranch])
 
@@ -155,27 +163,37 @@ export const DispatchPanel = () => {
           {projects.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
         </select>
         <label>{tr("dispatch.branch")}</label>
-        <select value={baseBranch} onChange={(event) => setBaseBranch(event.target.value)}>
-          {branches.map((branch) => <option key={branch} value={branch}>{branch}</option>)}
+        <input
+          className="dispatch-branch"
+          list="dispatch-branches"
+          value={baseBranch}
+          onChange={(event) => setBaseBranch(event.target.value)}
+          placeholder={tr("dispatch.branchSearch")}
+        />
+        <datalist id="dispatch-branches">
+          {branches.map((branch) => <option key={branch} value={branch} />)}
+        </datalist>
+        <span className={branchLoad === "error" ? "dispatch-err" : "dim"}>
+          {branchLoad === "loading"
+            ? tr("dispatch.branchLoading")
+            : branchLoad === "error"
+              ? tr("dispatch.branchLoadFailed")
+              : tr("dispatch.branchCount").replace("{count}", String(branches.length))}
+        </span>
+        <label>{tr("dispatch.engine")}</label>
+        <select value={engine?.id ?? ""} onChange={(event) => {
+          setEngineId(event.target.value)
+          setModel("default")
+        }}>
+          {engines.map((candidate) => (
+            <option key={candidate.id} value={candidate.id}>{candidate.displayName}</option>
+          ))}
         </select>
         <label>{tr("dispatch.model")}</label>
-        <select
-          value={JSON.stringify([engine?.id ?? "", model])}
-          onChange={(event) => {
-            const [nextEngine, nextModel] = JSON.parse(event.target.value) as [string, string]
-            setEngineId(nextEngine)
-            setModel(nextModel)
-          }}
-        >
-          {engines.map((candidate) => (
-            <optgroup key={candidate.id} label={candidate.displayName}>
-              <option value={JSON.stringify([candidate.id, "default"])}>
-                {tr("dispatch.default")}
-              </option>
-              {candidate.models.map((value) => (
-                <option key={value} value={JSON.stringify([candidate.id, value])}>{value}</option>
-              ))}
-            </optgroup>
+        <select value={model} onChange={(event) => setModel(event.target.value)}>
+          <option value="default">{tr("dispatch.default")}</option>
+          {engine?.models.map((value) => (
+            <option key={value} value={value}>{value}</option>
           ))}
         </select>
       </div>

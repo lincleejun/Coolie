@@ -7,7 +7,14 @@ import { fuzzyFilter, detectToken, type TokenHit } from "./fuzzy"
 import { Picker } from "./Picker"
 import type { SlashCommand } from "../stores/types"
 import { useT } from "../i18n"
-import { collectSupportedImages, insertAttachmentPaths, uploadImageFiles } from "./attachments"
+import {
+  collectSupportedImages,
+  insertAttachmentReferences,
+  makeAttachmentReferences,
+  translateAttachmentReferences,
+  uploadImageFiles,
+  type AttachmentReference,
+} from "./attachments"
 import { Dropdown } from "../chrome/Dropdown"
 import { AttachIcon, SendIcon, SparkleIcon, StopIcon } from "../chrome/icons"
 
@@ -51,6 +58,7 @@ export const Composer = ({ wsId, onSubmitOverride, placeholder, disabled = false
   const [text, setText] = useState(() => drafts.load(wsId))
   const textRef = useRef(text)
   const workspaceRef = useRef(wsId)
+  const attachmentRefs = useRef<AttachmentReference[]>([])
   workspaceRef.current = wsId
   const [attachmentStatus, setAttachmentStatus] = useState<{
     done: number
@@ -114,6 +122,7 @@ export const Composer = ({ wsId, onSubmitOverride, placeholder, disabled = false
     const next = drafts.load(wsId)
     textRef.current = next
     setText(next)
+    attachmentRefs.current = []
     setAttachmentStatus(null)
   }, [wsId])
   // T14-handoff：右栏 @注入 走 drafts.save + focusNonce bump——聚焦时重载草稿使注入立即上屏
@@ -140,6 +149,7 @@ export const Composer = ({ wsId, onSubmitOverride, placeholder, disabled = false
     }
     setAttachmentStatus({ done: 0, total: images.length, error: null })
     void uploadImageFiles(api, wsId, images, {
+      staging: onSubmitOverride !== undefined,
       onProgress: (done, total) => {
         if (workspaceRef.current === wsId) setAttachmentStatus({ done, total, error: null })
       },
@@ -148,10 +158,16 @@ export const Composer = ({ wsId, onSubmitOverride, placeholder, disabled = false
       // absolute attachment path into the newly selected workspace draft.
       if (workspaceRef.current !== wsId) return
       if (paths.length > 0) {
+        const references = makeAttachmentReferences(
+          paths,
+          attachmentRefs.current.length,
+          (index) => tr("composer.attachments.imageLabel").replace("{index}", String(index)),
+        )
+        attachmentRefs.current = [...attachmentRefs.current, ...references]
         const current = textRef.current
         const start = ta.current?.selectionStart ?? current.length
         const end = ta.current?.selectionEnd ?? start
-        const inserted = insertAttachmentPaths(current, start, end, paths)
+        const inserted = insertAttachmentReferences(current, start, end, references)
         update(inserted.text)
         requestAnimationFrame(() => {
           ta.current?.setSelectionRange(inserted.caret, inserted.caret)
@@ -167,13 +183,17 @@ export const Composer = ({ wsId, onSubmitOverride, placeholder, disabled = false
   }
 
   const deliver = async (mode: "send" | "interrupt-send" | "insert", skipStable: boolean): Promise<void> => {
-    const body = text.trim()
-    if (body === "") return
+    const draftBody = text.trim()
+    if (draftBody === "") return
+    const refs = attachmentRefs.current
+    const body = translateAttachmentReferences(draftBody, refs)
     update("") // 先清（乐观）：投递数秒内用户可继续打下一条；失败恢复草稿
+    attachmentRefs.current = []
     try {
       await useData.getState().sendInput(wsId, { text: body, mode, skipStable })
     } catch (e: any) {
-      update(body)
+      attachmentRefs.current = refs
+      update(draftBody)
       useData.getState().pushWarning(
         "composer.send",
         tr("composer.sendFailed").replace("{error}", String(e?.message ?? e)),
@@ -186,7 +206,11 @@ export const Composer = ({ wsId, onSubmitOverride, placeholder, disabled = false
       if (e.key === "Enter" && !e.shiftKey && !e.metaKey && !e.altKey) {
         e.preventDefault()
         const body = text.trim()
-        if (body !== "") { onSubmitOverride(body); update("") }
+        if (body !== "") {
+          onSubmitOverride(translateAttachmentReferences(body, attachmentRefs.current))
+          attachmentRefs.current = []
+          update("")
+        }
       }
       if (e.key === "Escape") { e.preventDefault(); useUi.getState().setDispatchMode(false) }
       return
@@ -212,7 +236,11 @@ export const Composer = ({ wsId, onSubmitOverride, placeholder, disabled = false
     if (disabled) return
     if (onSubmitOverride) {
       const body = text.trim()
-      if (body !== "") { onSubmitOverride(body); update("") }
+      if (body !== "") {
+        onSubmitOverride(translateAttachmentReferences(body, attachmentRefs.current))
+        attachmentRefs.current = []
+        update("")
+      }
       return
     }
     void deliver("send", engineWorking === true)

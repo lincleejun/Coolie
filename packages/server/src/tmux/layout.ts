@@ -67,7 +67,7 @@ export const roleForTabKind = (kind: TabKind): TmuxRole =>
   kind === "engine" ? "engine" : kind === "shell" ? "shell" : "ops"
 
 const inferredRole = (name: string): TmuxRole =>
-  name === "engine" ? "engine" : name === "shell" ? "shell" : name === "setup" || name === "run" ? "ops" : "shell"
+  name === "engine" ? "engine" : name === "setup" ? "ops" : "shell"
 
 export const decideLayout = (
   observation: LayoutObservation,

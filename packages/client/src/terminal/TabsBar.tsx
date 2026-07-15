@@ -6,7 +6,6 @@ import { useTerminal } from "../stores/terminal"
 import { pushHotkeyLayer } from "../hotkeys/dispatch"
 import { TerminalView } from "./Terminal"
 import { buildAttachCommand, buildTerminalLaunch, type TerminalId } from "./terminals"
-import { openRunTab } from "./run"
 import { capabilities } from "../platform"
 import { CloseIcon, PlusIcon } from "../chrome/icons"
 import { Dropdown } from "../chrome/Dropdown"
@@ -78,11 +77,6 @@ export const CenterArea = ({ wsId }: { wsId: string }) => {
     if (!api || !engineId) return
     const tab = await api.req("POST", `/workspaces/${wsId}/tabs`, { kind: "engine", engineId })
     useUi.getState().selectTab(wsId, tab.id)
-  }
-  const run = async (): Promise<void> => {
-    const api = useData.getState().getApi()
-    if (!api) return
-    await openRunTab(api, wsId, (workspaceId, tabId) => useUi.getState().selectTab(workspaceId, tabId))
   }
   const closeTab = async (t: Tab): Promise<void> => {
     if (t.kind !== "shell" && t.kind !== "engine") return
@@ -160,7 +154,6 @@ export const CenterArea = ({ wsId }: { wsId: string }) => {
             </span>
           </button>
         )}
-        <button className="tab tab-run" title={tr("terminal.runScript")} onClick={() => void run().catch(report)}>{tr("terminal.run")}</button>
         <button className="tab tab-new" title={tr("terminal.newEngine")} aria-label={tr("hotkey.tab.newEngine")} onClick={() => void newEngine()}>＋AI</button>
         <button className="tab tab-new" title={tr("terminal.newShell")} aria-label={tr("hotkey.tab.newShell")} onClick={() => void newShell()}><PlusIcon size={14} /></button>
         <div className="tabsbar-spacer" />
