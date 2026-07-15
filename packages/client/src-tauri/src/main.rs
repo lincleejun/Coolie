@@ -4,6 +4,7 @@
 
 use serde::Serialize;
 use std::path::{Component, Path, PathBuf};
+use std::process::{Command, Stdio};
 use tauri::menu::{Menu, PredefinedMenuItem, Submenu};
 use tauri::Manager;
 
@@ -19,11 +20,9 @@ fn read_server_info() -> Option<String> {
     std::fs::read_to_string(coolie_home().join("server.json")).ok()
 }
 
-#[tauri::command]
-fn spawn_detached(program: String, args: Vec<String>) -> Result<(), String> {
-    use std::process::{Command, Stdio};
-    let mut cmd = Command::new(&program);
-    cmd.args(&args)
+fn spawn_detached(program: &str, args: &[String]) -> Result<(), String> {
+    let mut cmd = Command::new(program);
+    cmd.args(args)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null());
@@ -35,6 +34,152 @@ fn spawn_detached(program: String, args: Vec<String>) -> Result<(), String> {
     cmd.spawn()
         .map(|_| ())
         .map_err(|e| format!("spawn {program} failed: {e}"))
+}
+
+fn server_argv() -> (String, Vec<String>) {
+    let repo_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../..");
+    (
+        repo_root
+            .join("node_modules/.bin/tsx")
+            .to_string_lossy()
+            .into_owned(),
+        vec![
+            repo_root
+                .join("packages/server/src/main.ts")
+                .to_string_lossy()
+                .into_owned(),
+            "start".to_string(),
+        ],
+    )
+}
+
+#[tauri::command]
+fn spawn_server() -> Result<(), String> {
+    let (program, args) = server_argv();
+    spawn_detached(&program, &args)
+}
+
+#[derive(Debug, serde::Deserialize, PartialEq)]
+#[serde(rename_all = "lowercase")]
+enum ExternalTerminal {
+    Iterm2,
+    Terminal,
+    Custom,
+}
+
+const CUSTOM_TERMINAL_PROGRAMS: &[&str] = &[
+    "/usr/bin/open",
+    "/Applications/WezTerm.app/Contents/MacOS/wezterm",
+    "/Applications/Alacritty.app/Contents/MacOS/alacritty",
+    "/Applications/kitty.app/Contents/MacOS/kitty",
+];
+
+fn tmux_attach_command(tmux_socket: &str, workspace_id: &str) -> Result<String, String> {
+    let safe = |value: &str| {
+        !value.is_empty()
+            && value
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
+    };
+    if !safe(tmux_socket) || !safe(workspace_id) {
+        return Err(
+            "tmux socket and workspace id may only contain letters, digits, dot, underscore, and hyphen"
+                .to_string(),
+        );
+    }
+    Ok(format!(
+        "tmux -L {tmux_socket} attach -t coolie-{workspace_id}"
+    ))
+}
+
+fn custom_terminal_argv(template: &str, command: &str) -> Result<(String, Vec<String>), String> {
+    let argv = serde_json::from_str::<Vec<String>>(template)
+        .map_err(|error| format!("custom terminal must be a JSON argv array: {error}"))?;
+    let (program, args) = argv
+        .split_first()
+        .ok_or_else(|| "custom terminal argv must not be empty".to_string())?;
+    if !CUSTOM_TERMINAL_PROGRAMS.contains(&program.as_str()) {
+        return Err(format!(
+            "custom terminal executable is not allowed: {program}"
+        ));
+    }
+    if argv.iter().any(|part| part.contains('\0')) {
+        return Err("custom terminal argv must not contain NUL".to_string());
+    }
+    if !args.iter().any(|part| part.contains("{cmd}")) {
+        return Err("custom terminal argv must contain {cmd}".to_string());
+    }
+    if program == "/usr/bin/open" {
+        let allowed_apps = [
+            "WezTerm",
+            "iTerm",
+            "iTerm2",
+            "Terminal",
+            "Alacritty",
+            "kitty",
+        ];
+        if args.len() < 3 || args[0] != "-na" || !allowed_apps.contains(&args[1].as_str()) {
+            return Err(
+                "custom /usr/bin/open command must use -na with an allowed terminal app"
+                    .to_string(),
+            );
+        }
+    }
+    Ok((
+        program.clone(),
+        args.iter()
+            .map(|part| part.replace("{cmd}", command))
+            .collect(),
+    ))
+}
+
+fn external_terminal_argv(
+    terminal: ExternalTerminal,
+    tmux_socket: &str,
+    workspace_id: &str,
+    custom_template: Option<&str>,
+) -> Result<(String, Vec<String>), String> {
+    let command = tmux_attach_command(tmux_socket, workspace_id)?;
+    match terminal {
+        ExternalTerminal::Iterm2 => Ok((
+            "/usr/bin/osascript".to_string(),
+            vec![
+                "-e".to_string(),
+                format!(
+                    "tell application \"iTerm2\"\n  activate\n  set w to (create window with default profile)\n  tell current session of w to write text \"{command}\"\nend tell"
+                ),
+            ],
+        )),
+        ExternalTerminal::Terminal => Ok((
+            "/usr/bin/osascript".to_string(),
+            vec![
+                "-e".to_string(),
+                format!(
+                    "tell application \"Terminal\"\n  activate\n  do script \"{command}\"\nend tell"
+                ),
+            ],
+        )),
+        ExternalTerminal::Custom => custom_terminal_argv(
+            custom_template.ok_or_else(|| "custom terminal argv is required".to_string())?,
+            &command,
+        ),
+    }
+}
+
+#[tauri::command]
+fn open_external_terminal(
+    terminal: ExternalTerminal,
+    tmux_socket: String,
+    workspace_id: String,
+    custom_template: Option<String>,
+) -> Result<(), String> {
+    let (program, args) = external_terminal_argv(
+        terminal,
+        &tmux_socket,
+        &workspace_id,
+        custom_template.as_deref(),
+    )?;
+    spawn_detached(&program, &args)
 }
 
 #[tauri::command]
@@ -163,7 +308,6 @@ fn editor_argv(
 
 #[tauri::command]
 fn open_in_editor(workspace_path: String, relative_path: String) -> Result<(), EditorOpenError> {
-    use std::process::{Command, Stdio};
     let target = resolve_editor_target(&workspace_path, &relative_path)?;
     let configured = std::env::var("COOLIE_EDITOR_JSON").ok();
     let (program, args) = editor_argv(configured.as_deref(), &target)?;
@@ -184,7 +328,10 @@ fn open_in_editor(workspace_path: String, relative_path: String) -> Result<(), E
 
 #[cfg(test)]
 mod tests {
-    use super::{editor_argv, resolve_editor_target};
+    use super::{
+        custom_terminal_argv, editor_argv, external_terminal_argv, resolve_editor_target,
+        server_argv, ExternalTerminal,
+    };
     use std::fs;
 
     #[test]
@@ -196,6 +343,61 @@ mod tests {
         assert_eq!(
             args,
             vec!["--reuse-window", "--goto", "/tmp/a file;touch nope"]
+        );
+    }
+
+    #[test]
+    fn server_command_is_fixed_and_argv_only() {
+        let (program, args) = server_argv();
+        assert!(program.ends_with("/node_modules/.bin/tsx"));
+        assert!(args[0].ends_with("/packages/server/src/main.ts"));
+        assert_eq!(args[1], "start");
+    }
+
+    #[test]
+    fn allows_builtin_and_allowlisted_custom_terminals() {
+        let (program, args) =
+            external_terminal_argv(ExternalTerminal::Iterm2, "coolie", "w1", None).unwrap();
+        assert_eq!(program, "/usr/bin/osascript");
+        assert_eq!(args[0], "-e");
+        assert!(args[1].contains("tmux -L coolie attach -t coolie-w1"));
+
+        let (program, args) = custom_terminal_argv(
+            r#"["/usr/bin/open","-na","WezTerm","--args","sh","-lc","{cmd}"]"#,
+            "tmux -L coolie attach -t coolie-w1",
+        )
+        .unwrap();
+        assert_eq!(program, "/usr/bin/open");
+        assert_eq!(
+            args,
+            vec![
+                "-na",
+                "WezTerm",
+                "--args",
+                "sh",
+                "-lc",
+                "tmux -L coolie attach -t coolie-w1"
+            ]
+        );
+    }
+
+    #[test]
+    fn denies_arbitrary_executables_and_untrusted_terminal_arguments() {
+        assert!(
+            custom_terminal_argv(r#"["/bin/sh","-c","{cmd}"]"#, "tmux attach")
+                .unwrap_err()
+                .contains("not allowed")
+        );
+        assert!(custom_terminal_argv(
+            r#"["/usr/bin/open","-na","Calculator","{cmd}"]"#,
+            "tmux attach"
+        )
+        .unwrap_err()
+        .contains("allowed terminal app"));
+        assert!(
+            external_terminal_argv(ExternalTerminal::Terminal, "coolie;touch-pwn", "w1", None)
+                .unwrap_err()
+                .contains("may only contain")
         );
     }
 
@@ -236,7 +438,8 @@ fn main() {
         .plugin(tauri_plugin_dialog::init())
         .invoke_handler(tauri::generate_handler![
             read_server_info,
-            spawn_detached,
+            spawn_server,
+            open_external_terminal,
             binary_on_path,
             open_in_editor
         ])

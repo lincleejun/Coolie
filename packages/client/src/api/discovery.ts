@@ -122,8 +122,7 @@ export const spawnDaemon = async (): Promise<void> => {
   if (!capabilities.daemonDiscovery || __COOLIE_SERVER_CMD__ === "")
     throw new Error("Web 模式禁止启动 daemon")
   const { invoke } = await import("@tauri-apps/api/core")
-  const [program, ...args] = __COOLIE_SERVER_CMD__.split(" ")
-  await invoke("spawn_detached", { program, args })
+  await invoke("spawn_server")
 }
 
 export const ensureServer = async (): Promise<ServerInfo> => {

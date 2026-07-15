@@ -5,7 +5,7 @@ import { useUi } from "../stores/ui"
 import { useTerminal } from "../stores/terminal"
 import { pushHotkeyLayer } from "../hotkeys/dispatch"
 import { TerminalView } from "./Terminal"
-import { buildAttachCommand, buildTerminalLaunch, type TerminalId } from "./terminals"
+import { buildAttachCommand, type TerminalId } from "./terminals"
 import { capabilities } from "../platform"
 import { CloseIcon, PlusIcon } from "../chrome/icons"
 import { Dropdown } from "../chrome/Dropdown"
@@ -20,9 +20,13 @@ export const openInTerminal = async (
   customTemplate?: string,
 ): Promise<void> => {
   if (!capabilities.externalTerminal) throw new Error(translate("terminal.webExternalUnavailable"))
-  const { program, args } = buildTerminalLaunch(id, tmuxSocket, wsId, customTemplate)
   const { invoke } = await import("@tauri-apps/api/core")
-  await invoke("spawn_detached", { program, args })
+  await invoke("open_external_terminal", {
+    terminal: id,
+    tmuxSocket,
+    workspaceId: wsId,
+    customTemplate: id === "custom" ? customTemplate : undefined,
+  })
 }
 
 // engineLabel 由调用方按 tab.engineId 从 /config 解析（绝不硬编码 vendor 名——否则 codex 会误显示为 claude）。
