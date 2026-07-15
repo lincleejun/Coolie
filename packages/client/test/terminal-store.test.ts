@@ -9,7 +9,6 @@ import {
 beforeEach(() => {
   useTerminal.setState({
     terminalApp: "iterm2",
-    customTemplate: "",
     externalByWs: {},
   })
   setExternalModeDisposer(() => {})
@@ -18,8 +17,8 @@ beforeEach(() => {
 describe("terminal persisted state validation", () => {
   it("coerces dirty terminal ids to the safe default", () => {
     expect(coerceTerminalId("terminal")).toBe("terminal")
-    expect(coerceTerminalId("custom")).toBe("custom")
-    expect(coerceTerminalId("wezterm")).toBe("iterm2")
+    expect(coerceTerminalId("wezterm")).toBe("wezterm")
+    expect(coerceTerminalId("custom")).toBe("iterm2")
     expect(coerceTerminalId(null)).toBe("iterm2")
   })
 

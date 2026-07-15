@@ -17,15 +17,13 @@ export const openInTerminal = async (
   tmuxSocket: string,
   wsId: string,
   id: TerminalId,
-  customTemplate?: string,
 ): Promise<void> => {
   if (!capabilities.externalTerminal) throw new Error(translate("terminal.webExternalUnavailable"))
+  const attachCommand = buildAttachCommand(tmuxSocket, wsId)
   const { invoke } = await import("@tauri-apps/api/core")
   await invoke("open_external_terminal", {
     terminal: id,
-    tmuxSocket,
-    workspaceId: wsId,
-    customTemplate: id === "custom" ? customTemplate : undefined,
+    attachCommand,
   })
 }
 
@@ -52,12 +50,13 @@ export const CenterArea = ({ wsId }: { wsId: string }) => {
   const centerDiff = useUi((s) => s.centerDiff)
   const activeDiff = centerDiff?.wsId === wsId ? centerDiff : null
   const terminalApp = useTerminal((s) => s.terminalApp)
-  const customTemplate = useTerminal((s) => s.customTemplate)
   const external = useTerminal((s) => capabilities.externalTerminal && s.externalByWs[wsId] === true)
-  const terminalLabel = terminalApp === "iterm2" ? "iTerm2" : terminalApp === "terminal" ? "Terminal.app" : tr("terminal.custom")
+  const terminalLabel = terminalApp === "iterm2"
+    ? "iTerm2"
+    : terminalApp === "terminal" ? "Terminal.app" : "WezTerm"
   const openExternal = (): void => {
     if (!config) return
-    void openInTerminal(config.tmuxSocket, wsId, terminalApp, customTemplate)
+    void openInTerminal(config.tmuxSocket, wsId, terminalApp)
       .catch(report)
   }
 
@@ -176,7 +175,7 @@ export const CenterArea = ({ wsId }: { wsId: string }) => {
               options={[
                 { value: "iterm2", label: "iTerm2" },
                 { value: "terminal", label: "Terminal.app" },
-                { value: "custom", label: tr("terminal.customArgv") },
+                { value: "wezterm", label: "WezTerm" },
               ]}
             />
             <button
@@ -196,17 +195,6 @@ export const CenterArea = ({ wsId }: { wsId: string }) => {
         <CenterDiff wsId={wsId} section={activeDiff.section} path={activeDiff.path} />
       ) : (
         <>
-          {capabilities.externalTerminal && terminalApp === "custom" && (
-            <label className="term-custom-editor">
-              <span>{tr("terminal.customTemplate")}</span>
-              <input
-                value={customTemplate}
-                placeholder={'["/usr/bin/open","-na","WezTerm","--args","sh","-lc","{cmd}"]'}
-                onChange={(event) => useTerminal.getState().setCustomTemplate(event.target.value)}
-                spellCheck={false}
-              />
-            </label>
-          )}
           {external ? (
             <div className="term-external">
               <p className="dim">{tr("terminal.externalActive")}</p>

@@ -64,89 +64,56 @@ fn spawn_server() -> Result<(), String> {
 enum ExternalTerminal {
     Iterm2,
     Terminal,
-    Custom,
+    Wezterm,
 }
 
-const CUSTOM_TERMINAL_PROGRAMS: &[&str] = &[
-    "/usr/bin/open",
-    "/Applications/WezTerm.app/Contents/MacOS/wezterm",
-    "/Applications/Alacritty.app/Contents/MacOS/alacritty",
-    "/Applications/kitty.app/Contents/MacOS/kitty",
-];
+#[derive(Debug, PartialEq)]
+struct TmuxAttach {
+    socket: String,
+    session: String,
+}
 
-fn tmux_attach_command(tmux_socket: &str, workspace_id: &str) -> Result<String, String> {
+fn parse_tmux_attach(command: &str) -> Result<TmuxAttach, String> {
+    let parts = command.split(' ').collect::<Vec<_>>();
     let safe = |value: &str| {
         !value.is_empty()
             && value
                 .bytes()
                 .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
     };
-    if !safe(tmux_socket) || !safe(workspace_id) {
+    if parts.len() != 6
+        || parts[0] != "tmux"
+        || parts[1] != "-L"
+        || parts[3] != "attach"
+        || parts[4] != "-t"
+        || !safe(parts[2])
+        || !safe(parts[5])
+        || !parts[5].starts_with("coolie-")
+        || parts[5] == "coolie-"
+    {
         return Err(
-            "tmux socket and workspace id may only contain letters, digits, dot, underscore, and hyphen"
+            "external terminal command must be exactly: tmux -L <socket> attach -t coolie-<workspace>"
                 .to_string(),
         );
     }
-    Ok(format!(
-        "tmux -L {tmux_socket} attach -t coolie-{workspace_id}"
-    ))
-}
-
-fn custom_terminal_argv(template: &str, command: &str) -> Result<(String, Vec<String>), String> {
-    let argv = serde_json::from_str::<Vec<String>>(template)
-        .map_err(|error| format!("custom terminal must be a JSON argv array: {error}"))?;
-    let (program, args) = argv
-        .split_first()
-        .ok_or_else(|| "custom terminal argv must not be empty".to_string())?;
-    if !CUSTOM_TERMINAL_PROGRAMS.contains(&program.as_str()) {
-        return Err(format!(
-            "custom terminal executable is not allowed: {program}"
-        ));
-    }
-    if argv.iter().any(|part| part.contains('\0')) {
-        return Err("custom terminal argv must not contain NUL".to_string());
-    }
-    if !args.iter().any(|part| part.contains("{cmd}")) {
-        return Err("custom terminal argv must contain {cmd}".to_string());
-    }
-    if program == "/usr/bin/open" {
-        let allowed_apps = [
-            "WezTerm",
-            "iTerm",
-            "iTerm2",
-            "Terminal",
-            "Alacritty",
-            "kitty",
-        ];
-        if args.len() < 3 || args[0] != "-na" || !allowed_apps.contains(&args[1].as_str()) {
-            return Err(
-                "custom /usr/bin/open command must use -na with an allowed terminal app"
-                    .to_string(),
-            );
-        }
-    }
-    Ok((
-        program.clone(),
-        args.iter()
-            .map(|part| part.replace("{cmd}", command))
-            .collect(),
-    ))
+    Ok(TmuxAttach {
+        socket: parts[2].to_string(),
+        session: parts[5].to_string(),
+    })
 }
 
 fn external_terminal_argv(
     terminal: ExternalTerminal,
-    tmux_socket: &str,
-    workspace_id: &str,
-    custom_template: Option<&str>,
+    attach_command: &str,
 ) -> Result<(String, Vec<String>), String> {
-    let command = tmux_attach_command(tmux_socket, workspace_id)?;
+    let attach = parse_tmux_attach(attach_command)?;
     match terminal {
         ExternalTerminal::Iterm2 => Ok((
             "/usr/bin/osascript".to_string(),
             vec![
                 "-e".to_string(),
                 format!(
-                    "tell application \"iTerm2\"\n  activate\n  set w to (create window with default profile)\n  tell current session of w to write text \"{command}\"\nend tell"
+                    "tell application \"iTerm2\"\n  activate\n  set w to (create window with default profile)\n  tell current session of w to write text \"{attach_command}\"\nend tell"
                 ),
             ],
         )),
@@ -155,30 +122,32 @@ fn external_terminal_argv(
             vec![
                 "-e".to_string(),
                 format!(
-                    "tell application \"Terminal\"\n  activate\n  do script \"{command}\"\nend tell"
+                    "tell application \"Terminal\"\n  activate\n  do script \"{attach_command}\"\nend tell"
                 ),
             ],
         )),
-        ExternalTerminal::Custom => custom_terminal_argv(
-            custom_template.ok_or_else(|| "custom terminal argv is required".to_string())?,
-            &command,
-        ),
+        ExternalTerminal::Wezterm => Ok((
+            "/Applications/WezTerm.app/Contents/MacOS/wezterm".to_string(),
+            vec![
+                "start".to_string(),
+                "--".to_string(),
+                "tmux".to_string(),
+                "-L".to_string(),
+                attach.socket,
+                "attach".to_string(),
+                "-t".to_string(),
+                attach.session,
+            ],
+        )),
     }
 }
 
 #[tauri::command]
 fn open_external_terminal(
     terminal: ExternalTerminal,
-    tmux_socket: String,
-    workspace_id: String,
-    custom_template: Option<String>,
+    attach_command: String,
 ) -> Result<(), String> {
-    let (program, args) = external_terminal_argv(
-        terminal,
-        &tmux_socket,
-        &workspace_id,
-        custom_template.as_deref(),
-    )?;
+    let (program, args) = external_terminal_argv(terminal, &attach_command)?;
     spawn_detached(&program, &args)
 }
 
@@ -326,112 +295,6 @@ fn open_in_editor(workspace_path: String, relative_path: String) -> Result<(), E
         })
 }
 
-#[cfg(test)]
-mod tests {
-    use super::{
-        custom_terminal_argv, editor_argv, external_terminal_argv, resolve_editor_target,
-        server_argv, ExternalTerminal,
-    };
-    use std::fs;
-
-    #[test]
-    fn editor_config_remains_structured_argv() {
-        let target = std::path::Path::new("/tmp/a file;touch nope");
-        let (program, args) =
-            editor_argv(Some(r#"["code","--reuse-window","--goto"]"#), target).unwrap();
-        assert_eq!(program, "code");
-        assert_eq!(
-            args,
-            vec!["--reuse-window", "--goto", "/tmp/a file;touch nope"]
-        );
-    }
-
-    #[test]
-    fn server_command_is_fixed_and_argv_only() {
-        let (program, args) = server_argv();
-        assert!(program.ends_with("/node_modules/.bin/tsx"));
-        assert!(args[0].ends_with("/packages/server/src/main.ts"));
-        assert_eq!(args[1], "start");
-    }
-
-    #[test]
-    fn allows_builtin_and_allowlisted_custom_terminals() {
-        let (program, args) =
-            external_terminal_argv(ExternalTerminal::Iterm2, "coolie", "w1", None).unwrap();
-        assert_eq!(program, "/usr/bin/osascript");
-        assert_eq!(args[0], "-e");
-        assert!(args[1].contains("tmux -L coolie attach -t coolie-w1"));
-
-        let (program, args) = custom_terminal_argv(
-            r#"["/usr/bin/open","-na","WezTerm","--args","sh","-lc","{cmd}"]"#,
-            "tmux -L coolie attach -t coolie-w1",
-        )
-        .unwrap();
-        assert_eq!(program, "/usr/bin/open");
-        assert_eq!(
-            args,
-            vec![
-                "-na",
-                "WezTerm",
-                "--args",
-                "sh",
-                "-lc",
-                "tmux -L coolie attach -t coolie-w1"
-            ]
-        );
-    }
-
-    #[test]
-    fn denies_arbitrary_executables_and_untrusted_terminal_arguments() {
-        assert!(
-            custom_terminal_argv(r#"["/bin/sh","-c","{cmd}"]"#, "tmux attach")
-                .unwrap_err()
-                .contains("not allowed")
-        );
-        assert!(custom_terminal_argv(
-            r#"["/usr/bin/open","-na","Calculator","{cmd}"]"#,
-            "tmux attach"
-        )
-        .unwrap_err()
-        .contains("allowed terminal app"));
-        assert!(
-            external_terminal_argv(ExternalTerminal::Terminal, "coolie;touch-pwn", "w1", None)
-                .unwrap_err()
-                .contains("may only contain")
-        );
-    }
-
-    #[test]
-    fn rejects_traversal_and_symlink_escape() {
-        let base = std::env::temp_dir().join(format!(
-            "coolie-editor-test-{}-{}",
-            std::process::id(),
-            std::thread::current().name().unwrap_or("unnamed")
-        ));
-        let workspace = base.join("workspace");
-        let outside = base.join("outside.txt");
-        fs::create_dir_all(&workspace).unwrap();
-        fs::write(&outside, "outside").unwrap();
-        assert_eq!(
-            resolve_editor_target(workspace.to_str().unwrap(), "../outside.txt")
-                .unwrap_err()
-                .code,
-            "invalid_relative_path"
-        );
-        #[cfg(unix)]
-        {
-            std::os::unix::fs::symlink(&outside, workspace.join("link")).unwrap();
-            assert_eq!(
-                resolve_editor_target(workspace.to_str().unwrap(), "link")
-                    .unwrap_err()
-                    .code,
-                "path_outside_workspace"
-            );
-        }
-        fs::remove_dir_all(&base).unwrap();
-    }
-}
-
 fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_deep_link::init())
@@ -480,4 +343,131 @@ fn main() {
         })
         .run(tauri::generate_context!())
         .expect("error while running coolie client");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        editor_argv, external_terminal_argv, parse_tmux_attach, resolve_editor_target, server_argv,
+        ExternalTerminal,
+    };
+    use std::fs;
+
+    #[test]
+    fn editor_config_remains_structured_argv() {
+        let target = std::path::Path::new("/tmp/a file;touch nope");
+        let (program, args) =
+            editor_argv(Some(r#"["code","--reuse-window","--goto"]"#), target).unwrap();
+        assert_eq!(program, "code");
+        assert_eq!(
+            args,
+            vec!["--reuse-window", "--goto", "/tmp/a file;touch nope"]
+        );
+    }
+
+    #[test]
+    fn server_command_is_fixed_and_argv_only() {
+        let (program, args) = server_argv();
+        assert!(program.ends_with("/node_modules/.bin/tsx"));
+        assert!(args[0].ends_with("/packages/server/src/main.ts"));
+        assert_eq!(args[1], "start");
+    }
+
+    #[test]
+    fn allows_only_fixed_iterm_terminal_and_wezterm_adapters() {
+        let attach = "tmux -L coolie attach -t coolie-w1";
+        let (program, args) = external_terminal_argv(ExternalTerminal::Iterm2, attach).unwrap();
+        assert_eq!(program, "/usr/bin/osascript");
+        assert_eq!(args[0], "-e");
+        assert!(args[1].contains(attach));
+
+        let (program, args) = external_terminal_argv(ExternalTerminal::Terminal, attach).unwrap();
+        assert_eq!(program, "/usr/bin/osascript");
+        assert_eq!(args[0], "-e");
+        assert!(args[1].contains(attach));
+
+        let (program, args) = external_terminal_argv(ExternalTerminal::Wezterm, attach).unwrap();
+        assert_eq!(program, "/Applications/WezTerm.app/Contents/MacOS/wezterm");
+        assert_eq!(
+            args,
+            vec![
+                "start",
+                "--",
+                "tmux",
+                "-L",
+                "coolie",
+                "attach",
+                "-t",
+                "coolie-w1"
+            ]
+        );
+    }
+
+    #[test]
+    fn denies_shell_wrappers_placeholders_and_extra_flags_for_every_adapter() {
+        let attacks = [
+            "tmux -L coolie attach -t coolie-w1 -- /bin/sh -lc touch-pwn",
+            "tmux -L {cmd} attach -t coolie-w1",
+            "tmux -L coolie attach -t coolie-{cmd}",
+            "tmux -L coolie -f /tmp/evil attach -t coolie-w1",
+            "tmux -L coolie attach -t coolie-w1 --",
+        ];
+        for attack in attacks {
+            for terminal in [
+                ExternalTerminal::Iterm2,
+                ExternalTerminal::Terminal,
+                ExternalTerminal::Wezterm,
+            ] {
+                assert!(
+                    external_terminal_argv(terminal, attack).is_err(),
+                    "{attack}"
+                );
+            }
+        }
+        assert!(parse_tmux_attach("tmux -L coolie attach -t other-w1").is_err());
+    }
+
+    #[test]
+    fn rejects_custom_and_executable_path_terminal_ids_including_symlinks() {
+        assert!(serde_json::from_str::<ExternalTerminal>(r#""custom""#).is_err());
+        let base =
+            std::env::temp_dir().join(format!("coolie-terminal-id-test-{}", std::process::id()));
+        fs::create_dir_all(&base).unwrap();
+        let symlink = base.join("wezterm");
+        #[cfg(unix)]
+        std::os::unix::fs::symlink("/bin/sh", &symlink).unwrap();
+        let encoded = serde_json::to_string(symlink.to_str().unwrap()).unwrap();
+        assert!(serde_json::from_str::<ExternalTerminal>(&encoded).is_err());
+        fs::remove_dir_all(&base).unwrap();
+    }
+
+    #[test]
+    fn rejects_traversal_and_symlink_escape() {
+        let base = std::env::temp_dir().join(format!(
+            "coolie-editor-test-{}-{}",
+            std::process::id(),
+            std::thread::current().name().unwrap_or("unnamed")
+        ));
+        let workspace = base.join("workspace");
+        let outside = base.join("outside.txt");
+        fs::create_dir_all(&workspace).unwrap();
+        fs::write(&outside, "outside").unwrap();
+        assert_eq!(
+            resolve_editor_target(workspace.to_str().unwrap(), "../outside.txt")
+                .unwrap_err()
+                .code,
+            "invalid_relative_path"
+        );
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(&outside, workspace.join("link")).unwrap();
+            assert_eq!(
+                resolve_editor_target(workspace.to_str().unwrap(), "link")
+                    .unwrap_err()
+                    .code,
+                "path_outside_workspace"
+            );
+        }
+        fs::remove_dir_all(&base).unwrap();
+    }
 }
