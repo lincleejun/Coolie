@@ -13,6 +13,7 @@ import { TabsRepoLive } from "../src/repo/tabs.js"
 import { GitService } from "../src/git/service.js"
 import { SetupRunner, SetupScriptError, type SetupRunnerShape } from "../src/workspace/setup.js"
 import { WorkspaceLifecycleLive, PostCreateHooks } from "../src/workspace/lifecycle.js"
+import { SessionEnsurer } from "../src/workspace/heal.js"
 import { createApp, newToken } from "../src/http/app.js"
 import { makeFakeGit } from "./helpers/fake-git.js"
 
@@ -50,6 +51,17 @@ beforeEach(async () => {
     Layer.provideMerge(Layer.mergeAll(
       Layer.succeed(GitService, fake.git),
       Layer.succeed(SetupRunner, setup),
+      Layer.succeed(SessionEnsurer, {
+        ensure: (id: string) => Effect.succeed({
+          action: "none" as const, resumed: false, sessionName: `coolie-${id}`, tabId: null, sessionId: null,
+        }),
+        recoverArchive: (id: string) => Effect.succeed({
+          action: "recreated" as const, resumed: false, sessionName: `coolie-${id}`, tabId: null, sessionId: null,
+        }),
+        resumeTab: null as any,
+        createEngineTab: null as any,
+        switchEngine: null as any,
+      }),
       Layer.succeed(PostCreateHooks, [
         (ws, ctx) => Effect.gen(function* () {
           seenCreateCtx.push({ ...ctx })
@@ -421,6 +433,30 @@ describe("workspace HTTP API", () => {
     expect(events.map((event: any) => event.type)).toEqual(expect.arrayContaining([
       "workspace.renamed", "workspace.task-status.changed", "workspace.branch.renamed",
     ]))
+  })
+  it("blocks destructive workspace mutations while archiving", async () => {
+    const pid = await addProject()
+    const workspace = await (await createWs(pid, { name: "archive-guard" })).json()
+    db.prepare("UPDATE workspaces SET status = 'archiving' WHERE id = ?").run(workspace.id)
+    const responses = await Promise.all([
+      req(`/workspaces/${workspace.id}/rename`, {
+        method: "POST", body: JSON.stringify({ name: "mutated" }),
+      }),
+      req(`/workspaces/${workspace.id}/task-status`, {
+        method: "POST", body: JSON.stringify({ status: "done" }),
+      }),
+      req(`/workspaces/${workspace.id}/branch`, {
+        method: "POST", body: JSON.stringify({ branch: "feature/mutated" }),
+      }),
+      req(`/workspaces/${workspace.id}/ensure`, { method: "POST", body: "{}" }),
+      req(`/workspaces/${workspace.id}`, { method: "DELETE" }),
+    ])
+    expect(responses.map((response) => response.status)).toEqual([409, 409, 409, 409, 409])
+    expect(db.prepare("SELECT name, branch, task_status AS taskStatus, status FROM workspaces WHERE id = ?")
+      .get(workspace.id)).toEqual({
+        name: "archive-guard", branch: workspace.branch, taskStatus: "in_progress", status: "archiving",
+      })
+    expect(fake.state.worktrees.has(workspace.path)).toBe(true)
   })
   it("never archives or deletes the project main task", async () => {
     const pid = await addProject()

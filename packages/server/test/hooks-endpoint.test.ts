@@ -149,6 +149,16 @@ describe("POST /hooks/claude endpoint", () => {
     expect(await r.json()).toEqual({ ok: true })
   })
 
+  it("archiving 时静默忽略迟到 hook，不改 session/status 元数据", async () => {
+    db.prepare("UPDATE workspaces SET status = 'archiving' WHERE id = 'w1'").run()
+    const response = await post("?workspace=w1", {
+      hook_event_name: "Stop", session_id: "late-session",
+    })
+    expect(response.status).toBe(200)
+    expect(tabRow().engine_session_id).toBe(SESSION_ID)
+    expect(tabRow().status).toBe("idle")
+  })
+
   it("no token → 401", async () => {
     const r = await fetch(`${base}/hooks/claude?workspace=w1`, { method: "POST", body: "{}" })
     expect(r.status).toBe(401)

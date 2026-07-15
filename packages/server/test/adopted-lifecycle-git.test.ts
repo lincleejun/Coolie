@@ -55,6 +55,12 @@ describe("adopted lifecycle with real git", () => {
               ensureRuns++
               return { action: "recreated" as const, resumed: false, sessionName: `coolie-${id}`, tabId: null, sessionId: null }
             }),
+          recoverArchive: (id: string) => failEnsure
+            ? Effect.fail(new TmuxError({ op: "ensure", message: "ensure failed", exitCode: 1, stderr: "" }))
+            : Effect.sync(() => {
+              ensureRuns++
+              return { action: "recreated" as const, resumed: false, sessionName: `coolie-${id}`, tabId: null, sessionId: null }
+            }),
           resumeTab: null as any,
         }),
         PostCreateHooksEmpty,

@@ -1,6 +1,6 @@
 import { Schema } from "effect"
 
-export const WorkspaceStatus = Schema.Literal("creating", "active", "archived", "error")
+export const WorkspaceStatus = Schema.Literal("creating", "active", "archiving", "archived", "error")
 export type WorkspaceStatus = typeof WorkspaceStatus.Type
 export const WorkspaceOwnership = Schema.Literal("managed", "adopted")
 export type WorkspaceOwnership = typeof WorkspaceOwnership.Type

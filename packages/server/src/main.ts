@@ -24,6 +24,7 @@ import { makeTmuxLayout } from "./tmux/layout.js"
 import { EngineRegistry, EngineRegistryLive, engineHome } from "./engine/registry.js"
 import { CustomEngineStoreLive } from "./engine/custom-store.js"
 import { EngineBootstrapHookLive } from "./engine/bootstrap.js"
+import { SessionReadiness, makeSessionReadiness } from "./engine/readiness.js"
 import { SessionEnsurerLive } from "./workspace/heal.js"
 import { WorkspaceAdopterLive } from "./workspace/adopt.js"
 import { FinishOpsLive, WorkspaceFinisherLive } from "./workspace/finish.js"
@@ -71,8 +72,12 @@ const cmdStart = async (): Promise<void> => {
   if (existing) fs.rmSync(cfg.serverInfoPath, { force: true }) // 陈旧文件
 
   const scope = Effect.runSync(Scope.make())
+  const sessionReadiness = makeSessionReadiness()
   const appLayer = Layer.mergeAll(WorkspaceLifecycleLive, WorkspaceAdopterLive, WorkspaceFinisherLive, WorkspaceCheckpointsLive).pipe(
-    Layer.provideMerge(Layer.mergeAll(EngineBootstrapHookLive, SessionEnsurerLive)),
+    Layer.provideMerge(Layer.mergeAll(
+      EngineBootstrapHookLive.pipe(Layer.provide(Layer.succeed(SessionReadiness, sessionReadiness))),
+      SessionEnsurerLive,
+    )),
     Layer.provideMerge(Layer.mergeAll(
       GitServiceLive,
       FinishOpsLive,
@@ -89,6 +94,13 @@ const cmdStart = async (): Promise<void> => {
   const bus = Context.get(runtimeCtx, EventsBus)
   const runtime = <A, E>(eff: Effect.Effect<A, E, AppServices>) =>
     Effect.runPromiseExit(Effect.provide(eff, runtimeCtx) as Effect.Effect<A, E, never>)
+
+  // A crash can leave a durable archiving row after input freeze or session teardown.
+  // Reconcile before accepting traffic: clean/removed managed worktrees finish archiving;
+  // dirty worktrees compensate to active and heal their runtime.
+  await runtime(Effect.gen(function* () {
+    yield* (yield* WorkspaceLifecycle).reconcileArchives()
+  }))
 
   const token = newToken()
   // hook 转发脚本：每次启动按引擎重写（home/版本变更自动生效）；bootstrap 建 workspace 时也会各自重写
@@ -269,6 +281,7 @@ const cmdStart = async (): Promise<void> => {
         Effect.runPromise(tmuxLayout.setZen(workspaceId, zen, focusedTabId)),
     },
     workspaceSerial,
+    sessionReadiness,
     collector,
     cloneRepo,
     onShutdown: () => void shutdown(),
@@ -279,25 +292,26 @@ const cmdStart = async (): Promise<void> => {
   // WS 终端通道（挂 TCP server；GUI/浏览器从 TCP 连）
   attachTerminalWs(server, {
     token, tmuxSocket: cfg.tmuxSocket, clients,
-    resolveSession: async (wsId, window) => {
-      const exit = await runtime(Effect.gen(function* () {
-        const workspaces = yield* WorkspacesRepo
-        let ws = yield* workspaces.get(wsId)
-        if (!ws.materialized) {
-          yield* (yield* WorkspaceLifecycle).ensure(wsId)
-          ws = yield* workspaces.get(wsId)
-        }
-        if (ws.status !== "active" && ws.status !== "creating") return null
-        if (ws.status === "active") yield* (yield* WorkspaceLifecycle).ensure(wsId)
-        const registered = (yield* (yield* TabsRepo).listByWorkspace(wsId))
-          .some((tab) => tab.tmuxWindow === window)
-        return registered ? tmuxSessionName(ws.id) : null
-      }))
-      return Exit.match(exit, {
-        onSuccess: (session) => session,
-        onFailure: () => null,
-      })
-    },
+    resolveSession: async (wsId, window) =>
+      workspaceSerial.run(wsId, async () => {
+        const exit = await runtime(Effect.gen(function* () {
+          const workspaces = yield* WorkspacesRepo
+          let ws = yield* workspaces.get(wsId)
+          if (!ws.materialized) {
+            yield* (yield* WorkspaceLifecycle).ensure(wsId)
+            ws = yield* workspaces.get(wsId)
+          }
+          if (ws.status !== "active" && ws.status !== "creating") return null
+          if (ws.status === "active") yield* (yield* WorkspaceLifecycle).ensure(wsId)
+          const registered = (yield* (yield* TabsRepo).listByWorkspace(wsId))
+            .some((tab) => tab.tmuxWindow === window)
+          return registered ? tmuxSessionName(ws.id) : null
+        }))
+        return Exit.match(exit, {
+          onSuccess: (session) => session,
+          onFailure: () => null,
+        })
+      }),
     log: (m) => logger.warn(m),
   })
 

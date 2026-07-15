@@ -83,13 +83,15 @@ describe("WorkspacesRepo", () => {
     }))
     expect(failTag(exit)).toBe("ConflictError")
   })
-  it("status machine: creating→active→archived→active; illegal moves rejected", async () => {
+  it("status machine: creating→active→archiving→archived→active; illegal moves rejected", async () => {
     const { run } = make()
     const exit = await run(Effect.gen(function* () {
       const repo = yield* WorkspacesRepo
       const ws = yield* repo.insertCreating(w1)
       const a = yield* repo.setStatus(ws.id, "active")
       expect(a.status).toBe("active")
+      const freezing = yield* repo.setStatus(ws.id, "archiving")
+      expect(freezing.status).toBe("archiving")
       const ar = yield* repo.setStatus(ws.id, "archived")
       expect(ar.status).toBe("archived")
       expect(ar.archivedAt).toBeTypeOf("number")
@@ -118,6 +120,35 @@ describe("WorkspacesRepo", () => {
     }))
     expect(Exit.isSuccess(exit)).toBe(true)
     if (Exit.isSuccess(exit)) expect(exit.value).toBe("creating")
+  })
+  it("persists archive force/error intent and commits terminal states atomically", async () => {
+    const { run } = make()
+    const exit = await run(Effect.gen(function* () {
+      const repo = yield* WorkspacesRepo
+      const ws = yield* repo.insertCreating(w1)
+      yield* repo.setStatus(ws.id, "active")
+      const begun = yield* repo.beginArchive(ws.id, false)
+      expect(begun.workspace.status).toBe("archiving")
+      expect(begun.operation.force).toBe(false)
+      const upgraded = yield* repo.beginArchive(ws.id, true)
+      expect(upgraded.operation.force).toBe(true)
+      yield* repo.setArchiveError(ws.id, { tag: "GitError", stage: "worktree-remove", message: "boom" })
+      expect(yield* repo.getArchiveOperation(ws.id)).toMatchObject({
+        force: true, lastError: { tag: "GitError", stage: "worktree-remove", message: "boom" },
+      })
+      expect((yield* repo.beginArchive(ws.id, false)).operation).toMatchObject({
+        force: true, lastError: { tag: "GitError", stage: "worktree-remove", message: "boom" },
+      })
+      const active = yield* repo.cancelArchive(ws.id)
+      expect(active.status).toBe("active")
+      yield* repo.beginArchive(ws.id, true)
+      return yield* repo.completeArchive(ws.id)
+    }))
+    expect(Exit.isSuccess(exit)).toBe(true)
+    if (Exit.isSuccess(exit)) {
+      expect(exit.value.status).toBe("archived")
+      expect(exit.value.taskStatus).toBe("done")
+    }
   })
   it("list filters by project; usedPortBases spans all rows; remove deletes", async () => {
     const { db, run } = make()
@@ -175,6 +206,7 @@ describe("WorkspacesRepo", () => {
       const pinned = yield* repo.setPinned(ws.id, true)
       const same = yield* repo.setPinned(ws.id, true)
       yield* repo.setStatus(ws.id, "active")
+      yield* repo.setStatus(ws.id, "archiving")
       yield* repo.setStatus(ws.id, "archived")
       const unpinned = yield* repo.setPinned(ws.id, false)
       return { pinned, same, unpinned, persisted: yield* repo.get(ws.id) }
@@ -211,6 +243,7 @@ describe("WorkspacesRepo", () => {
         ...w1, name: "usa-acadia", path: "/tmp/ws/usa-acadia", branch: "coolie/last",
       })
       yield* repo.setStatus(archived.id, "active")
+      yield* repo.setStatus(archived.id, "archiving")
       yield* repo.setStatus(archived.id, "archived")
       db.prepare(`INSERT INTO workspaces
         (id, project_id, name, path, branch, base_branch, base_ref, status, pinned, created_at, archived_at, data,

@@ -11,6 +11,7 @@ import { WorkspacesRepo, WorkspacesRepoLive } from "../src/repo/workspaces.js"
 import { GitServiceLive } from "../src/git/service.js"
 import { SetupRunnerLive } from "../src/workspace/setup.js"
 import { WorkspaceLifecycle, WorkspaceLifecycleLive, PostCreateHooksEmpty } from "../src/workspace/lifecycle.js"
+import { SessionEnsurer } from "../src/workspace/heal.js"
 
 type AnyServices = WorkspaceLifecycle | WorkspacesRepo | ProjectsRepo | EventsRepo
 
@@ -23,7 +24,20 @@ let projectId: string
 let ws1: any, ws2: any
 
 const buildLayer = () => WorkspaceLifecycleLive.pipe(
-  Layer.provideMerge(Layer.mergeAll(GitServiceLive, SetupRunnerLive, PostCreateHooksEmpty)),
+  Layer.provideMerge(Layer.mergeAll(
+    GitServiceLive,
+    SetupRunnerLive,
+    Layer.succeed(SessionEnsurer, {
+      ensure: (id: string) => Effect.succeed({
+        action: "none" as const, resumed: false, sessionName: `coolie-${id}`, tabId: null, sessionId: null,
+      }),
+      recoverArchive: (id: string) => Effect.succeed({
+        action: "none" as const, resumed: false, sessionName: `coolie-${id}`, tabId: null, sessionId: null,
+      }),
+      resumeTab: null as any, createEngineTab: null as any, switchEngine: null as any,
+    }),
+    PostCreateHooksEmpty,
+  )),
   Layer.provideMerge(Layer.mergeAll(ProjectsRepoLive, EventsRepoLive, WorkspacesRepoLive)),
   Layer.provideMerge(DbLive),
   Layer.provideMerge(CoolieConfigLive),
