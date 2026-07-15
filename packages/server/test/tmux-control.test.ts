@@ -93,7 +93,7 @@ done
     // read, no clock race needed) so any finite value triggers the timeout deterministically. Kept at a
     // generous 1000ms so the *second/third* commands (real bash-script cold-start latency under load)
     // have ample headroom to resolve normally without tripping their own timeout.
-    const ctl2 = makeControlClient(`fake-${path.basename(stubDir)}`, { timeoutMs: 1000 })
+    const ctl2 = makeControlClient(`fake-${path.basename(stubDir)}`, { timeoutMs: 3000 })
     // Spawn (synchronously, inside ctl2.exec) with PATH shimmed so "tmux" resolves to our stub; restore
     // PATH immediately after the synchronous portion of exec() runs (spawn's env is captured at call
     // time) so the mutation window never spans an `await` — safe even if other test files share this
