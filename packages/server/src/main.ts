@@ -24,6 +24,7 @@ import { makeTmuxLayout } from "./tmux/layout.js"
 import { EngineRegistry, EngineRegistryLive, engineHome } from "./engine/registry.js"
 import { CustomEngineStoreLive } from "./engine/custom-store.js"
 import { EngineBootstrapHookLive } from "./engine/bootstrap.js"
+import { SessionReadiness, makeSessionReadiness } from "./engine/readiness.js"
 import { SessionEnsurerLive } from "./workspace/heal.js"
 import { WorkspaceAdopterLive } from "./workspace/adopt.js"
 import { FinishOpsLive, WorkspaceFinisherLive } from "./workspace/finish.js"
@@ -71,8 +72,12 @@ const cmdStart = async (): Promise<void> => {
   if (existing) fs.rmSync(cfg.serverInfoPath, { force: true }) // 陈旧文件
 
   const scope = Effect.runSync(Scope.make())
+  const sessionReadiness = makeSessionReadiness()
   const appLayer = Layer.mergeAll(WorkspaceLifecycleLive, WorkspaceAdopterLive, WorkspaceFinisherLive, WorkspaceCheckpointsLive).pipe(
-    Layer.provideMerge(Layer.mergeAll(EngineBootstrapHookLive, SessionEnsurerLive)),
+    Layer.provideMerge(Layer.mergeAll(
+      EngineBootstrapHookLive.pipe(Layer.provide(Layer.succeed(SessionReadiness, sessionReadiness))),
+      SessionEnsurerLive,
+    )),
     Layer.provideMerge(Layer.mergeAll(
       GitServiceLive,
       FinishOpsLive,
@@ -276,6 +281,7 @@ const cmdStart = async (): Promise<void> => {
         Effect.runPromise(tmuxLayout.setZen(workspaceId, zen, focusedTabId)),
     },
     workspaceSerial,
+    sessionReadiness,
     collector,
     cloneRepo,
     onShutdown: () => void shutdown(),

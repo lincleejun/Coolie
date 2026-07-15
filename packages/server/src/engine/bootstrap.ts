@@ -18,6 +18,7 @@ import { engineHome } from "./registry.js"
 import { scanNewestRollout, startRolloutBackfillWatcher, realRolloutFs } from "./codex/rollout.js"
 import { EventsBus, EVENT_CHANNEL } from "../events/bus.js"
 import { tmuxSessionName, type CoolieEvent } from "@coolie/protocol"
+import { SessionReadiness, type SessionReadinessGate } from "./readiness.js"
 
 /** 命名唯一真源在 protocol（tmuxSessionName）；此别名只为 server 侧调用点可读性。 */
 export const sessionNameFor = tmuxSessionName
@@ -55,12 +56,16 @@ export const EngineBootstrapHookLive = Layer.effect(
     // EventsBus 可选依赖（同 EventsRepoLive 的既有模式）：生产 main.ts 已提供；
     // 假 engine/裸测试没提供时 gateOnHooks 直接判 false，走强化 waitStable 兜底，行为不变。
     const bus = yield* Effect.serviceOption(EventsBus)
+    const readiness = yield* Effect.serviceOption(SessionReadiness)
 
     const hook: PostCreateHook = (ws, ctx) => {
       // 提前声明，好让 Effect.ensuring 在任何退出路径（成功/失败/中断）都能拆掉监听器——
       // 避免长跑 server 上每次 create 泄漏一个 EventsBus 监听器。
       let onEvent: ((e: CoolieEvent) => void) | undefined
+      let readinessGate: SessionReadinessGate | undefined
       const detachListener = Effect.sync(() => {
+        readinessGate?.close()
+        readinessGate = undefined
         if (onEvent !== undefined && Option.isSome(bus)) bus.value.off(EVENT_CHANNEL, onEvent)
         onEvent = undefined
       })
@@ -109,7 +114,7 @@ export const EngineBootstrapHookLive = Layer.effect(
         // Codex SessionStart is structurally tied to its first turn, so server-generated-id engines
         // cannot use it as a pre-prompt readiness gate. Their first prompt keeps the stable-pane path.
         const gateOnHooks = wantsPrompt && engine.capabilities.hooks && !hooksDisabled()
-          && Option.isSome(bus) && engine.serverGeneratedId !== true
+          && (Option.isSome(readiness) || Option.isSome(bus)) && engine.serverGeneratedId !== true
         // codex 无-hooks 通路（RE-SMOKE 反转）：投递**不**等 rollout（TUI 懒落盘 = 门控死锁），照常走强化
         // waitStable；id 回填交给投递外的后台 watcher（下方布防）。codex hooks lane 不布 watcher，
         // 仍走 waitStable 投首条 prompt，首 turn 的 hook 再经 /hooks/codex 回填 id。
@@ -118,7 +123,9 @@ export const EngineBootstrapHookLive = Layer.effect(
         // 必须在起 tmux session 之前订阅：claude 冷启动可能在几百 ms 内就打 SessionStart，
         // 若等到 deliverPrompt 前一刻才订阅，订阅本身的延迟就可能错过这条事件。
         let ready: Deferred.Deferred<void> | undefined
-        if (gateOnHooks && Option.isSome(bus)) {
+        if (gateOnHooks && Option.isSome(readiness)) {
+          readinessGate = readiness.value.arm(ws.id)
+        } else if (gateOnHooks && Option.isSome(bus)) {
           ready = yield* Deferred.make<void>()
           const d = ready
           onEvent = (e) => {
@@ -194,9 +201,10 @@ export const EngineBootstrapHookLive = Layer.effect(
 
         if (wantsPrompt) {
           let engineReady = false
-          if (ready) {
+          const readyEffect = readinessGate?.wait ?? ready
+          if (readyEffect) {
             const timeoutMs = cfg.promptReadyTimeoutMs ?? DEFAULT_PROMPT_READY_TIMEOUT_MS
-            engineReady = yield* ready.pipe(
+            engineReady = yield* readyEffect.pipe(
               Effect.timeoutTo({ duration: timeoutMs, onTimeout: () => false, onSuccess: () => true }),
             )
             // gate 武装过（hooks 能力 + 有 prompt）却没等到 SessionStart 信号：即将降级走强化 waitStable

@@ -33,6 +33,7 @@ import { tokenEquals } from "./token.js"
 import { handleEventsStream } from "./sse.js"
 import type { WorkspaceLayoutState } from "../tmux/layout.js"
 import type { BackgroundCollector } from "../collector/background.js"
+import type { SessionReadinessShape } from "../engine/readiness.js"
 export { newToken } from "./token.js"
 
 // `runtime` runs an AppServices-dependent Effect to completion and hands
@@ -74,6 +75,8 @@ export interface AppDeps {
   }
   /** Serializes queue decisions and delivery for one workspace without blocking others. */
   readonly workspaceSerial?: WorkspaceSerial
+  /** Process-local SessionStart gate signaled before workspace serialization. */
+  readonly sessionReadiness?: SessionReadinessShape
   /** 图片附件根目录；生产为 COOLIE_HOME/attachments，测试可注入临时目录。 */
   readonly attachmentsDir?: string
   /** Background aggregate collector; omitted in narrow HTTP unit tests. */
@@ -294,7 +297,7 @@ export const deriveRepoName = (url: string): string | null => {
   return name === "" || name === "." || name === ".." ? null : name
 }
 
-export const createApp = ({ runtime, token, onShutdown, onError, bus, sseHeartbeatMs, claudeHome, codexHome, gitRead, config, clients, composerOps, layoutOps, workspaceSerial, cloneRepo, attachmentsDir, collector }: AppDeps) =>
+export const createApp = ({ runtime, token, onShutdown, onError, bus, sseHeartbeatMs, claudeHome, codexHome, gitRead, config, clients, composerOps, layoutOps, workspaceSerial, sessionReadiness, cloneRepo, attachmentsDir, collector }: AppDeps) =>
 
   (req: IncomingMessage, res: ServerResponse): void => {
     void (async () => {
@@ -391,6 +394,9 @@ export const createApp = ({ runtime, token, onShutdown, onError, bus, sseHeartbe
           const wsId = url.searchParams.get("workspace")
           if (!wsId) return err(res, 400, "Validation", "workspace query param required")
           const body = await readJson(req)
+          // Readiness is process-local and non-mutating. Signal before waiting on the
+          // workspace serial lane held by ensure/bootstrap; DB mutations remain guarded below.
+          if ((body as any)?.hook_event_name === "SessionStart") sessionReadiness?.signal(wsId)
           const handleHook = () => runRoute(
             res, runtime,
             Effect.gen(function* () {

@@ -136,6 +136,9 @@ describe("WorkspacesRepo", () => {
       expect(yield* repo.getArchiveOperation(ws.id)).toMatchObject({
         force: true, lastError: { tag: "GitError", stage: "worktree-remove", message: "boom" },
       })
+      expect((yield* repo.beginArchive(ws.id, false)).operation).toMatchObject({
+        force: true, lastError: { tag: "GitError", stage: "worktree-remove", message: "boom" },
+      })
       const active = yield* repo.cancelArchive(ws.id)
       expect(active.status).toBe("active")
       yield* repo.beginArchive(ws.id, true)

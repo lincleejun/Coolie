@@ -3,6 +3,8 @@ import { spawn, spawnSync, execFileSync, type ChildProcess } from "node:child_pr
 import * as http from "node:http"
 import * as fs from "node:fs"; import * as os from "node:os"; import * as path from "node:path"
 import { readServerInfo } from "../src/daemon/info.js"
+import Database from "better-sqlite3"
+import { runMigrations } from "../src/db/migrations.js"
 
 let child: ChildProcess | undefined
 let home: string
@@ -10,8 +12,8 @@ const MAIN = path.resolve(__dirname, "../src/main.ts")
 const TSX = path.resolve(__dirname, "../../../node_modules/.bin/tsx")
 const DAEMON_TMUX_SOCK = `coolie-test-${process.pid}-d`
 
-const startServer = async (extraEnv: Record<string, string> = {}) => {
-  home = fs.mkdtempSync(path.join(os.tmpdir(), "coolie-daemon-"))
+const startServer = async (extraEnv: Record<string, string> = {}, preparedHome?: string) => {
+  home = preparedHome ?? fs.mkdtempSync(path.join(os.tmpdir(), "coolie-daemon-"))
   // detached: true → child leads its own process group. tsx's CLI re-execs into a
   // grandchild node process, so killing only child.pid orphans the actual server;
   // cleanup must kill the whole group (see afterEach).
@@ -65,6 +67,67 @@ describe("daemon", () => {
       execFileSync(TSX, [MAIN, "start"], { env: { ...process.env, COOLIE_HOME: home }, stdio: "pipe" }),
     ).toThrow() // exit 1
   })
+  it("startup reloads force/error archive intent and reconciles it before health", async () => {
+    const preparedHome = fs.mkdtempSync(path.join(os.tmpdir(), "coolie-daemon-archive-"))
+    const repo = fs.mkdtempSync(path.join(os.tmpdir(), "coolie-daemon-archive-repo-"))
+    const workspacePath = path.join(
+      fs.realpathSync(path.dirname(repo)),
+      `archive-wt-${path.basename(preparedHome)}`,
+    )
+    execFileSync("git", ["init", "-b", "main"], { cwd: repo })
+    execFileSync("git", ["-c", "user.email=t@t", "-c", "user.name=t", "commit", "--allow-empty", "-m", "init"], { cwd: repo })
+    execFileSync("git", ["worktree", "add", "-b", "feature/archive-restart", workspacePath, "main"], { cwd: repo })
+    fs.writeFileSync(path.join(workspacePath, "dirty.txt"), "force must survive restart\n")
+    const dbPath = path.join(preparedHome, "coolie.db")
+    const seed = new Database(dbPath)
+    runMigrations(seed)
+    seed.prepare("INSERT INTO projects VALUES ('p-archive', 'archive', ?, 'main', 1)").run(repo)
+    const baseRef = execFileSync("git", ["rev-parse", "HEAD"], { cwd: repo, encoding: "utf8" }).trim()
+    seed.prepare(`INSERT INTO workspaces
+      (id, project_id, name, path, branch, base_branch, base_ref, status, pinned, created_at, archived_at, data,
+       task_status, kind, materialized, sort_order)
+      VALUES ('w-archive', 'p-archive', 'archive-restart', ?, 'feature/archive-restart', 'main', ?,
+        'archiving', 0, 10, NULL, ?, 'in_progress', 'task', 1, 10)`)
+      .run(workspacePath, baseRef, JSON.stringify({
+        ownership: "managed",
+        portBase: 42000,
+        archiveOperation: {
+          force: true,
+          startedAt: 111,
+          lastError: { tag: "GitError", stage: "worktree-remove", message: "prior failure", at: 222 },
+        },
+      }))
+    seed.close()
+
+    await startServer({
+      COOLIE_WORKSPACES_ROOT: path.join(preparedHome, "workspaces"),
+      COOLIE_CLAUDE_HOME: path.join(preparedHome, "claude"),
+      COOLIE_CODEX_HOME: path.join(preparedHome, "codex"),
+    }, preparedHome)
+
+    const observed = new Database(dbPath, { readonly: true })
+    try {
+      expect(observed.prepare("SELECT status, task_status AS taskStatus FROM workspaces WHERE id = 'w-archive'").get())
+        .toEqual({ status: "archived", taskStatus: "done" })
+      const data = JSON.parse((observed.prepare("SELECT data FROM workspaces WHERE id = 'w-archive'").get() as any).data)
+      expect(data.archiveOperation).toBeUndefined()
+      const event = observed.prepare(
+        "SELECT payload FROM events WHERE workspace_id = 'w-archive' AND type = 'workspace.archive.reconciling'",
+      ).get() as { payload: string }
+      expect(JSON.parse(event.payload)).toEqual({
+        id: "w-archive",
+        force: true,
+        startedAt: 111,
+        lastError: { tag: "GitError", stage: "worktree-remove", at: 222 },
+      })
+      expect(execFileSync("git", ["worktree", "list", "--porcelain"], { cwd: repo, encoding: "utf8" }))
+        .not.toContain(workspacePath)
+    } finally {
+      observed.close()
+      fs.rmSync(workspacePath, { recursive: true, force: true })
+      fs.rmSync(repo, { recursive: true, force: true })
+    }
+  }, 30_000)
 })
 
 const unixGet = (sockPath: string, p: string, token?: string): Promise<{ status: number; body: string }> =>

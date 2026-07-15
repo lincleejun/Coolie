@@ -22,6 +22,8 @@ import { makeTmuxService, TmuxService } from "../src/tmux/service.js"
 import { EventsBus } from "../src/events/bus.js"
 import { createApp, newToken } from "../src/http/app.js"
 import { codexDeriveTitle } from "../src/engine/codex/transcript.js"
+import { SessionReadiness, makeSessionReadiness, type SessionReadinessShape } from "../src/engine/readiness.js"
+import { createWorkspaceSerial } from "../src/engine/queue-drain.js"
 
 /**
  * Plan3 Task15：首条 prompt 投递按 SessionStart hook 就绪信号门控（回归修复）。
@@ -56,14 +58,16 @@ const gatedEngine = (discardSeconds: number): Engine => ({
   resumeArgs: (s) => ["--resume", s],
 })
 
-const buildLayer = (engine: Engine, promptReadyTimeoutMs: number) => {
+const buildLayer = (engine: Engine, promptReadyTimeoutMs: number, readiness?: SessionReadinessShape) => {
   const cfgLayer = Layer.succeed(CoolieConfig, {
     home, dbPath: ":memory:", serverInfoPath: path.join(home, "server.json"),
     workspacesRoot: wsRoot, tmuxSocket: SOCK, claudeHome: path.join(home, "claude-home"), codexHome: path.join(home, "codex-home"),
     promptReadyTimeoutMs,
   })
   return WorkspaceLifecycleLive.pipe(
-    Layer.provideMerge(EngineBootstrapHookLive),
+    Layer.provideMerge(readiness
+      ? EngineBootstrapHookLive.pipe(Layer.provide(Layer.succeed(SessionReadiness, readiness)))
+      : EngineBootstrapHookLive),
     Layer.provideMerge(Layer.mergeAll(
       GitServiceLive, SetupRunnerLive,
       Layer.succeed(TmuxService, tmux),
@@ -140,6 +144,85 @@ describe("bootstrap：首条 prompt 投递按 SessionStart hook 就绪信号门�
     // ≥2 次回显（tty echo + cat 自己的回显）= 真正被「app」收到，而不是丢进了过渡期读者
     expect(echoCount(text, "gate-me")).toBeGreaterThanOrEqual(2)
   })
+
+  it("production serial lane receives SessionStart readiness before guarded DB mutation", async () => {
+    const readiness = makeSessionReadiness()
+    const layer = buildLayer(gatedEngine(0), 90_000, readiness)
+    const runtime = (effect: any) =>
+      Effect.runPromiseExit(Effect.provide(effect, layer) as Effect.Effect<any, any, never>)
+    const intent = await Effect.runPromise(Effect.provide(Effect.gen(function* () {
+      const projects = yield* ProjectsRepo
+      const existing = yield* projects.list()
+      const project = existing[0] ?? (yield* projects.add(repoRoot))
+      return yield* (yield* WorkspaceLifecycle).createIntent({
+        projectId: project.id, name: "hook-http-serial", initialPrompt: "serial-ready",
+      })
+    }), layer) as Effect.Effect<any, any, never>)
+    const token = newToken()
+    const server = http.createServer(createApp({
+      runtime,
+      token,
+      onShutdown: () => {},
+      workspaceSerial: createWorkspaceSerial(),
+      sessionReadiness: readiness,
+      claudeHome: path.join(home, "claude-home"),
+    }))
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve))
+    const base = `http://127.0.0.1:${(server.address() as { port: number }).port}`
+    const headers = { Authorization: `Bearer ${token}`, "content-type": "application/json" }
+    try {
+      const startedAt = Date.now()
+      const ensureResponse = fetch(`${base}/workspaces/${intent.id}/ensure`, {
+        method: "POST", headers, body: "{}",
+      })
+      const tabId = await waitForValue(() =>
+        (db.prepare("SELECT id FROM tabs WHERE workspace_id = ?").get(intent.id) as any)?.id)
+      const hookResponse = fetch(`${base}/hooks/claude?workspace=${intent.id}&tabId=${tabId}`, {
+        method: "POST",
+        headers,
+        body: JSON.stringify({ hook_event_name: "SessionStart", session_id: "http-ready-session" }),
+      })
+      const [ensured, hooked] = await Promise.all([ensureResponse, hookResponse])
+      expect(ensured.status).toBe(200)
+      expect(hooked.status).toBe(200)
+      expect(Date.now() - startedAt).toBeLessThan(10_000)
+      const workspace = db.prepare("SELECT status FROM workspaces WHERE id = ?").get(intent.id)
+      expect(workspace).toEqual({ status: "active" })
+      const tab = db.prepare(
+        "SELECT engine_session_id AS sessionId FROM tabs WHERE id = ?",
+      ).get(tabId)
+      expect(tab).toEqual({ sessionId: "http-ready-session" })
+      const types = (db.prepare("SELECT type FROM events WHERE workspace_id = ? ORDER BY seq")
+        .all(intent.id) as Array<{ type: string }>).map((row) => row.type)
+      expect(types).toContain("engine.session.started")
+      expect(types).not.toContain("prompt.delivery.degraded")
+
+      db.prepare("UPDATE workspaces SET status = 'archiving' WHERE id = ?").run(intent.id)
+      db.prepare("UPDATE tabs SET status = 'working' WHERE id = ?").run(tabId)
+      const eventCount = (db.prepare(
+        "SELECT count(*) AS count FROM events WHERE workspace_id = ? AND type = 'engine.session.started'",
+      ).get(intent.id) as { count: number }).count
+      const lateGate = readiness.arm(intent.id)
+      const late = await fetch(`${base}/hooks/claude?workspace=${intent.id}&tabId=${tabId}`, {
+        method: "POST",
+        headers,
+        body: JSON.stringify({ hook_event_name: "SessionStart", session_id: "must-not-mutate" }),
+      })
+      await Effect.runPromise(lateGate.wait.pipe(Effect.timeout("1 second")))
+      lateGate.close()
+      expect(late.status).toBe(200)
+      expect(db.prepare("SELECT status FROM workspaces WHERE id = ?").get(intent.id))
+        .toEqual({ status: "archiving" })
+      expect(db.prepare("SELECT status, engine_session_id AS sessionId FROM tabs WHERE id = ?").get(tabId))
+        .toEqual({ status: "working", sessionId: "http-ready-session" })
+      expect((db.prepare(
+        "SELECT count(*) AS count FROM events WHERE workspace_id = ? AND type = 'engine.session.started'",
+      ).get(intent.id) as { count: number }).count).toBe(eventCount)
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()))
+      await Effect.runPromise(tmux.killSession(sessionNameFor(intent.id)).pipe(Effect.ignore))
+    }
+  }, 20_000)
 
   it("SessionStart 信号一直不来：就绪超时后降级走强化 waitStable 兜底，仍然投递成功", async () => {
     const engine = gatedEngine(0) // 无丢字窗口：一起来就 exec cat，只用于验证 timeout 兜底路径能投递成功

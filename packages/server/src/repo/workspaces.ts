@@ -185,7 +185,7 @@ export const WorkspacesRepoLive = Layer.effect(
         const operation: ArchiveOperation = {
           force: force || existing?.force === true,
           startedAt: existing?.startedAt ?? Date.now(),
-          lastError: null,
+          lastError: existing?.lastError ?? null,
         }
         data.archiveOperation = operation
         db.transaction(() => {

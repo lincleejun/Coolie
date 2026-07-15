@@ -535,7 +535,22 @@ export const WorkspaceLifecycleLive = Layer.effect(
     const reconcileArchives: WorkspaceLifecycleShape["reconcileArchives"] = () =>
       Effect.gen(function* () {
         const pending = (yield* repo.list({})).filter((ws) => ws.status === "archiving")
-        for (const ws of pending) yield* archive(ws.id).pipe(Effect.ignore)
+        for (const ws of pending) {
+          yield* Effect.gen(function* () {
+            const operation = yield* repo.getArchiveOperation(ws.id)
+            yield* emit(ws.id, "workspace.archive.reconciling", {
+              id: ws.id,
+              force: operation.force,
+              startedAt: operation.startedAt,
+              lastError: operation.lastError === null ? null : {
+                tag: operation.lastError.tag,
+                stage: operation.lastError.stage,
+                at: operation.lastError.at,
+              },
+            }).pipe(Effect.ignore)
+            yield* archive(ws.id)
+          }).pipe(Effect.ignore)
+        }
       })
 
     const unarchive: WorkspaceLifecycleShape["unarchive"] = (id) =>
