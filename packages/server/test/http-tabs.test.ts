@@ -60,6 +60,7 @@ beforeEach(async () => {
     TabsRepoLive,
     Layer.succeed(SessionEnsurer, {
       ensure: () => Effect.succeed({ action: "none", resumed: false, sessionName: session, tabId: null, sessionId: null }),
+      recoverArchive: () => Effect.succeed({ action: "none", resumed: false, sessionName: session, tabId: null, sessionId: null }),
       resumeTab: (workspaceId, tabId) => Effect.promise(() => resumeImpl(workspaceId, tabId)),
       createEngineTab: (workspaceId, engineId) => Effect.gen(function* () {
         const created = yield* (yield* TabsRepo)
@@ -194,5 +195,34 @@ describe("engine chat tab lifecycle", () => {
     expect((await fetch(`${base}/workspaces/${wsId}/tabs/${second.id}`, {
       method: "DELETE", headers: { Authorization: `Bearer ${token}` },
     })).status).toBe(204)
+  })
+})
+
+describe("archiving mutation guard", () => {
+  it("rejects resume/create/rename/delete before touching runtime or tab metadata", async () => {
+    db.prepare(`INSERT INTO tabs
+      (id, workspace_id, kind, engine_id, engine_session_id, tmux_window, title, status, data)
+      VALUES ('engine-tab', ?, 'engine', 'claude', 'session', 0, NULL, 'idle', '{}')`).run(wsId)
+    db.prepare(`INSERT INTO tabs
+      (id, workspace_id, kind, engine_id, engine_session_id, tmux_window, title, status, data)
+      VALUES ('shell-guard', ?, 'shell', NULL, NULL, 2, 'keep', 'idle', '{}')`).run(wsId)
+    db.prepare("UPDATE workspaces SET status = 'archiving' WHERE id = ?").run(wsId)
+    const headers = { Authorization: `Bearer ${token}`, "content-type": "application/json" }
+    const responses = await Promise.all([
+      resumeTab(wsId),
+      createShellTab(),
+      createEngineTab(),
+      fetch(`${base}/workspaces/${wsId}/tabs/engine-tab/rename`, {
+        method: "POST", headers, body: JSON.stringify({ title: "mutated" }),
+      }),
+      fetch(`${base}/workspaces/${wsId}/tabs/shell-guard`, { method: "DELETE", headers }),
+      fetch(`${base}/workspaces/${wsId}/engine`, {
+        method: "POST", headers, body: JSON.stringify({ engineId: "claude", tabId: "engine-tab" }),
+      }),
+    ])
+    expect(responses.map((response) => response.status)).toEqual([409, 409, 409, 409, 409, 409])
+    expect(killed).toEqual([])
+    expect(db.prepare("SELECT title FROM tabs WHERE id = 'engine-tab'").get()).toEqual({ title: null })
+    expect(db.prepare("SELECT id FROM tabs WHERE id = 'shell-guard'").get()).toEqual({ id: "shell-guard" })
   })
 })

@@ -11,6 +11,7 @@ import { EngineRegistryLive } from "../src/engine/registry.js"
 import { createApp, newToken } from "../src/http/app.js"
 import { EventsRepoLive } from "../src/repo/events.js"
 import { TabsRepoLive } from "../src/repo/tabs.js"
+import { WorkspacesRepoLive } from "../src/repo/workspaces.js"
 
 describe("POST /notify/:engine", () => {
   let server: http.Server
@@ -36,7 +37,7 @@ describe("POST /notify/:engine", () => {
       (id, workspace_id, kind, engine_id, engine_session_id, tmux_window, title, status, data)
       VALUES ('t1', 'w1', 'engine', 'codex', 's1', 0, NULL, 'working', '{}')`).run()
 
-    const layer = Layer.mergeAll(TabsRepoLive, EventsRepoLive, EngineRegistryLive)
+    const layer = Layer.mergeAll(TabsRepoLive, EventsRepoLive, WorkspacesRepoLive, EngineRegistryLive)
       .pipe(Layer.provide(Layer.succeed(Db, db)))
     token = newToken()
     server = http.createServer(createApp({
@@ -106,5 +107,15 @@ describe("POST /notify/:engine", () => {
     const unknown = await post("/notify/missing?workspace=w1", { type: "agent-turn-complete" })
     expect(unknown.status).toBe(200)
     expect(await unknown.json()).toEqual({ ok: true })
+  })
+
+  it("archiving 时静默忽略迟到 notify，不改恢复元数据", async () => {
+    db.prepare("UPDATE workspaces SET status = 'archiving' WHERE id = 'w1'").run()
+    const response = await post("/notify/codex?workspace=w1", {
+      type: "agent-turn-complete", "thread-id": "late-session",
+    })
+    expect(response.status).toBe(200)
+    expect(db.prepare("SELECT status, engine_session_id AS sessionId FROM tabs WHERE id = 't1'").get())
+      .toEqual({ status: "working", sessionId: "s1" })
   })
 })

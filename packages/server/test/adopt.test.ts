@@ -38,6 +38,9 @@ describe("WorkspaceAdopter", () => {
             ensured = id
             return { action: "recreated" as const, resumed: false, sessionName: `coolie-${id}`, tabId: null, sessionId: null }
           }),
+          recoverArchive: (id: string) => Effect.sync(() => ({
+            action: "recreated" as const, resumed: false, sessionName: `coolie-${id}`, tabId: null, sessionId: null,
+          })),
           resumeTab: null as any,
         }),
       )),
@@ -83,6 +86,7 @@ describe("WorkspaceAdopter", () => {
         GitServiceLive,
         Layer.succeed(SessionEnsurer, {
           ensure: () => Effect.fail(new ConflictError({ message: "runtime ensure failed" })),
+          recoverArchive: () => Effect.fail(new ConflictError({ message: "runtime ensure failed" })),
           resumeTab: null as any,
         }),
       )),

@@ -363,9 +363,11 @@ export const createApp = ({ runtime, token, onShutdown, onError, bus, sseHeartbe
           if (!wsId) return err(res, 400, "Validation", "workspace query param required")
           const body = await readJson(req)
           if (!Number.isInteger(body.exitCode)) return err(res, 400, "Validation", "exitCode must be an integer")
-          return await runRoute(
+          const handleEngineExit = () => runRoute(
             res, runtime,
             Effect.gen(function* () {
+              const workspace = yield* (yield* WorkspacesRepo).get(wsId).pipe(Effect.option)
+              if (Option.isNone(workspace) || workspace.value.status !== "active") return { ok: true }
               const tabs = yield* TabsRepo
               const tab = yield* resolveEngineTabContext(tabs, wsId, null, {
                 tabId: url.searchParams.get("tabId") ?? (typeof body.tabId === "string" ? body.tabId : null),
@@ -380,6 +382,7 @@ export const createApp = ({ runtime, token, onShutdown, onError, bus, sseHeartbe
             (r) => send(res, 200, r),
             onError,
           )
+          return await (workspaceSerial ? workspaceSerial.run(wsId, handleEngineExit) : handleEngineExit())
         }
         // 注意：/hooks/engine-exit 的检查必须在本段之前（engine-exit 也匹配 [^/]+）
         const hookRoute = url.pathname.match(/^\/hooks\/([^/]+)$/)
@@ -388,9 +391,11 @@ export const createApp = ({ runtime, token, onShutdown, onError, bus, sseHeartbe
           const wsId = url.searchParams.get("workspace")
           if (!wsId) return err(res, 400, "Validation", "workspace query param required")
           const body = await readJson(req)
-          return await runRoute(
+          const handleHook = () => runRoute(
             res, runtime,
             Effect.gen(function* () {
+              const workspace = yield* (yield* WorkspacesRepo).get(wsId).pipe(Effect.option)
+              if (Option.isNone(workspace) || workspace.value.status !== "active") return { ok: true }
               const tabs = yield* TabsRepo
               const registry = yield* EngineRegistry
               const engine = registry.get(engineId)
@@ -450,6 +455,7 @@ export const createApp = ({ runtime, token, onShutdown, onError, bus, sseHeartbe
             (r) => send(res, 200, r),
             onError,
           )
+          return await (workspaceSerial ? workspaceSerial.run(wsId, handleHook) : handleHook())
         }
         const notifyRoute = url.pathname.match(/^\/notify\/([^/]+)$/)
         if (req.method === "POST" && notifyRoute) {
@@ -459,9 +465,11 @@ export const createApp = ({ runtime, token, onShutdown, onError, bus, sseHeartbe
           const body = await readJson(req)
           // Codex may add other notify events over time; this endpoint is only a turn-complete edge.
           if ((body as any)?.type !== "agent-turn-complete") return send(res, 200, { ok: true })
-          return await runRoute(
+          const handleNotify = () => runRoute(
             res, runtime,
             Effect.gen(function* () {
+              const workspace = yield* (yield* WorkspacesRepo).get(wsId).pipe(Effect.option)
+              if (Option.isNone(workspace) || workspace.value.status !== "active") return { ok: true }
               const registry = yield* EngineRegistry
               const engine = registry.get(engineId)
               const tabs = yield* TabsRepo
@@ -491,6 +499,7 @@ export const createApp = ({ runtime, token, onShutdown, onError, bus, sseHeartbe
             (result) => send(res, 200, result),
             onError,
           )
+          return await (workspaceSerial ? workspaceSerial.run(wsId, handleNotify) : handleNotify())
         }
         const tabsList = url.pathname.match(/^\/workspaces\/([^/]+)\/tabs$/)
         if (req.method === "GET" && tabsList) {
@@ -734,18 +743,23 @@ export const createApp = ({ runtime, token, onShutdown, onError, bus, sseHeartbe
             return err(res, 400, "Validation", "status must be backlog|in_progress|in_review|done|canceled|error")
           if (action === "branch" && typeof body.branch !== "string")
             return err(res, 400, "Validation", "branch required")
-          return await runRoute(
+          const workspaceId = wsMetadata[1]!
+          const handleMetadata = () => runRoute(
             res, runtime,
             Effect.gen(function* () {
+              const workspace = yield* (yield* WorkspacesRepo).get(workspaceId)
+              if (workspace.status === "archiving")
+                return yield* new ConflictError({ message: "workspace 正在归档，不能修改 metadata" })
               const lifecycle = yield* WorkspaceLifecycle
-              if (action === "rename") return yield* lifecycle.rename(wsMetadata[1]!, body.name)
+              if (action === "rename") return yield* lifecycle.rename(workspaceId, body.name)
               if (action === "task-status")
-                return yield* lifecycle.setTaskStatus(wsMetadata[1]!, body.status as TaskStatus)
-              return yield* lifecycle.renameBranch(wsMetadata[1]!, body.branch)
+                return yield* lifecycle.setTaskStatus(workspaceId, body.status as TaskStatus)
+              return yield* lifecycle.renameBranch(workspaceId, body.branch)
             }),
             (workspace) => send(res, 200, workspace),
             onError,
           )
+          return await (workspaceSerial ? workspaceSerial.run(workspaceId, handleMetadata) : handleMetadata())
         }
         const wsPin = url.pathname.match(/^\/workspaces\/([^/]+)\/pin$/)
         if (req.method === "POST" && wsPin) {
@@ -786,18 +800,20 @@ export const createApp = ({ runtime, token, onShutdown, onError, bus, sseHeartbe
           )
           // Archive shares the input/queue serial lane: already-started delivery completes first,
           // then status=archiving freezes every later delivery before runtime teardown.
-          return await (action === "archive" && workspaceSerial
+          return await (workspaceSerial
             ? workspaceSerial.run(id, handleAction)
             : handleAction())
         }
         const wsEnsure = url.pathname.match(/^\/workspaces\/([^/]+)\/ensure$/)
         if (req.method === "POST" && wsEnsure) {
-          return await runRoute(
+          const workspaceId = wsEnsure[1]!
+          const handleEnsure = () => runRoute(
             res, runtime,
-            Effect.gen(function* () { return yield* (yield* WorkspaceLifecycle).ensure(wsEnsure[1]!) }),
+            Effect.gen(function* () { return yield* (yield* WorkspaceLifecycle).ensure(workspaceId) }),
             (out) => send(res, 200, out),
             onError,
           )
+          return await (workspaceSerial ? workspaceSerial.run(workspaceId, handleEnsure) : handleEnsure())
         }
         const wsFinish = url.pathname.match(/^\/workspaces\/([^/]+)\/finish$/)
         if (req.method === "POST" && wsFinish) {
@@ -810,12 +826,19 @@ export const createApp = ({ runtime, token, onShutdown, onError, bus, sseHeartbe
             return err(res, 400, "Validation", "title must be string")
           if (body.body !== undefined && typeof body.body !== "string")
             return err(res, 400, "Validation", "body must be string")
-          return await runRoute(
+          const workspaceId = wsFinish[1]!
+          const handleFinish = () => runRoute(
             res, runtime,
-            Effect.gen(function* () { return yield* (yield* WorkspaceFinisher).finish(wsFinish[1]!, body) }),
+            Effect.gen(function* () {
+              const workspace = yield* (yield* WorkspacesRepo).get(workspaceId)
+              if (workspace.status !== "active")
+                return yield* new ConflictError({ message: `workspace 非 active（当前 ${workspace.status}）` })
+              return yield* (yield* WorkspaceFinisher).finish(workspaceId, body)
+            }),
             (outcome) => send(res, 200, outcome),
             onError,
           )
+          return await (workspaceSerial ? workspaceSerial.run(workspaceId, handleFinish) : handleFinish())
         }
         const checkpointCollection = url.pathname.match(/^\/workspaces\/([^/]+)\/checkpoints$/)
         if (checkpointCollection && (req.method === "GET" || req.method === "POST")) {
@@ -836,7 +859,7 @@ export const createApp = ({ runtime, token, onShutdown, onError, bus, sseHeartbe
             return err(res, 400, "Validation", `label 最长 ${MAX_CHECKPOINT_LABEL_LENGTH} 字符`)
           if (typeof body.label === "string" && /[\x00-\x1f\x7f]/.test(body.label))
             return err(res, 400, "Validation", "label 不能包含控制字符")
-          return await runRoute(
+          const handleCheckpointCreate = () => runRoute(
             res, runtime,
             Effect.gen(function* () {
               return yield* (yield* WorkspaceCheckpoints).create(
@@ -847,23 +870,35 @@ export const createApp = ({ runtime, token, onShutdown, onError, bus, sseHeartbe
             (item) => send(res, 201, item),
             onError,
           )
+          return await (workspaceSerial
+            ? workspaceSerial.run(workspaceId, handleCheckpointCreate)
+            : handleCheckpointCreate())
         }
         const checkpointItem = url.pathname.match(/^\/workspaces\/([^/]+)\/checkpoints\/([^/]+)$/)
         if (req.method === "DELETE" && checkpointItem) {
-          return await runRoute(
+          const workspaceId = checkpointItem[1]!
+          const handleCheckpointDelete = () => runRoute(
             res, runtime,
             Effect.gen(function* () {
-              yield* (yield* WorkspaceCheckpoints).delete(checkpointItem[1]!, checkpointItem[2]!)
+              yield* (yield* WorkspaceCheckpoints).delete(workspaceId, checkpointItem[2]!)
             }),
             () => send(res, 204),
             onError,
           )
+          return await (workspaceSerial
+            ? workspaceSerial.run(workspaceId, handleCheckpointDelete)
+            : handleCheckpointDelete())
         }
         const tabResume = url.pathname.match(/^\/workspaces\/([^/]+)\/tabs\/([^/]+)\/resume$/)
         if (req.method === "POST" && tabResume) {
           const handleResume = () => runRoute(
             res, runtime,
-            Effect.gen(function* () { return yield* (yield* SessionEnsurer).resumeTab(tabResume[1]!, tabResume[2]!) }),
+            Effect.gen(function* () {
+              const workspace = yield* (yield* WorkspacesRepo).get(tabResume[1]!)
+              if (workspace.status !== "active")
+                return yield* new ConflictError({ message: `workspace 非 active（当前 ${workspace.status}）` })
+              return yield* (yield* SessionEnsurer).resumeTab(tabResume[1]!, tabResume[2]!)
+            }),
             (out) => send(res, 200, out),
             onError,
           )
@@ -876,18 +911,23 @@ export const createApp = ({ runtime, token, onShutdown, onError, bus, sseHeartbe
           const body = await readJson(req)
           if (typeof body.title !== "string" || body.title.trim() === "")
             return err(res, 400, "Validation", "title 必须是非空 string")
-          return await runRoute(
+          const workspaceId = tabRename[1]!
+          const handleTabRename = () => runRoute(
             res, runtime,
             Effect.gen(function* () {
+              const workspace = yield* (yield* WorkspacesRepo).get(workspaceId)
+              if (workspace.status !== "active")
+                return yield* new ConflictError({ message: `workspace 非 active（当前 ${workspace.status}）` })
               const tabs = yield* TabsRepo
               const tab = yield* tabs.get(tabRename[2]!)
-              if (tab.workspaceId !== tabRename[1]!) return yield* new NotFoundError({ message: "tab 不属于该 workspace" })
+              if (tab.workspaceId !== workspaceId) return yield* new NotFoundError({ message: "tab 不属于该 workspace" })
               yield* tabs.setTitle(tab.id, body.title.trim())
               return yield* tabs.get(tab.id)
             }),
             (tab) => send(res, 200, tab),
             onError,
           )
+          return await (workspaceSerial ? workspaceSerial.run(workspaceId, handleTabRename) : handleTabRename())
         }
         const zenRoute = url.pathname.match(/^\/workspaces\/([^/]+)\/zen$/)
         if (req.method === "POST" && zenRoute) {
@@ -897,10 +937,11 @@ export const createApp = ({ runtime, token, onShutdown, onError, bus, sseHeartbe
             return err(res, 400, "Validation", "zen 必须是 boolean")
           if (body.tabId !== undefined && typeof body.tabId !== "string")
             return err(res, 400, "Validation", "tabId 必须是 string")
-          return await runRoute(
+          const workspaceId = zenRoute[1]!
+          const handleZen = () => runRoute(
             res, runtime,
             Effect.gen(function* () {
-              const ws = yield* (yield* WorkspacesRepo).get(zenRoute[1]!)
+              const ws = yield* (yield* WorkspacesRepo).get(workspaceId)
               if (ws.status !== "active")
                 return yield* new ConflictError({ message: `workspace 非 active（当前 ${ws.status}）` })
               if (typeof body.tabId === "string") {
@@ -923,17 +964,22 @@ export const createApp = ({ runtime, token, onShutdown, onError, bus, sseHeartbe
             },
             onError,
           )
+          return await (workspaceSerial ? workspaceSerial.run(workspaceId, handleZen) : handleZen())
         }
         const wsDel = url.pathname.match(/^\/workspaces\/([^/]+)$/)
         if (req.method === "DELETE" && wsDel) {
-          return await runRoute(
+          const workspaceId = wsDel[1]!
+          const handleWorkspaceDelete = () => runRoute(
             res, runtime,
             Effect.gen(function* () {
-              yield* (yield* WorkspaceLifecycle).delete(wsDel[1]!, { force: url.searchParams.get("force") === "1" })
+              yield* (yield* WorkspaceLifecycle).delete(workspaceId, { force: url.searchParams.get("force") === "1" })
             }),
             () => send(res, 204),
             onError,
           )
+          return await (workspaceSerial
+            ? workspaceSerial.run(workspaceId, handleWorkspaceDelete)
+            : handleWorkspaceDelete())
         }
         const attachmentRoute = url.pathname.match(/^\/workspaces\/([^/]+)\/attachments$/)
         const stagingAttachmentRoute = url.pathname === "/attachments"
@@ -1052,6 +1098,9 @@ export const createApp = ({ runtime, token, onShutdown, onError, bus, sseHeartbe
           const action = () => runRoute(
             res, runtime,
             Effect.gen(function* () {
+              const workspace = yield* (yield* WorkspacesRepo).get(switchRoute[1]!)
+              if (workspace.status !== "active")
+                return yield* new ConflictError({ message: `workspace 非 active（当前 ${workspace.status}）` })
               const tabs = yield* TabsRepo
               const selected = typeof body.tabId === "string"
                 ? yield* tabs.get(body.tabId)
@@ -1169,6 +1218,9 @@ export const createApp = ({ runtime, token, onShutdown, onError, bus, sseHeartbe
             const action = () => runRoute(
               res, runtime,
               Effect.gen(function* () {
+                const workspace = yield* (yield* WorkspacesRepo).get(tabsCreate[1]!)
+                if (workspace.status !== "active")
+                  return yield* new ConflictError({ message: `workspace 非 active（当前 ${workspace.status}）` })
                 const outcome = yield* (yield* SessionEnsurer).createEngineTab(tabsCreate[1]!, body.engineId, {
                   ...(typeof body.model === "string" ? { model: body.model } : {}),
                   ...(typeof body.effort === "string" ? { effort: body.effort } : {}),
@@ -1225,11 +1277,15 @@ export const createApp = ({ runtime, token, onShutdown, onError, bus, sseHeartbe
         const tabDel = url.pathname.match(/^\/workspaces\/([^/]+)\/tabs\/([^/]+)$/)
         if (req.method === "DELETE" && tabDel) {
           if (!composerOps) return err(res, 501, "Internal", "composerOps unavailable")
-          return await runRoute(
+          const workspaceId = tabDel[1]!
+          const handleTabDelete = () => runRoute(
             res, runtime,
             Effect.gen(function* () {
+              const workspace = yield* (yield* WorkspacesRepo).get(workspaceId)
+              if (workspace.status !== "active")
+                return yield* new ConflictError({ message: `workspace 非 active（当前 ${workspace.status}）` })
               const tab = yield* (yield* TabsRepo).get(tabDel[2]!)
-              if (tab.workspaceId !== tabDel[1]!) return yield* new NotFoundError({ message: "tab 不属于该 workspace" })
+              if (tab.workspaceId !== workspaceId) return yield* new NotFoundError({ message: "tab 不属于该 workspace" })
               if (tab.kind !== "shell" && tab.kind !== "engine")
                 return yield* new ConflictError({ message: `只能关 shell/engine tab（当前 ${tab.kind}）` })
               if (tab.kind === "engine") {
@@ -1250,6 +1306,7 @@ export const createApp = ({ runtime, token, onShutdown, onError, bus, sseHeartbe
             },
             onError,
           )
+          return await (workspaceSerial ? workspaceSerial.run(workspaceId, handleTabDelete) : handleTabDelete())
         }
         const queueList = url.pathname.match(/^\/workspaces\/([^/]+)\/queue$/)
         if (req.method === "GET" && queueList) {
@@ -1273,11 +1330,15 @@ export const createApp = ({ runtime, token, onShutdown, onError, bus, sseHeartbe
           const queueId = Number(queueDelete[2])
           if (!Number.isSafeInteger(queueId) || queueId <= 0)
             return err(res, 400, "Validation", "queueId 必须是正整数")
-          return await runRoute(
+          const workspaceId = queueDelete[1]!
+          const handleQueueDelete = () => runRoute(
             res, runtime,
             Effect.gen(function* () {
+              const workspace = yield* (yield* WorkspacesRepo).get(workspaceId)
+              if (workspace.status !== "active")
+                return yield* new ConflictError({ message: `workspace 非 active（当前 ${workspace.status}）` })
               const queue = yield* QueueRepo
-              const result = yield* queue.withdraw(queueId, queueDelete[1]!)
+              const result = yield* queue.withdraw(queueId, workspaceId)
               if (result.status === "missing")
                 return yield* new NotFoundError({ message: "队列条目不存在（已投递或已撤回）" })
               if (result.status === "inflight")
@@ -1287,6 +1348,7 @@ export const createApp = ({ runtime, token, onShutdown, onError, bus, sseHeartbe
             (body) => send(res, 200, body),
             onError,
           )
+          return await (workspaceSerial ? workspaceSerial.run(workspaceId, handleQueueDelete) : handleQueueDelete())
         }
         const inputRoute = url.pathname.match(/^\/workspaces\/([^/]+)\/input$/)
         if (req.method === "POST" && inputRoute) {

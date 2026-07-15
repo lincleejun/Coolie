@@ -35,6 +35,8 @@ export type EnsureError = NotFoundError | ConflictError | TmuxError | EngineErro
 export interface SessionEnsurerShape {
   /** ensure-or-heal：session 在则 no-op；丢失则重建（--resume 优先）。 */
   readonly ensure: (wsId: string) => Effect.Effect<HealOutcome, EnsureError>
+  /** archive 补偿专用：允许在 archiving 行上验证并恢复 runtime，不改变 workspace 状态。 */
+  readonly recoverArchive: (wsId: string) => Effect.Effect<HealOutcome, EnsureError>
   /** Resume 按钮语义：engine 已退出（pane=keep-alive 落回的 shell）→ respawn-window 原地重启 engine；
    * session 整个丢失 → 降级 ensure。 */
   readonly resumeTab: (wsId: string, tabId: string) => Effect.Effect<HealOutcome, EnsureError>
@@ -74,12 +76,12 @@ export const SessionEnsurerLive = Layer.effect(
         for (const t of stale) yield* tabs.remove(t.id).pipe(Effect.ignore)
       })
 
-    const ensure: SessionEnsurerShape["ensure"] = (wsId) =>
+    const ensureInternal = (wsId: string, allowArchiving: boolean): Effect.Effect<HealOutcome, EnsureError> =>
       Effect.gen(function* () {
         // ---- observe ----
         const ws = yield* repo.get(wsId)
-        if (ws.status !== "active")
-          return yield* new ConflictError({ message: `只能 ensure active 的 workspace（当前 ${ws.status}）` })
+        if (ws.status !== "active" && !(allowArchiving && ws.status === "archiving"))
+          return yield* new ConflictError({ message: `只能 ensure active${allowArchiving ? "/archiving" : ""} 的 workspace（当前 ${ws.status}）` })
         const sessionName = tmuxSessionName(ws.id)
         const hasSession = yield* tmux.hasSession(sessionName)
         if (hasSession) yield* layout.reconcile(ws.id)
@@ -97,7 +99,7 @@ export const SessionEnsurerLive = Layer.effect(
           const live = new Set((yield* tmux.listWindows(sessionName)).map((window) => window.index))
           for (const engineTab of yield* tabs.listEngineTabsByWorkspace(ws.id)) {
             if (engineTab.tmuxWindow === null || !live.has(engineTab.tmuxWindow))
-              yield* resumeTab(ws.id, engineTab.id)
+              yield* resumeTabInternal(ws.id, engineTab.id, allowArchiving)
           }
           yield* layout.reconcile(ws.id)
           return { action: "none", resumed: false, sessionName, tabId: tab?.id ?? null, sessionId: tab?.engineSessionId ?? null } satisfies HealOutcome
@@ -128,7 +130,7 @@ export const SessionEnsurerLive = Layer.effect(
         // 非 engine tab（每次 remove 与其 tab.closed 事件同事务；engine tab 由上面的重建流程自愈，保活）。
         yield* reconcileNonEngineTabs(ws.id, sessionName)
         for (const sibling of yield* tabs.listEngineTabsByWorkspace(ws.id)) {
-          if (sibling.id !== tabId) yield* resumeTab(ws.id, sibling.id)
+          if (sibling.id !== tabId) yield* resumeTabInternal(ws.id, sibling.id, allowArchiving)
         }
         yield* layout.reconcile(ws.id)
         yield* events.append({
@@ -138,16 +140,21 @@ export const SessionEnsurerLive = Layer.effect(
         return { action: "recreated", resumed: plan.resume, sessionName, tabId, sessionId: plan.sessionId } satisfies HealOutcome
       })
 
-    const resumeTab: SessionEnsurerShape["resumeTab"] = (wsId, tabId) =>
+    const ensure: SessionEnsurerShape["ensure"] = (wsId) => ensureInternal(wsId, false)
+    const recoverArchive: SessionEnsurerShape["recoverArchive"] = (wsId) => ensureInternal(wsId, true)
+
+    const resumeTabInternal = (
+      wsId: string, tabId: string, allowArchiving: boolean,
+    ): Effect.Effect<HealOutcome, EnsureError> =>
       Effect.gen(function* () {
         const ws = yield* repo.get(wsId)
-        if (ws.status !== "active")
-          return yield* new ConflictError({ message: `只能 resume active 的 workspace（当前 ${ws.status}）` })
+        if (ws.status !== "active" && !(allowArchiving && ws.status === "archiving"))
+          return yield* new ConflictError({ message: `只能 resume active${allowArchiving ? "/archiving" : ""} 的 workspace（当前 ${ws.status}）` })
         const tab = yield* tabs.get(tabId)
         if (tab.workspaceId !== wsId || tab.kind !== "engine")
           return yield* new ConflictError({ message: `tab ${tabId} 不是该 workspace 的 engine tab` })
         const sessionName = tmuxSessionName(ws.id)
-        if (!(yield* tmux.hasSession(sessionName))) return yield* ensure(wsId) // session 整个没了 → heal
+        if (!(yield* tmux.hasSession(sessionName))) return yield* ensureInternal(wsId, allowArchiving) // session 整个没了 → heal
         yield* layout.reconcile(ws.id)
         const engine = yield* getEngine(registry, tab.engineId ?? "claude")
         const canResume = yield* Effect.sync(() => transcriptExists(engine, ws.path, tab.engineSessionId))
@@ -184,6 +191,9 @@ export const SessionEnsurerLive = Layer.effect(
         yield* events.append({ workspaceId: ws.id, type: "engine.resumed", payload: { tabId: tab.id, sessionId, resumed: resume } })
         return { action: "respawned", resumed: resume, sessionName, tabId: tab.id, sessionId } satisfies HealOutcome
       })
+
+    const resumeTab: SessionEnsurerShape["resumeTab"] = (wsId, tabId) =>
+      resumeTabInternal(wsId, tabId, false)
 
     const validateEngineOptions = (engineId: string, opts: { readonly model?: string; readonly effort?: string }) =>
       Effect.gen(function* () {
@@ -266,6 +276,6 @@ export const SessionEnsurerLive = Layer.effect(
         return { action: "respawned", resumed: false, sessionName, tabId: tab.id, sessionId } satisfies HealOutcome
       })
 
-    return { ensure, resumeTab, createEngineTab, switchEngine }
+    return { ensure, recoverArchive, resumeTab, createEngineTab, switchEngine }
   }),
 )

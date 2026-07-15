@@ -286,25 +286,26 @@ const cmdStart = async (): Promise<void> => {
   // WS 终端通道（挂 TCP server；GUI/浏览器从 TCP 连）
   attachTerminalWs(server, {
     token, tmuxSocket: cfg.tmuxSocket, clients,
-    resolveSession: async (wsId, window) => {
-      const exit = await runtime(Effect.gen(function* () {
-        const workspaces = yield* WorkspacesRepo
-        let ws = yield* workspaces.get(wsId)
-        if (!ws.materialized) {
-          yield* (yield* WorkspaceLifecycle).ensure(wsId)
-          ws = yield* workspaces.get(wsId)
-        }
-        if (ws.status !== "active" && ws.status !== "creating") return null
-        if (ws.status === "active") yield* (yield* WorkspaceLifecycle).ensure(wsId)
-        const registered = (yield* (yield* TabsRepo).listByWorkspace(wsId))
-          .some((tab) => tab.tmuxWindow === window)
-        return registered ? tmuxSessionName(ws.id) : null
-      }))
-      return Exit.match(exit, {
-        onSuccess: (session) => session,
-        onFailure: () => null,
-      })
-    },
+    resolveSession: async (wsId, window) =>
+      workspaceSerial.run(wsId, async () => {
+        const exit = await runtime(Effect.gen(function* () {
+          const workspaces = yield* WorkspacesRepo
+          let ws = yield* workspaces.get(wsId)
+          if (!ws.materialized) {
+            yield* (yield* WorkspaceLifecycle).ensure(wsId)
+            ws = yield* workspaces.get(wsId)
+          }
+          if (ws.status !== "active" && ws.status !== "creating") return null
+          if (ws.status === "active") yield* (yield* WorkspaceLifecycle).ensure(wsId)
+          const registered = (yield* (yield* TabsRepo).listByWorkspace(wsId))
+            .some((tab) => tab.tmuxWindow === window)
+          return registered ? tmuxSessionName(ws.id) : null
+        }))
+        return Exit.match(exit, {
+          onSuccess: (session) => session,
+          onFailure: () => null,
+        })
+      }),
     log: (m) => logger.warn(m),
   })
 

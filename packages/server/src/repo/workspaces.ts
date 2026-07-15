@@ -36,6 +36,32 @@ const rowToWorkspace = (r: any): Workspace => {
   })
 }
 
+export interface ArchiveOperation {
+  readonly force: boolean
+  readonly startedAt: number
+  readonly lastError: { readonly tag: string; readonly stage: string; readonly message: string; readonly at: number } | null
+}
+
+const rowData = (r: any): any => {
+  try { return r.data ? JSON.parse(r.data) : {} } catch { return {} }
+}
+
+const archiveOperationFromRow = (r: any): ArchiveOperation => {
+  const raw = rowData(r).archiveOperation ?? {}
+  return {
+    force: raw.force === true,
+    startedAt: typeof raw.startedAt === "number" ? raw.startedAt : r.created_at,
+    lastError: raw.lastError && typeof raw.lastError === "object"
+      ? {
+          tag: typeof raw.lastError.tag === "string" ? raw.lastError.tag : "ArchiveError",
+          stage: typeof raw.lastError.stage === "string" ? raw.lastError.stage : "unknown",
+          message: typeof raw.lastError.message === "string" ? raw.lastError.message : "archive failed",
+          at: typeof raw.lastError.at === "number" ? raw.lastError.at : r.created_at,
+        }
+      : null,
+  }
+}
+
 export interface WorkspacesRepoShape {
   readonly insertCreating: (w: {
     projectId: string; name: string; path: string; branch: string; baseBranch: string; portBase: number
@@ -47,6 +73,18 @@ export interface WorkspacesRepoShape {
   readonly get: (id: string) => Effect.Effect<Workspace, NotFoundError>
   readonly list: (filter?: { projectId?: string }) => Effect.Effect<Workspace[]>
   readonly setStatus: (id: string, next: WorkspaceStatus) => Effect.Effect<Workspace, NotFoundError | ConflictError>
+  /** active→archiving 与 force intent 同事务；archiving retry 只允许升级 force，绝不降级。 */
+  readonly beginArchive: (id: string, force: boolean) => Effect.Effect<{
+    workspace: Workspace; operation: ArchiveOperation
+  }, NotFoundError | ConflictError>
+  readonly getArchiveOperation: (id: string) => Effect.Effect<ArchiveOperation, NotFoundError | ConflictError>
+  readonly setArchiveError: (id: string, error: {
+    tag: string; stage: string; message: string
+  }) => Effect.Effect<void, NotFoundError | ConflictError>
+  /** runtime 已验证恢复后才可 archiving→active，并原子清理 operation。 */
+  readonly cancelArchive: (id: string) => Effect.Effect<Workspace, NotFoundError | ConflictError>
+  /** worktree/runtime teardown 完成后原子提交 archived + done，并清理 operation。 */
+  readonly completeArchive: (id: string) => Effect.Effect<Workspace, NotFoundError | ConflictError>
   readonly setPinned: (id: string, pinned: boolean) => Effect.Effect<Workspace, NotFoundError>
   readonly rename: (id: string, name: string) => Effect.Effect<Workspace, NotFoundError | ConflictError>
   readonly setTaskStatus: (id: string, status: TaskStatus) => Effect.Effect<Workspace, NotFoundError>
@@ -136,6 +174,64 @@ export const WorkspacesRepoLive = Layer.effect(
           return yield* new ConflictError({ message: `非法状态迁移：${cur} → ${next}` })
         const archivedAt = next === "archived" ? Date.now() : null
         db.prepare("UPDATE workspaces SET status = ?, archived_at = ? WHERE id = ?").run(next, archivedAt, id)
+        return rowToWorkspace(getRow(id))
+      }),
+      beginArchive: (id, force) => Effect.gen(function* () {
+        const r = yield* mustGetRow(id)
+        if (r.status !== "active" && r.status !== "archiving")
+          return yield* new ConflictError({ message: `只能开始 active/archiving workspace 的归档（当前 ${r.status}）` })
+        const data = rowData(r)
+        const existing = r.status === "archiving" ? archiveOperationFromRow(r) : null
+        const operation: ArchiveOperation = {
+          force: force || existing?.force === true,
+          startedAt: existing?.startedAt ?? Date.now(),
+          lastError: null,
+        }
+        data.archiveOperation = operation
+        db.transaction(() => {
+          db.prepare("UPDATE workspaces SET status = 'archiving', archived_at = NULL, data = ? WHERE id = ?")
+            .run(JSON.stringify(data), id)
+        })()
+        return { workspace: rowToWorkspace(getRow(id)), operation }
+      }),
+      getArchiveOperation: (id) => Effect.gen(function* () {
+        const r = yield* mustGetRow(id)
+        if (r.status !== "archiving")
+          return yield* new ConflictError({ message: `workspace 非 archiving（当前 ${r.status}）` })
+        // Compatibility: rows created by the first archiving implementation have no operation payload.
+        return archiveOperationFromRow(r)
+      }),
+      setArchiveError: (id, error) => Effect.gen(function* () {
+        const r = yield* mustGetRow(id)
+        if (r.status !== "archiving")
+          return yield* new ConflictError({ message: `workspace 非 archiving（当前 ${r.status}）` })
+        const data = rowData(r)
+        const operation = archiveOperationFromRow(r)
+        data.archiveOperation = {
+          ...operation,
+          lastError: { ...error, at: Date.now() },
+        }
+        db.prepare("UPDATE workspaces SET data = ? WHERE id = ?").run(JSON.stringify(data), id)
+      }),
+      cancelArchive: (id) => Effect.gen(function* () {
+        const r = yield* mustGetRow(id)
+        if (r.status !== "archiving")
+          return yield* new ConflictError({ message: `workspace 非 archiving（当前 ${r.status}）` })
+        const data = rowData(r)
+        delete data.archiveOperation
+        db.prepare("UPDATE workspaces SET status = 'active', archived_at = NULL, data = ? WHERE id = ?")
+          .run(JSON.stringify(data), id)
+        return rowToWorkspace(getRow(id))
+      }),
+      completeArchive: (id) => Effect.gen(function* () {
+        const r = yield* mustGetRow(id)
+        if (r.status !== "archiving")
+          return yield* new ConflictError({ message: `workspace 非 archiving（当前 ${r.status}）` })
+        const data = rowData(r)
+        delete data.archiveOperation
+        db.prepare(`UPDATE workspaces
+          SET status = 'archived', task_status = 'done', archived_at = ?, data = ? WHERE id = ?`)
+          .run(Date.now(), JSON.stringify(data), id)
         return rowToWorkspace(getRow(id))
       }),
       setPinned: (id, pinned) => Effect.gen(function* () {

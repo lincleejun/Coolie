@@ -121,6 +121,32 @@ describe("WorkspacesRepo", () => {
     expect(Exit.isSuccess(exit)).toBe(true)
     if (Exit.isSuccess(exit)) expect(exit.value).toBe("creating")
   })
+  it("persists archive force/error intent and commits terminal states atomically", async () => {
+    const { run } = make()
+    const exit = await run(Effect.gen(function* () {
+      const repo = yield* WorkspacesRepo
+      const ws = yield* repo.insertCreating(w1)
+      yield* repo.setStatus(ws.id, "active")
+      const begun = yield* repo.beginArchive(ws.id, false)
+      expect(begun.workspace.status).toBe("archiving")
+      expect(begun.operation.force).toBe(false)
+      const upgraded = yield* repo.beginArchive(ws.id, true)
+      expect(upgraded.operation.force).toBe(true)
+      yield* repo.setArchiveError(ws.id, { tag: "GitError", stage: "worktree-remove", message: "boom" })
+      expect(yield* repo.getArchiveOperation(ws.id)).toMatchObject({
+        force: true, lastError: { tag: "GitError", stage: "worktree-remove", message: "boom" },
+      })
+      const active = yield* repo.cancelArchive(ws.id)
+      expect(active.status).toBe("active")
+      yield* repo.beginArchive(ws.id, true)
+      return yield* repo.completeArchive(ws.id)
+    }))
+    expect(Exit.isSuccess(exit)).toBe(true)
+    if (Exit.isSuccess(exit)) {
+      expect(exit.value.status).toBe("archived")
+      expect(exit.value.taskStatus).toBe("done")
+    }
+  })
   it("list filters by project; usedPortBases spans all rows; remove deletes", async () => {
     const { db, run } = make()
     db.prepare("INSERT INTO projects (id, name, repo_root, default_base_branch, created_at) VALUES (?,?,?,?,?)")

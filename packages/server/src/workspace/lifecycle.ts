@@ -1,4 +1,4 @@
-import { Context, Data, Effect, Layer, Option } from "effect"
+import { Cause, Context, Data, Effect, Exit, Layer, Option } from "effect"
 import * as fs from "node:fs"
 import * as path from "node:path"
 import { Workspace, tmuxSessionName, type HealOutcome, type TaskStatus } from "@coolie/protocol"
@@ -23,6 +23,10 @@ import { labelTmuxWindow, makeTmuxLayout } from "../tmux/layout.js"
 
 /** Plan 3 插拔点落地：tmux session / engine 启动 / 首条 prompt 投递以 hook 形式挂进 create 流水线末尾。 */
 export class HookError extends Data.TaggedError("HookError")<{ readonly message: string }> {}
+export class ArchiveError extends Data.TaggedError("ArchiveError")<{
+  readonly stage: "kill-session" | "tab-cleanup" | "dirty-check" | "worktree-remove" | "runtime-recovery" | "commit"
+  readonly message: string
+}> {}
 export interface PostCreateContext {
   readonly initialPrompt?: string
   readonly engineId?: string
@@ -36,7 +40,7 @@ export const PostCreateHooksEmpty = Layer.succeed(PostCreateHooks, [])
 
 export type CreateError = ValidationError | NotFoundError | ConflictError | GitError | SetupScriptError | HookError
 export type RetryError = CreateError | EnsureError
-export type LifecycleError = NotFoundError | ConflictError | GitError | TmuxError
+export type LifecycleError = NotFoundError | ConflictError | GitError | TmuxError | ArchiveError
 
 export interface WorkspaceLifecycleShape {
   readonly createIntent: (opts: {
@@ -101,7 +105,7 @@ export const WorkspaceLifecycleLive = Layer.effect(
     /** archive/delete 共用：杀 tmux session（engine 归 tmux，拆除是唯一合法杀点）。
      * tabs 行是 engine 会话记忆（engineSessionId → unarchive 后 --resume 复活的钥匙，设计文档 §十）：
      * archive 保留，仅 delete 删除。全程容错。 */
-    const teardownRuntime = (ws: Workspace, reason: "archive" | "delete"): Effect.Effect<void, TmuxError> =>
+    const teardownRuntime = (ws: Workspace, reason: "archive" | "delete"): Effect.Effect<void, TmuxError | ArchiveError> =>
       Effect.gen(function* () {
         if (Option.isSome(tmuxOpt)) {
           if (reason === "archive") yield* tmuxOpt.value.killSession(tmuxSessionName(ws.id))
@@ -110,7 +114,11 @@ export const WorkspaceLifecycleLive = Layer.effect(
         }
         if (Option.isSome(tabsOpt)) {
           if (reason === "delete") yield* tabsOpt.value.removeByWorkspace(ws.id).pipe(Effect.ignore)
-          else yield* tabsOpt.value.removeNonEngineByWorkspace(ws.id).pipe(Effect.ignore)
+          else yield* tabsOpt.value.removeNonEngineByWorkspace(ws.id).pipe(
+            Effect.catchAllDefect((defect) => Effect.fail(new ArchiveError({
+              stage: "tab-cleanup", message: `archive tab cleanup failed: ${String(defect)}`,
+            }))),
+          )
         }
         if (reason === "delete" && Option.isSome(queueOpt)) yield* queueOpt.value.clearWorkspace(ws.id).pipe(Effect.ignore)
       })
@@ -373,6 +381,9 @@ export const WorkspaceLifecycleLive = Layer.effect(
       Effect.gen(function* () {
         const name = rawName.trim()
         if (name === "") return yield* new ValidationError({ message: "name 不能为空" })
+        const ws = yield* repo.get(id)
+        if (ws.status === "archiving")
+          return yield* new ConflictError({ message: "workspace 正在归档，不能重命名" })
         return yield* repo.rename(id, name)
       })
 
@@ -389,6 +400,8 @@ export const WorkspaceLifecycleLive = Layer.effect(
           return yield* new ValidationError({ message: "branch 名称非法" })
         const ws = yield* repo.get(id)
         if (ws.kind === "main") return yield* new ConflictError({ message: "main task 的默认分支不可在 Coolie 中改名" })
+        if (ws.status === "archiving")
+          return yield* new ConflictError({ message: "workspace 正在归档，不能修改 branch" })
         if (ws.branch === branch) return ws
         const project = yield* projects.get(ws.projectId)
         if (yield* git.refExists(project.repoRoot, `refs/heads/${branch}`))
@@ -438,29 +451,70 @@ export const WorkspaceLifecycleLive = Layer.effect(
 
     const archive: WorkspaceLifecycleShape["archive"] = (id, opts) =>
       withWorkspaceLock(id, Effect.gen(function* () {
-        let ws = yield* repo.get(id)
+        const before = yield* repo.get(id)
+        let ws = before
         if (ws.kind === "main") return yield* new ConflictError({ message: "main task 不可归档" })
         if (ws.status !== "active" && ws.status !== "archiving")
           return yield* new ConflictError({ message: `只能归档 active/archiving 的 workspace（当前 ${ws.status}）` })
         const project = yield* projects.get(ws.projectId)
-        const force = opts?.force === true
-        if (ws.status === "active") {
-          ws = yield* repo.setStatus(id, "archiving")
+        const begun = yield* repo.beginArchive(id, opts?.force === true)
+        ws = begun.workspace
+        const force = begun.operation.force
+        if (before.status === "active")
           yield* emit(id, "workspace.archiving", { id, force, ownership: ws.ownership })
+
+        const archiveStage = (cause: LifecycleError): ArchiveError["stage"] => {
+          if (cause._tag === "TmuxError") return "kill-session"
+          if (cause._tag === "ArchiveError") return cause.stage
+          if (cause._tag === "ConflictError") return "dirty-check"
+          if (cause._tag === "GitError") return cause.op === "worktreeRemove" ? "worktree-remove" : "commit"
+          return "commit"
         }
+
+        const recordFailure = (cause: { _tag: string; message: string }, stage: ArchiveError["stage"]) =>
+          repo.setArchiveError(id, { tag: cause._tag, stage, message: cause.message }).pipe(Effect.ignore)
 
         const compensateOrKeepRetryable = (cause: LifecycleError): Effect.Effect<never, LifecycleError> =>
           Effect.gen(function* () {
-            // worktree 仍在时恢复 active 并重建 runtime；已经移除时保留 archiving，
-            // 下次调用（包括 daemon restart reconcile）会幂等提交 archived。
-            const canRestore = ws.ownership === "adopted"
-              || (yield* worktreePresent(project.repoRoot, ws.path).pipe(Effect.orElseSucceed(() => false)))
-            if (canRestore) {
-              yield* repo.setStatus(id, "active").pipe(Effect.ignore)
-              if (Option.isSome(ensurerOpt)) yield* ensurerOpt.value.ensure(id).pipe(Effect.ignore)
+            const stage = archiveStage(cause)
+            // An absent managed worktree means removal committed; keep archiving so retry/restart
+            // can atomically finish archived. Never recreate a worktree merely to compensate.
+            const canRestore = yield* worktreePresent(project.repoRoot, ws.path).pipe(
+              Effect.orElseSucceed(() => false),
+            )
+            if (!canRestore) {
+              yield* recordFailure(cause, stage)
+              yield* emit(id, "workspace.archive.failed", {
+                id, retryable: true, restoredActive: false, stage,
+                error: { tag: cause._tag, message: cause.message },
+              }).pipe(Effect.ignore)
+              return yield* Effect.fail(cause)
             }
+
+            if (Option.isNone(ensurerOpt)) {
+              const recovery = new ArchiveError({
+                stage: "runtime-recovery", message: `runtime recovery unavailable after ${cause._tag}: ${cause.message}`,
+              })
+              yield* recordFailure(recovery, recovery.stage)
+              return yield* Effect.fail(recovery)
+            }
+            const recoveryExit = yield* Effect.exit(ensurerOpt.value.recoverArchive(id))
+            if (Exit.isFailure(recoveryExit)) {
+              const recovery = new ArchiveError({
+                stage: "runtime-recovery",
+                message: `runtime recovery failed after ${cause._tag}: ${Cause.pretty(recoveryExit.cause)}`,
+              })
+              yield* recordFailure(recovery, recovery.stage)
+              yield* emit(id, "workspace.archive.failed", {
+                id, retryable: true, restoredActive: false, stage: recovery.stage,
+                error: { tag: recovery._tag, message: recovery.message },
+              }).pipe(Effect.ignore)
+              return yield* Effect.fail(recovery)
+            }
+            // Only a successful runtime recovery authorizes the durable state transition to active.
+            yield* repo.cancelArchive(id)
             yield* emit(id, "workspace.archive.failed", {
-              id, retryable: !canRestore, restoredActive: canRestore,
+              id, retryable: false, restoredActive: true, stage,
               error: { tag: cause._tag, message: cause.message },
             }).pipe(Effect.ignore)
             return yield* Effect.fail(cause)
@@ -472,8 +526,7 @@ export const WorkspaceLifecycleLive = Layer.effect(
           yield* teardownRuntime(ws, "archive")
           if (ws.ownership === "managed")
             yield* removeWorktreeGuarded(project.repoRoot, ws, force, "归档")
-          const out = yield* repo.setStatus(id, "archived")
-          yield* repo.setTaskStatus(id, "done")
+          const out = yield* repo.completeArchive(id)
           yield* emit(id, "workspace.archived", { id, force, ownership: ws.ownership })
           return out
         }).pipe(Effect.catchAll(compensateOrKeepRetryable))
@@ -533,6 +586,8 @@ export const WorkspaceLifecycleLive = Layer.effect(
       withWorkspaceLock(id, Effect.gen(function* () {
         const ws = yield* repo.get(id)
         if (ws.kind === "main") return yield* new ConflictError({ message: "main task 不可删除" })
+        if (ws.status === "archiving")
+          return yield* new ConflictError({ message: "workspace 正在归档；请先重试归档或等待恢复，不能并发删除" })
         const project = yield* projects.get(ws.projectId)
         const force = opts?.force === true
         if (ws.ownership === "adopted") {
