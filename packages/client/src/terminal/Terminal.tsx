@@ -59,9 +59,12 @@ export const TerminalView = ({ wsId, tabId, kind, tabStatus, windowIdx, active }
     getOrCreateSession(sessionKey(wsId, tabId, windowIdx), () => createTermSession(api, wsId, windowIdx)).focus()
   }, [active, api, wsId, tabId, windowIdx])
 
-  const reconnect = useCallback((): void => {
+  const reconnect = useCallback(async (): Promise<void> => {
     if (!api) return
-    getOrCreateSession(sessionKey(wsId, tabId, windowIdx), () => createTermSession(api, wsId, windowIdx)).reconnect()
+    await getOrCreateSession(
+      sessionKey(wsId, tabId, windowIdx),
+      () => createTermSession(api, wsId, windowIdx),
+    ).reconnect()
   }, [api, wsId, tabId, windowIdx])
 
   const recovery = useMemo(() => createTerminalRecovery({
@@ -104,7 +107,7 @@ export const TerminalView = ({ wsId, tabId, kind, tabStatus, windowIdx, active }
               {resuming ? tr("terminal.resuming") : tr("terminal.resume")}
             </button>
           )}
-          <button className="btn" onClick={reconnect}>{tr("terminal.reconnect")}</button>
+          <button className="btn" onClick={() => void reconnect()}>{tr("terminal.reconnect")}</button>
         </div>
       )}
     </div>

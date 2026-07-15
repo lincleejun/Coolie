@@ -7,7 +7,7 @@ export interface TerminalResumeOutcome {
 interface TerminalRecoveryDeps {
   readonly resume: () => Promise<unknown>
   readonly refreshTabs: () => Promise<void>
-  readonly reconnect: () => void
+  readonly reconnect: () => Promise<void>
 }
 
 export interface TerminalRecovery {
@@ -47,7 +47,7 @@ export const createTerminalRecovery = (deps: TerminalRecoveryDeps): TerminalReco
       try {
         await deps.refreshTabs()
       } finally {
-        deps.reconnect()
+        await deps.reconnect()
       }
       return outcome
     })()
