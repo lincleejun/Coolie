@@ -40,11 +40,11 @@ export type LifecycleError = NotFoundError | ConflictError | GitError
 
 export interface WorkspaceLifecycleShape {
   readonly createIntent: (opts: {
-    projectId: string; branchSlug?: string; name?: string; initialPrompt?: string; engineId?: string
+    projectId: string; branchSlug?: string; baseBranch?: string; name?: string; initialPrompt?: string; engineId?: string
     model?: string; effort?: string; fanoutGroup?: string; namePool?: string; customNames?: readonly string[]
   }) => Effect.Effect<Workspace, CreateError>
   readonly create: (opts: {
-    projectId: string; branchSlug?: string; name?: string; initialPrompt?: string; engineId?: string
+    projectId: string; branchSlug?: string; baseBranch?: string; name?: string; initialPrompt?: string; engineId?: string
     model?: string; effort?: string; fanoutGroup?: string; namePool?: string; customNames?: readonly string[]
   }) => Effect.Effect<Workspace, RetryError>
   readonly retry: (id: string) => Effect.Effect<Workspace, RetryError>
@@ -280,12 +280,17 @@ export const WorkspaceLifecycleLive = Layer.effect(
         if (name === "") return yield* new ValidationError({ message: "name 消毒后为空" })
         const slug = sanitizeSlug(opts.branchSlug ?? name)
         if (slug === "") return yield* new ValidationError({ message: "branchSlug 消毒后为空" })
+        const baseBranch = opts.baseBranch?.trim() || project.defaultBaseBranch
+        if (baseBranch.startsWith("-") || baseBranch.includes("..") || baseBranch.includes("@{") ||
+            baseBranch.includes("\\") || baseBranch.endsWith("/") || baseBranch.endsWith(".") ||
+            !/^[A-Za-z0-9][A-Za-z0-9._/-]*$/.test(baseBranch))
+          return yield* new ValidationError({ message: "baseBranch 不是安全的 branch 名" })
         const branch = `coolie/${slug}`
         const wsPath = path.join(cfg.workspacesRoot, project.name, name)
         const portBase = allocatePortBase(yield* repo.usedPortBases())
         const ws = yield* repo.insertCreating({
           projectId: project.id, name, path: wsPath, branch,
-          baseBranch: project.defaultBaseBranch, portBase,
+          baseBranch, portBase,
         })
         // C2：把首条 prompt+引擎存进 data.createCtx，供 error 后 retry 补投（否则 retry 丢首条 prompt 和原引擎）
         yield* repo.setCreateCtx(ws.id, {

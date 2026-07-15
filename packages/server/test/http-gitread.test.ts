@@ -6,6 +6,7 @@ import { Effect, Layer } from "effect"
 import { Db } from "../src/db/sqlite.js"
 import { runMigrations } from "../src/db/migrations.js"
 import { WorkspacesRepoLive } from "../src/repo/workspaces.js"
+import { ProjectsRepoLive } from "../src/repo/projects.js"
 import { EngineRegistryLive } from "../src/engine/registry.js"
 import { createApp, newToken } from "../src/http/app.js"
 
@@ -23,6 +24,10 @@ const fakeGitRead = {
     return { againstBase: [], committed: [], staged: [], unstaged: [], untracked: ["u.txt"] }
   },
   files: async () => ["a.ts", "b.ts"],
+  branches: async (repoRoot: string) => {
+    fakeGitRead.calls.push(["branches", repoRoot])
+    return ["main", "release"]
+  },
   diff: async (wt: string, baseRef: string, section: string, filePath: string) => {
     fakeGitRead.calls.push(["diff", wt, baseRef, section, filePath])
     return { path: filePath, section, unified: "@@ -1 +1 @@\n-one\n+ONE\n", binary: false }
@@ -46,7 +51,7 @@ beforeEach(async () => {
   fakeGitRead.calls = []
   db = new Database(":memory:"); runMigrations(db)
   claudeHome = fs.mkdtempSync(path.join(os.tmpdir(), "coolie-gr-home-"))
-  const layer = Layer.mergeAll(WorkspacesRepoLive, EngineRegistryLive)
+  const layer = Layer.mergeAll(WorkspacesRepoLive, ProjectsRepoLive, EngineRegistryLive)
     .pipe(Layer.provide(Layer.succeed(Db, db)))
   token = newToken()
   const app = createApp({
@@ -88,6 +93,14 @@ describe("GET /config", () => {
 })
 
 describe("git read routes", () => {
+  it("lists the available base branches for a project", async () => {
+    db.prepare(`INSERT INTO projects (id, name, repo_root, default_base_branch, created_at)
+      VALUES ('p-branches', 'repo', '/tmp/repo-branches', 'main', 1)`).run()
+    const response = await get("/projects/p-branches/branches")
+    expect(response).toEqual({ status: 200, body: { branches: ["main", "release"] } })
+    expect(fakeGitRead.calls.at(-1)).toEqual(["branches", "/tmp/repo-branches"])
+  })
+
   it("active workspace：diffstat 走 gitRead 并带 worktree 路径与 baseRef", async () => {
     const ws = insertWorkspace("active", "/tmp/wt-active", "BASEREF1")
     const r = await get(`/workspaces/${ws.id}/git/diffstat`)

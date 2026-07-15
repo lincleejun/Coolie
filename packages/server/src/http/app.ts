@@ -523,6 +523,23 @@ export const createApp = ({ runtime, token, onShutdown, onError, bus, sseHeartbe
             (list) => send(res, 200, list),
             onError,
           )
+        const projectBranches = url.pathname.match(/^\/projects\/([^/]+)\/branches$/)
+        if (req.method === "GET" && projectBranches) {
+          if (!gitRead) return err(res, 501, "Internal", "git branch listing unavailable")
+          return await runRoute(
+            res, runtime,
+            Effect.gen(function* () { return yield* (yield* ProjectsRepo).get(projectBranches[1]!) }),
+            async (project) => {
+              try {
+                send(res, 200, { branches: await gitRead.branches(project.repoRoot) })
+              } catch (error) {
+                onError?.(error)
+                err(res, 500, "GitError", error instanceof Error ? error.message : String(error))
+              }
+            },
+            onError,
+          )
+        }
         if (route === "POST /projects") {
           const body = await readJson(req)
           if (typeof body.repoRoot !== "string") return err(res, 400, "Validation", "repoRoot required")
@@ -625,6 +642,8 @@ export const createApp = ({ runtime, token, onShutdown, onError, bus, sseHeartbe
           if (typeof body.projectId !== "string") return err(res, 400, "Validation", "projectId required")
           if (body.branchSlug !== undefined && typeof body.branchSlug !== "string")
             return err(res, 400, "Validation", "branchSlug must be a string")
+          if (body.baseBranch !== undefined && typeof body.baseBranch !== "string")
+            return err(res, 400, "Validation", "baseBranch must be a string")
           if (body.name !== undefined && typeof body.name !== "string")
             return err(res, 400, "Validation", "name must be a string")
           if (body.initialPrompt !== undefined && typeof body.initialPrompt !== "string")
@@ -658,6 +677,7 @@ export const createApp = ({ runtime, token, onShutdown, onError, bus, sseHeartbe
               return yield* (yield* WorkspaceLifecycle).createIntent({
                 projectId: body.projectId,
                 ...(body.branchSlug ? { branchSlug: body.branchSlug } : {}),
+                ...(body.baseBranch ? { baseBranch: body.baseBranch } : {}),
                 ...(body.name ? { name: body.name } : {}),
                 ...(typeof body.initialPrompt === "string" && body.initialPrompt !== "" ? { initialPrompt: body.initialPrompt } : {}),
                 ...(body.engineId ? { engineId: body.engineId } : {}),

@@ -61,6 +61,16 @@ export const listFiles = (worktree: string): Promise<string[]> =>
   run(worktree, ["ls-files", "--cached", "--others", "--exclude-standard", "-z"])
     .then((out) => out.split("\0").filter((s) => s !== ""))
 
+export const listBranches = (repoRoot: string): Promise<string[]> =>
+  run(repoRoot, [
+    "for-each-ref",
+    "--format=%(refname:short)",
+    "refs/heads",
+    "refs/remotes/origin",
+  ]).then((out) => [...new Set(out.split("\n")
+    .map((branch) => branch.trim().replace(/^origin\//, ""))
+    .filter((branch) => branch !== "" && branch !== "HEAD"))].sort())
+
 export type DiffSection = "againstBase" | "committed" | "staged" | "unstaged"
 export interface FileDiff { path: string; section: DiffSection; unified: string; binary: boolean }
 
@@ -100,6 +110,13 @@ export interface GitReadOps {
   diffstat(worktree: string, baseRef: string): Promise<DiffStat>
   changes(worktree: string, baseRef: string): Promise<ChangesReport>
   files(worktree: string): Promise<string[]>
+  branches(repoRoot: string): Promise<string[]>
   diff(worktree: string, baseRef: string, section: DiffSection, path: string): Promise<FileDiff>
 }
-export const realGitRead: GitReadOps = { diffstat: diffShortstat, changes: collectChanges, files: listFiles, diff: fileDiff }
+export const realGitRead: GitReadOps = {
+  diffstat: diffShortstat,
+  changes: collectChanges,
+  files: listFiles,
+  branches: listBranches,
+  diff: fileDiff,
+}

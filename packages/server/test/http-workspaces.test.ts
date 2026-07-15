@@ -144,6 +144,15 @@ describe("workspace HTTP API", () => {
     const empty = await (await req("/workspaces?project=nope")).json()
     expect(empty).toHaveLength(0)
   })
+  it("uses the selected base branch and rejects unsafe branch names", async () => {
+    const pid = await addProject()
+    const created = await createWsIntent(pid, { baseBranch: "release/2026" })
+    expect(created.status).toBe(201)
+    expect(await created.json()).toMatchObject({ baseBranch: "release/2026" })
+
+    const unsafe = await createWsIntent(pid, { baseBranch: "--upload-pack=evil" })
+    expect(unsafe.status).toBe(400)
+  })
   it("serializes parallel ensure so the loser cannot roll back the materialized winner", async () => {
     const pid = await addProject()
     const created = await createWsIntent(pid, { branchSlug: "parallel-ensure" })

@@ -327,10 +327,6 @@ button { font: inherit; color: inherit; background: none; border: none; cursor: 
 .dispatch-row { display: flex; gap: 10px; align-items: center; }
 .dispatch-row label { color: var(--fg-dim); font-size: 12px; }
 .dispatch-row select { background: var(--input-bg); color: var(--fg); border: 1px solid var(--border); border-radius: 6px; padding: 4px 8px; }
-.dispatch-fanout { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; font-size: 12px; }
-.dispatch-fanout > label { color: var(--fg-dim); }
-.fanout-engine { display: inline-flex; gap: 5px; align-items: center; }
-.fanout-engine input { width: 48px; background: var(--input-bg); color: var(--fg); border: 1px solid var(--border); border-radius: 6px; padding: 4px; }
 .dispatch-busy { color: var(--warn); padding: 20px 0; animation: pulse 1.2s infinite; }
 .dispatch-err { color: var(--danger); font-size: 12px; }
 .offline-banner { flex: none; text-align: center; font-size: 12px; padding: 5px; background: rgba(224,175,104,0.15); color: var(--warn); border-bottom: 1px solid var(--warn); }

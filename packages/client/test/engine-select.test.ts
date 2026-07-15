@@ -5,12 +5,14 @@ describe("buildCreateBody", () => {
   it("always selects the requested engine", () => {
     expect(buildCreateBody({
       projectId: "p1",
+      baseBranch: "main",
       engineId: "claude",
       prompt: "hi",
       model: "default",
       effort: "default",
     })).toEqual({
       projectId: "p1",
+      baseBranch: "main",
       engineId: "claude",
       initialPrompt: "hi",
     })
@@ -19,12 +21,14 @@ describe("buildCreateBody", () => {
   it("threads non-default model and effort into creation", () => {
     expect(buildCreateBody({
       projectId: "p1",
+      baseBranch: "release",
       engineId: "codex",
       prompt: "go",
       model: "gpt-5",
       effort: "high",
     })).toEqual({
       projectId: "p1",
+      baseBranch: "release",
       engineId: "codex",
       initialPrompt: "go",
       model: "gpt-5",
