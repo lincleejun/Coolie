@@ -19,7 +19,7 @@ const makeFake = (): TermSession & { disposed: boolean } => {
     mount() {},
     unmount() {},
     focus() {},
-    reconnect() {},
+    async reconnect() {},
     dispose() { s.disposed = true },
   }
   return s

@@ -2,6 +2,7 @@ import { Terminal } from "@xterm/xterm"
 import { FitAddon } from "@xterm/addon-fit"
 import "@xterm/xterm/css/xterm.css"
 import { arbitrateTerminalKey } from "./arbitrate"
+import { createTerminalSocketController } from "./socket"
 import type { Api } from "../api/client"
 import { terminalTheme, type ResolvedTheme } from "../settings/theme"
 
@@ -16,7 +17,7 @@ export interface TermSession {
   mount(container: HTMLElement): void
   unmount(): void
   focus(): void
-  reconnect(): void
+  reconnect(): Promise<void>
   dispose(): void
 }
 
@@ -41,13 +42,36 @@ export const createTermSession = (api: Api, workspaceId: string, windowIdx: numb
   const fit = new FitAddon()
   term.loadAddon(fit)
 
-  let ws: WebSocket | null = null
   let opened = false
   let disposed = false
   let resizeTimer: ReturnType<typeof setTimeout> | null = null
   let ro: ResizeObserver | null = null
+  let session!: TermSession
+  const setState = (state: TermState): void => {
+    session.state = state
+    session.onStateChange?.(state)
+  }
+  const socket = createTerminalSocketController(
+    () => api.wsTerminalUrl(workspaceId, windowIdx, term.cols, term.rows),
+    {
+      onOpen: () => { setState("open"); pushResize() },
+      onMessage: (ev) => {
+        if (typeof ev.data === "string") {
+          try {
+            const msg = JSON.parse(ev.data)
+            if (msg?.type === "exit") { session.exitCode = msg.code ?? null; setState("exited") }
+          } catch { /* 未知控制帧忽略 */ }
+          return
+        }
+        term.write(new Uint8Array(ev.data as ArrayBuffer))
+      },
+      onClose: () => {
+        if (session.state === "open" || session.state === "connecting") setState("dead")
+      },
+    },
+  )
 
-  const session: TermSession = {
+  session = {
     el, term, state: "connecting", exitCode: null,
     mount(container) {
       container.appendChild(el)
@@ -56,7 +80,7 @@ export const createTermSession = (api: Api, workspaceId: string, windowIdx: numb
         term.open(el)
         void loadRenderer()
         safeFit()
-        connect()
+        socket.connect()
         // heal：字体度量 settle 后 refit（首帧 WebGL atlas 用错度量的经典坑，superset plans/20260425）
         void document.fonts.ready.then(() => { safeFit(); pushResize() })
         ro = new ResizeObserver(() => {
@@ -71,23 +95,21 @@ export const createTermSession = (api: Api, workspaceId: string, windowIdx: numb
     },
     unmount() { el.parentElement?.removeChild(el) }, // xterm 实例保活：scrollback/连接不丢
     focus() { term.focus() },
-    reconnect() {
+    async reconnect() {
       if (disposed) return
       setState("connecting")
       session.exitCode = null
-      connect()
+      await socket.reconnect()
     },
     dispose() {
       disposed = true
       ro?.disconnect()
       if (resizeTimer) clearTimeout(resizeTimer)
-      try { ws?.close() } catch { /* already */ }
+      socket.dispose()
       term.dispose()
       el.remove()
     },
   }
-
-  const setState = (s: TermState): void => { session.state = s; session.onStateChange?.(s) }
 
   const safeFit = (): void => {
     // 容器无尺寸（display:none/未布局）时 fit 会抛：吞掉，等下一次
@@ -95,8 +117,7 @@ export const createTermSession = (api: Api, workspaceId: string, windowIdx: numb
   }
 
   const pushResize = (): void => {
-    if (ws?.readyState === WebSocket.OPEN)
-      ws.send(JSON.stringify({ type: "resize", cols: term.cols, rows: term.rows }))
+    socket.send(JSON.stringify({ type: "resize", cols: term.cols, rows: term.rows }))
   }
 
   const loadRenderer = async (): Promise<void> => {
@@ -109,26 +130,8 @@ export const createTermSession = (api: Api, workspaceId: string, windowIdx: numb
     } catch { /* DOM 渲染兜底 */ }
   }
 
-  const connect = (): void => {
-    const sock = new WebSocket(api.wsTerminalUrl(workspaceId, windowIdx, term.cols, term.rows))
-    sock.binaryType = "arraybuffer"
-    ws = sock
-    sock.onopen = () => { setState("open"); pushResize() } // tmux attach 自带全量重绘，无需额外 heal 帧
-    sock.onmessage = (ev) => {
-      if (typeof ev.data === "string") {
-        try {
-          const msg = JSON.parse(ev.data)
-          if (msg?.type === "exit") { session.exitCode = msg.code ?? null; setState("exited") }
-        } catch { /* 未知控制帧忽略 */ }
-        return
-      }
-      term.write(new Uint8Array(ev.data as ArrayBuffer)) // 二进制帧 → 零解码直写（spec §2.3）
-    }
-    sock.onclose = () => { if (session.state === "open" || session.state === "connecting") setState("dead") } // server 崩/4404
-  }
-
   // 输入：xterm onData（含粘贴/IME 提交）→ 二进制帧
-  term.onData((d) => { if (ws?.readyState === WebSocket.OPEN) ws.send(enc.encode(d)) })
+  term.onData((d) => { socket.send(enc.encode(d)) })
 
   // 三层键位仲裁（Task 7 纯函数）：bubble → xterm bail 且事件冒泡给 document；write → 直写 PTY
   term.attachCustomKeyEventHandler((e) => {
@@ -136,7 +139,7 @@ export const createTermSession = (api: Api, workspaceId: string, windowIdx: numb
     if (decision.action === "pty") return true
     if (decision.action === "write") {
       e.preventDefault()
-      if (ws?.readyState === WebSocket.OPEN) ws.send(enc.encode(decision.bytes))
+      socket.send(enc.encode(decision.bytes))
       return false
     }
     return false // bubble：xterm 不处理，事件自然冒泡到全局 dispatcher

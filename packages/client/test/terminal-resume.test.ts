@@ -26,7 +26,7 @@ describe("engine terminal recovery", () => {
       const recovery = createTerminalRecovery({
         resume: async () => { calls.push("resume"); return { action } },
         refreshTabs: async () => { calls.push("refresh") },
-        reconnect: () => { calls.push("reconnect") },
+        reconnect: async () => { calls.push("reconnect") },
       })
 
       await expect(recovery.run()).resolves.toEqual({ action })
@@ -38,7 +38,7 @@ describe("engine terminal recovery", () => {
   it("coalesces duplicate clicks while recovery is in flight", async () => {
     let finish!: (value: { action: "respawned" }) => void
     const resume = vi.fn(() => new Promise<{ action: "respawned" }>((resolve) => { finish = resolve }))
-    const reconnect = vi.fn()
+    const reconnect = vi.fn(async () => {})
     const recovery = createTerminalRecovery({
       resume,
       refreshTabs: vi.fn(async () => {}),
@@ -57,7 +57,7 @@ describe("engine terminal recovery", () => {
   })
 
   it("surfaces a readable API failure without reconnecting implicitly", async () => {
-    const reconnect = vi.fn()
+    const reconnect = vi.fn(async () => {})
     const recovery = createTerminalRecovery({
       resume: async () => { throw new Error("tmux session unavailable") },
       refreshTabs: vi.fn(async () => {}),
