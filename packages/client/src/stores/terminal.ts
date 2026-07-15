@@ -2,11 +2,10 @@ import { create } from "zustand"
 import type { TerminalId } from "../terminal/terminals.js"
 
 const K_APP = "coolie.terminalApp"
-const K_TEMPLATE = "coolie.terminalCustomArgv"
 const K_EXTERNAL = "coolie.externalTermByWs"
 const SAFE_ID = /^[A-Za-z0-9._-]+$/
 const FORBIDDEN_OBJECT_KEYS = new Set(["__proto__", "prototype", "constructor"])
-const TERMINAL_IDS: readonly TerminalId[] = ["iterm2", "terminal", "custom"]
+const TERMINAL_IDS: readonly TerminalId[] = ["iterm2", "terminal", "wezterm"]
 
 const storage = (): Storage | null => {
   try { return typeof localStorage === "undefined" ? null : localStorage }
@@ -47,10 +46,8 @@ export const setExternalModeDisposer = (dispose: (wsId: string) => void): void =
 
 interface TerminalState {
   readonly terminalApp: TerminalId
-  readonly customTemplate: string
   readonly externalByWs: Record<string, boolean>
   readonly setTerminalApp: (id: TerminalId) => void
-  readonly setCustomTemplate: (template: string) => void
   readonly setExternal: (wsId: string, external: boolean) => void
   readonly toggleExternal: (wsId: string) => void
   readonly isExternal: (wsId: string) => boolean
@@ -58,16 +55,11 @@ interface TerminalState {
 
 export const useTerminal = create<TerminalState>((set, get) => ({
   terminalApp: coerceTerminalId(read(K_APP)),
-  customTemplate: read(K_TEMPLATE) ?? "",
   externalByWs: parseExternalByWs(read(K_EXTERNAL)),
   setTerminalApp: (id) => {
     const safe = coerceTerminalId(id)
     write(K_APP, safe)
     set({ terminalApp: safe })
-  },
-  setCustomTemplate: (customTemplate) => {
-    write(K_TEMPLATE, customTemplate)
-    set({ customTemplate })
   },
   setExternal: (wsId, external) => {
     if (!SAFE_ID.test(wsId)) return
