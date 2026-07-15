@@ -164,8 +164,28 @@ export const makeQueueRepo = (
     if (event) broadcast(event)
     return released
   }),
-  recoverInflight: () => Effect.sync(() =>
-    db.prepare("UPDATE prompt_queue SET state = 'queued' WHERE state = 'inflight'").run().changes),
+  recoverInflight: () => Effect.sync(() => {
+    const events: CoolieEvent[] = []
+    const recovered = db.transaction(() => {
+      const rows = db.prepare("SELECT * FROM prompt_queue WHERE state = 'inflight' ORDER BY id").all()
+      let count = 0
+      for (const row of rows) {
+        const prompt = rowToQueued(row)
+        const changed = db.prepare("UPDATE prompt_queue SET state = 'queued' WHERE id = ? AND state = 'inflight'")
+          .run(prompt.id).changes
+        if (changed !== 1) continue
+        count += 1
+        events.push(appendEventRow(db, {
+          workspaceId: prompt.workspaceId,
+          type: "prompt.delivery.recovered",
+          payload: { tabId: prompt.tabId, queueId: prompt.queueId, messageId: prompt.messageId },
+        }))
+      }
+      return count
+    })()
+    for (const event of events) broadcast(event)
+    return recovered
+  }),
   listWorkspaceIds: () => Effect.sync(() =>
     (db.prepare("SELECT DISTINCT workspace_id FROM prompt_queue ORDER BY workspace_id").all() as Array<{ workspace_id: string }>)
       .map((row) => row.workspace_id)),

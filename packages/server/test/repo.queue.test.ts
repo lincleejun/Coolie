@@ -112,13 +112,18 @@ describe("QueueRepo", () => {
   })
 
   it("recovers daemon-crash inflight prompts back to queued", async () => {
-    await run(Effect.gen(function* () {
+    const queued = await run(Effect.gen(function* () {
       const queue = yield* QueueRepo
-      yield* queue.enqueue({ workspaceId: "w1", tabId: "t1", text: "一" })
+      const item = yield* queue.enqueue({ workspaceId: "w1", tabId: "t1", text: "一" })
       yield* queue.claimNext("w1")
+      return item
     }))
     expect(await run(Effect.gen(function* () { return yield* (yield* QueueRepo).recoverInflight() }))).toBe(1)
     expect((await run(Effect.gen(function* () { return yield* (yield* QueueRepo).peekNext("w1") })))?.state).toBe("queued")
     expect(await run(Effect.gen(function* () { return yield* (yield* QueueRepo).listWorkspaceIds() }))).toEqual(["w1"])
+    expect(live.at(-1)).toMatchObject({
+      type: "prompt.delivery.recovered",
+      payload: { queueId: queued.queueId, messageId: queued.messageId },
+    })
   })
 })

@@ -1,5 +1,10 @@
 import { describe, expect, it, vi } from "vitest"
 import { EventEmitter } from "node:events"
+import fs from "node:fs"
+import os from "node:os"
+import path from "node:path"
+import Database from "better-sqlite3"
+import { Effect } from "effect"
 import {
   createWorkspaceSerial,
   drainWorkspace,
@@ -7,7 +12,9 @@ import {
   startQueueDrainer,
   type DrainDeps,
 } from "../src/engine/queue-drain.js"
+import { runMigrations } from "../src/db/migrations.js"
 import { EVENT_CHANNEL } from "../src/events/bus.js"
+import { makeQueueRepo } from "../src/repo/queue.js"
 
 const deps = (overrides: Partial<DrainDeps> = {}): DrainDeps => ({
   resolveEngineTab: async () => ({
@@ -182,6 +189,116 @@ describe("queue drainer", () => {
     expect(claimedMessageIds).toEqual(["queue:7", "queue:7"])
     expect(receiptAttempts).toBe(2)
     expect(state).toBe("deleted")
+  })
+
+  it("reopens a file SQLite queue and redelivers the same durable identity after the PTY/receipt crash window", async () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), "coolie-queue-restart-"))
+    const dbPath = path.join(home, "coolie.db")
+    let db: Database.Database | undefined
+    try {
+      db = new Database(dbPath)
+      runMigrations(db)
+      db.prepare("INSERT INTO projects (id,name,repo_root,default_base_branch,created_at) VALUES (?,?,?,?,?)")
+        .run("p1", "p", "/tmp/p", "main", 1)
+      db.prepare(`INSERT INTO workspaces
+        (id,project_id,name,path,branch,base_branch,base_ref,status,pinned,created_at)
+        VALUES (?,?,?,?,?,?,?,?,?,?)`).run("w1", "p1", "w", "/tmp/w", "b", "main", "r", "active", 0, 1)
+
+      const beforeRestart = makeQueueRepo(db, () => {})
+      const first = await Effect.runPromise(beforeRestart.enqueue({
+        workspaceId: "w1", tabId: "t1", text: "PTY 已接收但 receipt 未提交",
+      }))
+      const second = await Effect.runPromise(beforeRestart.enqueue({
+        workspaceId: "w1", tabId: "t1", text: "下一条仍应保持 FIFO",
+      }))
+      const acceptedByPty = await Effect.runPromise(beforeRestart.claimNext("w1", "t1"))
+      expect(acceptedByPty).toMatchObject({
+        id: first.id,
+        queueId: first.queueId,
+        messageId: first.messageId,
+        text: "PTY 已接收但 receipt 未提交",
+        mode: "send",
+        state: "inflight",
+      })
+      // Crash boundary: the PTY accepted this payload, but delivered() was never called.
+      const ptyWrite = { messageId: acceptedByPty!.messageId, text: acceptedByPty!.text }
+      expect(ptyWrite).toEqual({ messageId: first.messageId, text: "PTY 已接收但 receipt 未提交" })
+      db.close()
+      db = undefined
+
+      db = new Database(dbPath)
+      runMigrations(db)
+      const afterRestart = makeQueueRepo(db, () => {})
+      const recoveredClaims: Array<{
+        id: number
+        messageId: string
+        text: string
+        mode: "send"
+      }> = []
+      const deliver = vi.fn(async () => {})
+      const restartDeps = deps({
+        claimNext: async (workspaceId, tabId) => {
+          const prompt = await Effect.runPromise(afterRestart.claimNext(workspaceId, tabId))
+          if (prompt) recoveredClaims.push({
+            id: prompt.id,
+            messageId: prompt.messageId,
+            text: prompt.text,
+            mode: prompt.mode,
+          })
+          return prompt
+        },
+        release: async (queueId) => { await Effect.runPromise(afterRestart.release(queueId)) },
+        deliver,
+        onDelivered: async (queueId) => { await Effect.runPromise(afterRestart.delivered(queueId)) },
+        onFailed: async (_workspaceId, queueId, error) => {
+          await Effect.runPromise(afterRestart.release(queueId, String(error)))
+        },
+      })
+
+      await resumeQueuedWorkspaces(createWorkspaceSerial(), restartDeps, {
+        recoverInflight: async () => Effect.runPromise(afterRestart.recoverInflight()),
+        listWorkspaceIds: async () => Effect.runPromise(afterRestart.listWorkspaceIds()),
+        listTargets: async () => Effect.runPromise(afterRestart.listTargets()),
+      })
+
+      expect(recoveredClaims).toEqual([{
+        id: first.id,
+        messageId: first.messageId,
+        text: "PTY 已接收但 receipt 未提交",
+        mode: "send",
+      }])
+      expect(deliver).toHaveBeenCalledWith("coolie-w1:0", "PTY 已接收但 receipt 未提交")
+      expect(await Effect.runPromise(afterRestart.peekNext("w1", "t1"))).toMatchObject({
+        id: second.id,
+        messageId: second.messageId,
+        text: "下一条仍应保持 FIFO",
+        mode: "send",
+        state: "queued",
+      })
+
+      const lifecycle = (db.prepare(
+        "SELECT type, payload FROM events WHERE type IN ('prompt.queued','prompt.delivery.recovered','prompt.delivered') ORDER BY seq",
+      ).all() as Array<{ type: string; payload: string }>)
+        .map((row) => ({ type: row.type, payload: JSON.parse(row.payload) }))
+        .filter((event) => event.payload.queueId === first.queueId)
+      expect(lifecycle).toEqual([
+        {
+          type: "prompt.queued",
+          payload: expect.objectContaining({ queueId: first.queueId, messageId: first.messageId }),
+        },
+        {
+          type: "prompt.delivery.recovered",
+          payload: expect.objectContaining({ queueId: first.queueId, messageId: first.messageId }),
+        },
+        {
+          type: "prompt.delivered",
+          payload: expect.objectContaining({ queueId: first.queueId, messageId: first.messageId }),
+        },
+      ])
+    } finally {
+      db?.close()
+      fs.rmSync(home, { recursive: true, force: true })
+    }
   })
 
   it("recovers every exact engine-tab queue target after restart", async () => {
