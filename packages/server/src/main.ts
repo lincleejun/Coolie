@@ -90,6 +90,13 @@ const cmdStart = async (): Promise<void> => {
   const runtime = <A, E>(eff: Effect.Effect<A, E, AppServices>) =>
     Effect.runPromiseExit(Effect.provide(eff, runtimeCtx) as Effect.Effect<A, E, never>)
 
+  // A crash can leave a durable archiving row after input freeze or session teardown.
+  // Reconcile before accepting traffic: clean/removed managed worktrees finish archiving;
+  // dirty worktrees compensate to active and heal their runtime.
+  await runtime(Effect.gen(function* () {
+    yield* (yield* WorkspaceLifecycle).reconcileArchives()
+  }))
+
   const token = newToken()
   // hook 转发脚本：每次启动按引擎重写（home/版本变更自动生效）；bootstrap 建 workspace 时也会各自重写
   for (const engineId of ["claude", "codex"]) ensureHookScript(cfg.home, engineId)

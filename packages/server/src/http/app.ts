@@ -773,7 +773,7 @@ export const createApp = ({ runtime, token, onShutdown, onError, bus, sseHeartbe
           const action = wsAction[2]!
           const body = await readJson(req)
           const force = body.force === true
-          return await runRoute(
+          const handleAction = () => runRoute(
             res, runtime,
             Effect.gen(function* () {
               const lc = yield* WorkspaceLifecycle
@@ -784,6 +784,11 @@ export const createApp = ({ runtime, token, onShutdown, onError, bus, sseHeartbe
             (ws) => send(res, 200, ws),
             onError,
           )
+          // Archive shares the input/queue serial lane: already-started delivery completes first,
+          // then status=archiving freezes every later delivery before runtime teardown.
+          return await (action === "archive" && workspaceSerial
+            ? workspaceSerial.run(id, handleAction)
+            : handleAction())
         }
         const wsEnsure = url.pathname.match(/^\/workspaces\/([^/]+)\/ensure$/)
         if (req.method === "POST" && wsEnsure) {

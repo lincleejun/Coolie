@@ -83,13 +83,15 @@ describe("WorkspacesRepo", () => {
     }))
     expect(failTag(exit)).toBe("ConflictError")
   })
-  it("status machine: creating→active→archived→active; illegal moves rejected", async () => {
+  it("status machine: creating→active→archiving→archived→active; illegal moves rejected", async () => {
     const { run } = make()
     const exit = await run(Effect.gen(function* () {
       const repo = yield* WorkspacesRepo
       const ws = yield* repo.insertCreating(w1)
       const a = yield* repo.setStatus(ws.id, "active")
       expect(a.status).toBe("active")
+      const freezing = yield* repo.setStatus(ws.id, "archiving")
+      expect(freezing.status).toBe("archiving")
       const ar = yield* repo.setStatus(ws.id, "archived")
       expect(ar.status).toBe("archived")
       expect(ar.archivedAt).toBeTypeOf("number")
@@ -175,6 +177,7 @@ describe("WorkspacesRepo", () => {
       const pinned = yield* repo.setPinned(ws.id, true)
       const same = yield* repo.setPinned(ws.id, true)
       yield* repo.setStatus(ws.id, "active")
+      yield* repo.setStatus(ws.id, "archiving")
       yield* repo.setStatus(ws.id, "archived")
       const unpinned = yield* repo.setPinned(ws.id, false)
       return { pinned, same, unpinned, persisted: yield* repo.get(ws.id) }
@@ -211,6 +214,7 @@ describe("WorkspacesRepo", () => {
         ...w1, name: "usa-acadia", path: "/tmp/ws/usa-acadia", branch: "coolie/last",
       })
       yield* repo.setStatus(archived.id, "active")
+      yield* repo.setStatus(archived.id, "archiving")
       yield* repo.setStatus(archived.id, "archived")
       db.prepare(`INSERT INTO workspaces
         (id, project_id, name, path, branch, base_branch, base_ref, status, pinned, created_at, archived_at, data,

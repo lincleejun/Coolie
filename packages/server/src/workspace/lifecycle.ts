@@ -15,7 +15,7 @@ import {
 import { customNamePool, getNamePool, pickName, sanitizeSlug } from "./names.js"
 import { allocatePortBase, portEnv } from "./ports.js"
 import { injectInfoExclude, readWorktreeIncludePatterns, copyIncludedFiles } from "./include.js"
-import { TmuxService } from "../tmux/service.js"
+import { TmuxService, type TmuxError } from "../tmux/service.js"
 import { TabsRepo } from "../repo/tabs.js"
 import { QueueRepo } from "../repo/queue.js"
 import { SessionEnsurer, type EnsureError } from "./heal.js"
@@ -36,7 +36,7 @@ export const PostCreateHooksEmpty = Layer.succeed(PostCreateHooks, [])
 
 export type CreateError = ValidationError | NotFoundError | ConflictError | GitError | SetupScriptError | HookError
 export type RetryError = CreateError | EnsureError
-export type LifecycleError = NotFoundError | ConflictError | GitError
+export type LifecycleError = NotFoundError | ConflictError | GitError | TmuxError
 
 export interface WorkspaceLifecycleShape {
   readonly createIntent: (opts: {
@@ -54,6 +54,7 @@ export interface WorkspaceLifecycleShape {
   readonly renameBranch: (id: string, branch: string) => Effect.Effect<Workspace, LifecycleError | ValidationError>
   readonly reorder: (projectId: string, workspaceIds: readonly string[]) => Effect.Effect<Workspace[], NotFoundError | ConflictError>
   readonly archive: (id: string, opts?: { force?: boolean }) => Effect.Effect<Workspace, LifecycleError>
+  readonly reconcileArchives: () => Effect.Effect<void>
   readonly unarchive: (id: string) => Effect.Effect<Workspace, LifecycleError>
   readonly delete: (id: string, opts?: { force?: boolean }) => Effect.Effect<void, LifecycleError>
 }
@@ -100,10 +101,11 @@ export const WorkspaceLifecycleLive = Layer.effect(
     /** archive/delete 共用：杀 tmux session（engine 归 tmux，拆除是唯一合法杀点）。
      * tabs 行是 engine 会话记忆（engineSessionId → unarchive 后 --resume 复活的钥匙，设计文档 §十）：
      * archive 保留，仅 delete 删除。全程容错。 */
-    const teardownRuntime = (ws: Workspace, reason: "archive" | "delete"): Effect.Effect<void> =>
+    const teardownRuntime = (ws: Workspace, reason: "archive" | "delete"): Effect.Effect<void, TmuxError> =>
       Effect.gen(function* () {
         if (Option.isSome(tmuxOpt)) {
-          yield* tmuxOpt.value.killSession(tmuxSessionName(ws.id)).pipe(Effect.ignore)
+          if (reason === "archive") yield* tmuxOpt.value.killSession(tmuxSessionName(ws.id))
+          else yield* tmuxOpt.value.killSession(tmuxSessionName(ws.id)).pipe(Effect.ignore)
           yield* emit(ws.id, "workspace.tmux.killed", { sessionName: tmuxSessionName(ws.id), reason }).pipe(Effect.ignore)
         }
         if (Option.isSome(tabsOpt)) {
@@ -436,29 +438,52 @@ export const WorkspaceLifecycleLive = Layer.effect(
 
     const archive: WorkspaceLifecycleShape["archive"] = (id, opts) =>
       withWorkspaceLock(id, Effect.gen(function* () {
-        const ws = yield* repo.get(id)
+        let ws = yield* repo.get(id)
         if (ws.kind === "main") return yield* new ConflictError({ message: "main task 不可归档" })
-        if (ws.status !== "active")
-          return yield* new ConflictError({ message: `只能归档 active 的 workspace（当前 ${ws.status}）` })
+        if (ws.status !== "active" && ws.status !== "archiving")
+          return yield* new ConflictError({ message: `只能归档 active/archiving 的 workspace（当前 ${ws.status}）` })
         const project = yield* projects.get(ws.projectId)
         const force = opts?.force === true
-        if (ws.ownership === "adopted") {
+        if (ws.status === "active") {
+          ws = yield* repo.setStatus(id, "archiving")
+          yield* emit(id, "workspace.archiving", { id, force, ownership: ws.ownership })
+        }
+
+        const compensateOrKeepRetryable = (cause: LifecycleError): Effect.Effect<never, LifecycleError> =>
+          Effect.gen(function* () {
+            // worktree 仍在时恢复 active 并重建 runtime；已经移除时保留 archiving，
+            // 下次调用（包括 daemon restart reconcile）会幂等提交 archived。
+            const canRestore = ws.ownership === "adopted"
+              || (yield* worktreePresent(project.repoRoot, ws.path).pipe(Effect.orElseSucceed(() => false)))
+            if (canRestore) {
+              yield* repo.setStatus(id, "active").pipe(Effect.ignore)
+              if (Option.isSome(ensurerOpt)) yield* ensurerOpt.value.ensure(id).pipe(Effect.ignore)
+            }
+            yield* emit(id, "workspace.archive.failed", {
+              id, retryable: !canRestore, restoredActive: canRestore,
+              error: { tag: cause._tag, message: cause.message },
+            }).pipe(Effect.ignore)
+            return yield* Effect.fail(cause)
+          })
+
+        return yield* Effect.gen(function* () {
+          // status=archiving 先持久化，所有 active-only HTTP/queue 输入随即冻结。
+          // session 停止后再做最终 dirty check，消除 engine 在 guard 后写入的竞态。
           yield* teardownRuntime(ws, "archive")
+          if (ws.ownership === "managed")
+            yield* removeWorktreeGuarded(project.repoRoot, ws, force, "归档")
           const out = yield* repo.setStatus(id, "archived")
           yield* repo.setTaskStatus(id, "done")
-          yield* emit(id, "workspace.archived", { id, force: false, ownership: ws.ownership })
+          yield* emit(id, "workspace.archived", { id, force, ownership: ws.ownership })
           return out
-        }
-        // 顺序：先守卫（脏树 409 时 session 不能已被杀）→ 拆 tmux/tabs → 删 worktree。
-        // 守卫与删除之间 engine 理论上可再写文件——窗口极小，且 removeWorktreeGuarded 内层守卫兜底（二次 409 可重试）。
-        yield* guardClean(project.repoRoot, ws, force, "归档")
-        yield* teardownRuntime(ws, "archive")
-        yield* removeWorktreeGuarded(project.repoRoot, ws, force, "归档")
-        const out = yield* repo.setStatus(id, "archived")
-        yield* repo.setTaskStatus(id, "done")
-        yield* emit(id, "workspace.archived", { id, force })
-        return out
+        }).pipe(Effect.catchAll(compensateOrKeepRetryable))
       }))
+
+    const reconcileArchives: WorkspaceLifecycleShape["reconcileArchives"] = () =>
+      Effect.gen(function* () {
+        const pending = (yield* repo.list({})).filter((ws) => ws.status === "archiving")
+        for (const ws of pending) yield* archive(ws.id).pipe(Effect.ignore)
+      })
 
     const unarchive: WorkspaceLifecycleShape["unarchive"] = (id) =>
       withWorkspaceLock(id, Effect.gen(function* () {
@@ -535,7 +560,7 @@ export const WorkspaceLifecycleLive = Layer.effect(
 
     return {
       createIntent, create, retry, ensure, rename, setTaskStatus, renameBranch, reorder,
-      archive, unarchive, delete: del,
+      archive, reconcileArchives, unarchive, delete: del,
     }
   }),
 )

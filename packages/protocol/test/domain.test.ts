@@ -55,6 +55,15 @@ describe("protocol domain", () => {
     expect(workspace.ownership).toBe("managed")
     expect(workspace.taskStatus).toBe("in_progress")
   })
+  it("decodes the durable archiving phase without changing legacy defaults", () => {
+    const workspace = decodeWorkspace({
+      id: "w1", projectId: "p1", name: "recovering", path: "/tmp/ws",
+      branch: "coolie/recovering", baseBranch: "main", baseRef: "abc123", status: "archiving",
+      pinned: false, createdAt: 1, archivedAt: null, portBase: 40000,
+    })
+    expect(workspace.status).toBe("archiving")
+    expect(workspace.ownership).toBe("managed")
+  })
   it("rejects a bad workspace status", () => {
     expect(() => decodeWorkspace({
       id: "w1", projectId: "p1", name: "n", path: "/p", branch: "b",

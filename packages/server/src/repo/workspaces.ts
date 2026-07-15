@@ -12,10 +12,11 @@ import { EventsBus, EVENT_CHANNEL } from "../events/bus.js"
 import { appendEventRow } from "./events.js"
 import type { WorkspaceLayoutState } from "../tmux/layout.js"
 
-/** 设计文档 §四 状态机：creating→active→archived→active；creating 失败→error；error 可重试回 creating */
+/** 持久 workspace 状态机。archiving 冻结输入，并允许成功提交或失败补偿回 active。 */
 const ALLOWED_TRANSITIONS: Record<WorkspaceStatus, ReadonlyArray<WorkspaceStatus>> = {
   creating: ["active", "error"],
-  active: ["archived", "error"],
+  active: ["archiving", "error"],
+  archiving: ["active", "archived"],
   archived: ["active"],
   error: ["creating"],
 }

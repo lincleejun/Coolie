@@ -110,10 +110,11 @@ describe("POST /workspaces/:id/input", () => {
     expect(delivered).toBeDefined()
     expect(delivered.payload).toMatchObject({ mode: "send", chars: 5 })
   })
-  it("非 active → 409", async () => {
-    const id = insertWorkspace("archived")
+  it.each(["archiving", "archived"])("%s freezes new input → 409", async (status) => {
+    const id = insertWorkspace(status)
     insertTab(id, "engine", 0)
     expect((await post(`/workspaces/${id}/input`, { text: "hi", mode: "send" })).status).toBe(409)
+    expect(fakeOps.calls).toHaveLength(0)
   })
   it("无 engine tab → 404", async () => {
     const id = insertWorkspace("active")

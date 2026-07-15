@@ -535,6 +535,7 @@ describe("bootstrap：codex 无-hooks 通路（RE-SMOKE 反转）——先投递
     const ws = await createCodex("codex-invert-archived")
     const layer = buildLayer(rolloutCodex, 4000)
     await Effect.runPromise(Effect.provide(Effect.gen(function* () {
+      yield* (yield* WorkspacesRepo).setStatus(ws.id, "archiving")
       yield* (yield* WorkspacesRepo).setStatus(ws.id, "archived")
     }), layer) as Effect.Effect<void, any, never>)
 

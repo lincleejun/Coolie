@@ -15,10 +15,11 @@ import { SetupRunner, type SetupRunnerShape } from "../src/workspace/setup.js"
 import { WorkspaceLifecycle, WorkspaceLifecycleLive, PostCreateHooksEmpty } from "../src/workspace/lifecycle.js"
 import { SessionEnsurer } from "../src/workspace/heal.js"
 import { makeFakeGit } from "./helpers/fake-git.js"
+import { TmuxService, type TmuxServiceShape } from "../src/tmux/service.js"
 
 type AnyServices = WorkspaceLifecycle | WorkspacesRepo | ProjectsRepo | EventsRepo | QueueRepo | TabsRepo
 
-const makeEnv = () => {
+const makeEnv = (options?: { onKillSession?: () => void }) => {
   const db = new Database(":memory:"); runMigrations(db)
   const home = fs.mkdtempSync(path.join(os.tmpdir(), "coolie-la-home-"))
   const wsRoot = fs.mkdtempSync(path.join(os.tmpdir(), "coolie-la-ws-"))
@@ -28,12 +29,19 @@ const makeEnv = () => {
   const fake = makeFakeGit()
   let setupRuns = 0
   let ensureRuns = 0
+  let killRuns = 0
   let failEnsure = false
   const setup: SetupRunnerShape = { run: () => Effect.sync(() => { setupRuns++; return [] }) }
+  const tmux = {
+    socket: "archive-test",
+    hasSession: () => Effect.succeed(false),
+    killSession: () => Effect.sync(() => { killRuns++; options?.onKillSession?.() }),
+  } as unknown as TmuxServiceShape
   const layer = WorkspaceLifecycleLive.pipe(
     Layer.provideMerge(Layer.mergeAll(
       Layer.succeed(GitService, fake.git),
       Layer.succeed(SetupRunner, setup),
+      ...(options ? [Layer.succeed(TmuxService, tmux)] : []),
       Layer.succeed(SessionEnsurer, {
         ensure: (id: string) => failEnsure
           ? Effect.fail({ _tag: "TmuxError" as const, message: "ensure failed", exitCode: 1, stderr: "" })
@@ -52,9 +60,10 @@ const makeEnv = () => {
   const run = <A, E>(eff: Effect.Effect<A, E, AnyServices>) =>
     Effect.runPromiseExit(Effect.provide(eff, layer) as Effect.Effect<A, E, never>)
   return {
-    fake, repoRoot, run,
+    db, fake, repoRoot, run,
     setupRuns: () => setupRuns,
     ensureRuns: () => ensureRuns,
+    killRuns: () => killRuns,
     setFailEnsure: (value: boolean) => { failEnsure = value },
   }
 }
@@ -158,6 +167,42 @@ describe("archive", () => {
       return yield* (yield* WorkspaceLifecycle).archive(ws.id, { force: true })
     }))
     expect(forced.status).toBe("archived")
+  })
+  it("freezes input before killing the session, then restores active runtime when the final dirty guard fails", async () => {
+    let env!: ReturnType<typeof makeEnv>
+    env = makeEnv({
+      onKillSession: () => {
+        const row = env.db.prepare("SELECT status FROM workspaces WHERE branch = ?").get("coolie/work") as { status: string }
+        expect(row.status).toBe("archiving")
+        const wsPath = [...env.fake.state.worktrees.keys()][0]!
+        env.fake.state.dirty.add(wsPath)
+      },
+    })
+    const ws = await setupActive(env)
+    const ensuresBeforeArchive = env.ensureRuns()
+    const exit = await env.run(Effect.gen(function* () {
+      return yield* (yield* WorkspaceLifecycle).archive(ws.id)
+    }))
+    expect(failTag(exit)).toBe("ConflictError")
+    expect(env.killRuns()).toBe(1)
+    expect(env.ensureRuns()).toBe(ensuresBeforeArchive + 1)
+    expect((await ok(env, Effect.gen(function* () {
+      return yield* (yield* WorkspacesRepo).get(ws.id)
+    }))).status).toBe("active")
+    expect(await eventTypes(env)).toContain("workspace.archive.failed")
+  })
+  it("reconciles a persisted archiving phase after daemon restart", async () => {
+    const env = makeEnv()
+    const ws = await setupActive(env)
+    await ok(env, Effect.gen(function* () {
+      yield* (yield* WorkspacesRepo).setStatus(ws.id, "archiving")
+      yield* (yield* WorkspaceLifecycle).reconcileArchives()
+    }))
+    const recovered = await ok(env, Effect.gen(function* () {
+      return yield* (yield* WorkspacesRepo).get(ws.id)
+    }))
+    expect(recovered.status).toBe("archived")
+    expect(env.fake.state.worktrees.has(ws.path)).toBe(false)
   })
   it("non-active workspace cannot be archived", async () => {
     const env = makeEnv()
