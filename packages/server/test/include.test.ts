@@ -3,6 +3,7 @@ import * as fs from "node:fs"; import * as os from "node:os"; import * as path f
 import { execSync } from "node:child_process"
 import {
   injectInfoExclude, readWorktreeIncludePatterns, copyIncludedFiles, DEFAULT_INCLUDE_PATTERNS,
+  resolveFilesToCopyRules, selectIncludedPaths, isIncludedByRules,
 } from "../src/workspace/include.js"
 
 const mkdir = (prefix: string) => fs.mkdtempSync(path.join(os.tmpdir(), prefix))
@@ -91,6 +92,74 @@ describe("readWorktreeIncludePatterns", () => {
     const repo = mkdir("coolie-inc4-")
     fs.writeFileSync(path.join(repo, ".worktreeinclude"), "# secrets\n.env*\n\nconfig/local.json\n")
     expect(readWorktreeIncludePatterns(repo)).toEqual([".env*", "config/local.json"])
+  })
+  it("empty .worktreeinclude copies zero files (authoritative, no default fallback)", () => {
+    const repo = mkdir("coolie-inc-empty-")
+    fs.writeFileSync(path.join(repo, ".worktreeinclude"), "# intentionally empty\n\n")
+    expect(resolveFilesToCopyRules(repo)).toEqual({ source: "worktreeinclude", patterns: [] })
+  })
+})
+
+describe("resolveFilesToCopyRules precedence", () => {
+  it("prefers .worktreeinclude over project settings and defaults", () => {
+    const repo = mkdir("coolie-inc-prec-")
+    fs.writeFileSync(path.join(repo, ".worktreeinclude"), "secrets/\n")
+    expect(resolveFilesToCopyRules(repo, [".env*"])).toEqual({ source: "worktreeinclude", patterns: ["secrets/"] })
+  })
+  it("uses project settings when .worktreeinclude is absent", () => {
+    const repo = mkdir("coolie-inc-proj-")
+    expect(resolveFilesToCopyRules(repo, ["config/local.json"])).toEqual({
+      source: "project",
+      patterns: ["config/local.json"],
+    })
+  })
+})
+
+describe("gitignore rule matching", () => {
+  it("supports nested, directory, negation and last-match-wins", () => {
+    const rules = [".env*", "config/", "!config/local.json", "config/local.json"]
+    expect(isIncludedByRules(".env", rules)).toBe(true)
+    expect(isIncludedByRules("config/local.json", rules)).toBe(true)
+    expect(isIncludedByRules("config/other.json", rules)).toBe(true)
+    expect(isIncludedByRules("src/.env", rules)).toBe(true)
+    expect(isIncludedByRules("README.md", rules)).toBe(false)
+  })
+
+  it("selectIncludedPaths filters candidates", () => {
+    const selected = selectIncludedPaths(
+      [".env", "config/local.json", "node_modules/pkg/index.js", "tracked.txt"],
+      [".env*", "config/"],
+    )
+    expect(selected).toEqual([".env", "config/local.json"])
+  })
+})
+
+describe("files-to-copy with real git", () => {
+  const sh = (cwd: string, ...args: string[]) =>
+    execSync(["git", ...args].join(" "), { cwd, stdio: "ignore" })
+
+  it("matches ignored untracked files and excludes tracked/unignored", () => {
+    const repo = mkdir("coolie-inc-git-")
+    execSync("git init", { cwd: repo, stdio: "ignore" })
+    execSync("git config user.email test@test.com && git config user.name Test", { cwd: repo, stdio: "ignore" })
+    fs.writeFileSync(path.join(repo, ".gitignore"), ".env*\nnode_modules/\n")
+    fs.writeFileSync(path.join(repo, "README.md"), "hi\n")
+    sh(repo, "add", ".gitignore", "README.md")
+    sh(repo, "commit", "-m", "init")
+    fs.writeFileSync(path.join(repo, ".env"), "A=1\n")
+    fs.mkdirSync(path.join(repo, "config"), { recursive: true })
+    fs.writeFileSync(path.join(repo, "config", ".env.local"), "B=2\n")
+    fs.writeFileSync(path.join(repo, "plain.txt"), "visible\n")
+    fs.mkdirSync(path.join(repo, "node_modules", "pkg"), { recursive: true })
+    fs.writeFileSync(path.join(repo, "node_modules", "pkg", "index.js"), "x\n")
+
+    const ignored = execSync("git ls-files --others --ignored --exclude-standard -z", { cwd: repo })
+      .toString().split("\0").filter(Boolean)
+    const selected = selectIncludedPaths(ignored, [".env*", "!config/.env.local"])
+    expect(selected).toContain(".env")
+    expect(selected).not.toContain("config/.env.local")
+    expect(selected).not.toContain("plain.txt")
+    expect(selected).not.toContain("node_modules/pkg/index.js")
   })
 })
 

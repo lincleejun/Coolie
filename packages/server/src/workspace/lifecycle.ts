@@ -14,7 +14,7 @@ import {
 } from "./setup.js"
 import { customNamePool, getNamePool, pickName, sanitizeSlug } from "./names.js"
 import { allocatePortBase, portEnv } from "./ports.js"
-import { injectInfoExclude, readWorktreeIncludePatterns, copyIncludedFiles } from "./include.js"
+import { injectInfoExclude, resolveFilesToCopyRules, selectIncludedPaths, copyIncludedFiles } from "./include.js"
 import { TmuxService, type TmuxError } from "../tmux/service.js"
 import { TabsRepo } from "../repo/tabs.js"
 import { QueueRepo } from "../repo/queue.js"
@@ -169,8 +169,9 @@ export const WorkspaceLifecycleLive = Layer.effect(
           try: () => injectInfoExclude(repoRoot),
           catch: (e) => new GitError({ op: "info/exclude", message: `注入 .git/info/exclude 失败：${String(e)}`, exitCode: null, stderr: "" }),
         })
-        const patterns = readWorktreeIncludePatterns(repoRoot)
-        const ignored = yield* git.listIgnoredMatching(repoRoot, patterns)
+        const { patterns } = resolveFilesToCopyRules(repoRoot)
+        const candidates = yield* git.listIgnoredUntracked(repoRoot)
+        const ignored = selectIncludedPaths(candidates, patterns)
         yield* Effect.try({
           try: () => copyIncludedFiles(repoRoot, ws.path, ignored),
           catch: (e) => new GitError({ op: "worktreeinclude", message: `复制 .worktreeinclude 文件失败：${String(e)}`, exitCode: null, stderr: "" }),

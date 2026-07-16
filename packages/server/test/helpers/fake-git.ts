@@ -106,6 +106,10 @@ export const makeFakeGit = (init?: {
       rec("listIgnoredMatching", repoRoot, ...patterns)
       return guard("listIgnoredMatching", () => [...state.ignoredFiles])
     },
+    listIgnoredUntracked: (repoRoot) => {
+      rec("listIgnoredUntracked", repoRoot)
+      return guard("listIgnoredUntracked", () => [...state.ignoredFiles])
+    },
   }
   return { git, state }
 }
