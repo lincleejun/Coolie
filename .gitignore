@@ -16,4 +16,9 @@ dist-web/
 .worktrees/
 
 # Generated Wave 4 sidecar staged for Tauri bundling (built by sidecar:build)
-packages/client/src-tauri/resources/sidecar/
+packages/client/src-tauri/resources/sidecar/**
+!packages/client/src-tauri/resources/sidecar/.gitkeep
+
+# Release / acceptance outputs
+artifacts/
+dist-artifacts/

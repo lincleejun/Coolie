@@ -6,6 +6,24 @@ coding agent 的干净开发环境伴侣（= repo + branch）。
 - 0.1.0 产品需求：`docs/superpowers/specs/2026-07-15-coolie-v0.1.0-prd.md`
 - 0.1.0 实施路线图：`docs/superpowers/plans/2026-07-15-coolie-v0.1.0-roadmap.md`
 - 架构决策日志：`docs/architecture-decision-log.md`
+- 安装 / Gatekeeper：[`docs/installation.md`](docs/installation.md)
+- 安全说明（无沙箱、unsigned）：[`docs/security.md`](docs/security.md)
+- 诊断与日志：[`docs/troubleshooting.md`](docs/troubleshooting.md)
+
+## 0.1.0 macOS artifact
+
+0.1.0 ships an **unsigned** `.app`/`.dmg` with a bundled Node sidecar (no checkout, no global Node/tsx).  
+First open needs Gatekeeper bypass after checksum verification — see [`docs/installation.md`](docs/installation.md).  
+App Sandbox is **not** enabled; details in [`docs/security.md`](docs/security.md).
+
+```bash
+export COOLIE_SIDECAR_NODE=/absolute/path/to/node-v22.22.3/bin/node
+PATH="$(dirname "$COOLIE_SIDECAR_NODE"):$PATH" bun install --frozen-lockfile
+bun run sidecar:build
+bun run --cwd packages/client build:app:release
+bun run scripts/smoke-macos-artifact.ts
+bun run release:verify
+```
 
 ## 开发快速开始
 

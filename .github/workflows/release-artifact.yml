@@ -1,0 +1,79 @@
+name: Release artifact
+
+on:
+  workflow_dispatch:
+  push:
+    tags: ["v0.1.0*"]
+
+concurrency:
+  group: release-artifact-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  macos-artifact:
+    runs-on: macos-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Setup Node 22.22.3 for sidecar ABI
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22.22.3"
+
+      - name: Install with sidecar Node on PATH
+        run: |
+          export COOLIE_SIDECAR_NODE="$(command -v node)"
+          echo "COOLIE_SIDECAR_NODE=$COOLIE_SIDECAR_NODE" >> "$GITHUB_ENV"
+          node -v
+          PATH="$(dirname "$COOLIE_SIDECAR_NODE"):$PATH" bun install --frozen-lockfile
+
+      - name: Typecheck + fast tests
+        run: |
+          bun run typecheck
+          bun run test:fast
+
+      - name: Build sidecar + release app
+        run: |
+          bun run sidecar:build
+          bun run --cwd packages/client build:app:release
+
+      - name: Audit release bundle (no WDIO)
+        run: bun run scripts/audit-release-bundle.ts packages/client/src-tauri/target/release/bundle/macos/Coolie.app
+
+      - name: Clean-environment artifact smoke
+        run: bun run scripts/smoke-macos-artifact.ts packages/client/src-tauri/target/release/bundle/macos/Coolie.app
+
+      - name: Build packaged test app + native journeys
+        run: |
+          bun run build:packaged-test-app
+          bun run --cwd packages/client test:tauri:release:native
+
+      - name: Checksums
+        run: |
+          mkdir -p dist-artifacts
+          APP="packages/client/src-tauri/target/release/bundle/macos/Coolie.app"
+          DMG=$(ls packages/client/src-tauri/target/release/bundle/dmg/*.dmg 2>/dev/null | head -1 || true)
+          ditto -c -k --sequesterRsrc --keepParent "$APP" dist-artifacts/Coolie.app.zip
+          if [ -n "$DMG" ]; then cp "$DMG" dist-artifacts/; fi
+          (cd dist-artifacts && shasum -a 256 * > SHA256SUMS.txt)
+          cat dist-artifacts/SHA256SUMS.txt
+
+      - name: Acceptance report
+        env:
+          COOLIE_REQUIRE_ARTIFACT: "1"
+        run: bun run release:verify
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: coolie-macos-artifact
+          path: |
+            dist-artifacts/**
+            artifacts/acceptance-report.json
+            packages/client/e2e/tauri/artifacts/**
+          if-no-files-found: warn

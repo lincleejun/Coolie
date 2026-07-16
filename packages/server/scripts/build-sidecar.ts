@@ -337,6 +337,7 @@ for (const rel of listFiles(out).map((path) => relative(out, path).split("\\").j
 rmSync(tauriResources, { recursive: true, force: true })
 mkdirSync(dirname(tauriResources), { recursive: true })
 copyTree(out, tauriResources)
+writeFileSync(join(tauriResources, ".gitkeep"), "")
 
 console.log(
   JSON.stringify(

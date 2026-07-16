@@ -57,7 +57,6 @@ fn dev_server_argv() -> (String, Vec<String>) {
 
 /// Packaged spawn: bundled Node + server.cjs from Tauri resources (ADR-005).
 /// Never searches PATH for Node; never references checkout/tsx.
-#[cfg(any(not(debug_assertions), test))]
 fn packaged_server_argv(resource_dir: &Path) -> Result<(String, Vec<String>), String> {
     let sidecar = resource_dir.join("sidecar");
     let node = sidecar.join("node");
@@ -86,18 +85,21 @@ fn packaged_server_argv(resource_dir: &Path) -> Result<(String, Vec<String>), St
 }
 
 fn server_argv(app: &tauri::AppHandle) -> Result<(String, Vec<String>), String> {
+    // Prefer bundled sidecar whenever resources include it (release + packaged test builds).
+    // Checkout-driven `tauri dev` / source WDIO builds have no sidecar/node and fall back to tsx.
+    if let Ok(resource_dir) = app.path().resource_dir() {
+        if resource_dir.join("sidecar").join("node").is_file() {
+            return packaged_server_argv(&resource_dir);
+        }
+    }
     #[cfg(debug_assertions)]
     {
-        let _ = app;
-        Ok(dev_server_argv())
+        return Ok(dev_server_argv());
     }
     #[cfg(not(debug_assertions))]
     {
-        let resource_dir = app
-            .path()
-            .resource_dir()
-            .map_err(|e| format!("resource_dir: {e}"))?;
-        packaged_server_argv(&resource_dir)
+        let _ = app;
+        Err("release bundle is missing sidecar/node resource".into())
     }
 }
 
@@ -105,6 +107,15 @@ fn server_argv(app: &tauri::AppHandle) -> Result<(String, Vec<String>), String> 
 fn spawn_server(app: tauri::AppHandle) -> Result<(), String> {
     let (program, args) = server_argv(&app)?;
     spawn_detached(&program, &args)
+}
+
+/// Test-only loopback daemon override (`port:token`). Release builds ignore this.
+#[tauri::command]
+fn read_e2e_server_override() -> Option<String> {
+    match std::env::var("COOLIE_E2E_SERVER") {
+        Ok(value) if !value.is_empty() => Some(value),
+        _ => None,
+    }
 }
 
 #[derive(Debug, serde::Deserialize, PartialEq)]
@@ -359,6 +370,7 @@ fn main() {
     builder
         .invoke_handler(tauri::generate_handler![
             read_server_info,
+            read_e2e_server_override,
             spawn_server,
             open_external_terminal,
             binary_on_path,

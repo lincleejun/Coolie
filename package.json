@@ -2,8 +2,12 @@
   "name": "coolie",
   "private": true,
   "type": "module",
-  "workspaces": ["packages/*"],
-  "engines": { "node": ">=22" },
+  "workspaces": [
+    "packages/*"
+  ],
+  "engines": {
+    "node": ">=22"
+  },
   "scripts": {
     "test": "bun run test:fast && bun run test:runtime",
     "test:fast": "COOLIE_TEST_TRACK=fast vitest run",
@@ -14,12 +18,18 @@
     "test:runtime:cli-c": "COOLIE_TEST_TRACK=runtime vitest run packages/cli/test/cli-e2e.test.ts -t 'create makes --agents|reports partial failure|resume'",
     "typecheck": "tsc -b packages/protocol packages/server packages/cli && tsc --noEmit -p packages/client",
     "test:tauri": "bun run --cwd packages/client test:tauri",
+    "test:tauri:release": "bun run --cwd packages/client test:tauri:release",
+    "test:tauri:release:native": "bun run --cwd packages/client test:tauri:release:native",
+    "test:tauri:release:mock": "bun run --cwd packages/client test:tauri:release:mock",
     "sidecar:build": "bun packages/server/scripts/build-sidecar.ts",
     "sidecar:self-check": "bun packages/server/scripts/build-sidecar.ts --self-check",
     "sidecar:smoke": "bun packages/server/scripts/smoke-sidecar.ts",
     "sidecar:spike": "node packages/server/scripts/build-sidecar-spike.mjs && node packages/server/scripts/smoke-sidecar-spike.mjs",
     "sidecar:spike:self-check": "node packages/server/scripts/build-sidecar-spike.mjs --self-check",
-    "postinstall": "find node_modules -path '*node-pty*' -name spawn-helper -exec chmod +x {} + 2>/dev/null || true"
+    "build:packaged-test-app": "bun scripts/build-packaged-test-app.ts",
+    "release:verify": "bun scripts/release-verify.ts",
+    "docs:links": "bun scripts/check-doc-links.ts",
+    "postinstall": "find node_modules -path '*node-pty*' -name spawn-helper -exec chmod +x {} + 2>/dev/null || true; bun scripts/patch-wdio-native-utils.ts"
   },
   "devDependencies": {
     "typescript": "^5.6.0",
@@ -28,5 +38,11 @@
     "@types/node": "^22.0.0",
     "postject": "1.0.0-alpha.6"
   },
-  "trustedDependencies": ["node-pty", "better-sqlite3"]
+  "trustedDependencies": [
+    "node-pty",
+    "better-sqlite3"
+  ],
+  "overrides": {
+    "@wdio/native-utils": "2.5.0"
+  }
 }
