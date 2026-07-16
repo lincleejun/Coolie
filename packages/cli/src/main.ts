@@ -30,6 +30,13 @@ import { generateCompletion, type CompletionShell } from "./completions.js"
 import { checkForUpdate } from "./update-check.js"
 import { resetRuntime, stopDaemon } from "./server-control.js"
 import { renderSchema } from "./schema.js"
+import {
+  parseWaitTimeout,
+  waitForWorkspace,
+  WAIT_EXIT,
+  WaitValidationError,
+  type WaitFor,
+} from "./wait.js"
 
 const program = new Command("coolie").showHelpAfterError()
 const fail = (e: unknown): never => { console.error(String(e instanceof Error ? e.message : e)); process.exit(1) }
@@ -266,6 +273,48 @@ program.command("state [wsId]")
       const snapshot = decodeCoolieStateSnapshot(await api("GET", path))
       process.stdout.write(JSON.stringify(snapshot, null, 2) + "\n")
     } catch (error) { fail(error) }
+  })
+
+program.command("wait <wsId>")
+  .description("基于 snapshot + event cursor 等待 workspace 达到 attention/idle/error")
+  .requiredOption("--for <condition>", "attention | idle | error")
+  .requiredOption("--timeout <duration>", "超时（毫秒或 30s/5m）")
+  .action(async (wsId: string, opts: { for: string; timeout: string }) => {
+    const waitFor = opts.for as WaitFor
+    if (!["attention", "idle", "error"].includes(waitFor)) {
+      console.error(`unknown wait condition: ${opts.for}`)
+      process.exit(WAIT_EXIT.invalid)
+    }
+    let timeoutMs: number
+    try {
+      timeoutMs = parseWaitTimeout(opts.timeout)
+    } catch (error) {
+      console.error(error instanceof WaitValidationError ? error.message : String(error))
+      process.exit(WAIT_EXIT.invalid)
+    }
+    const controller = new AbortController()
+    const onSignal = (): void => controller.abort()
+    process.once("SIGINT", onSignal)
+    process.once("SIGTERM", onSignal)
+    try {
+      const result = await waitForWorkspace({
+        workspaceId: wsId,
+        waitFor,
+        timeoutMs,
+        signal: controller.signal,
+      })
+      process.stdout.write(`${JSON.stringify(result)}\n`)
+      if (result.ok) process.exit(WAIT_EXIT.matched)
+      if (result.reason === "timeout") process.exit(WAIT_EXIT.timeout)
+      if (result.reason === "aborted") process.exit(WAIT_EXIT.aborted)
+      if (result.message) console.error(result.message)
+      process.exit(WAIT_EXIT.error)
+    } catch (error) {
+      fail(error)
+    } finally {
+      process.off("SIGINT", onSignal)
+      process.off("SIGTERM", onSignal)
+    }
   })
 
 program.command("collect [wsId]")
