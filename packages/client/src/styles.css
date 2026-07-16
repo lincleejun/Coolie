@@ -358,7 +358,14 @@ button { font: inherit; color: inherit; background: none; border: none; cursor: 
 .dispatch-row select, .dispatch-row input { background: var(--input-bg); color: var(--fg); border: 1px solid var(--border); border-radius: 6px; padding: 4px 8px; }
 .dispatch-branch { width: 150px; }
 .dispatch-row > span { font-size: 11px; }
-.dispatch-busy { color: var(--warn); padding: 20px 0; animation: pulse 1.2s infinite; }
+.dispatch-busy { color: var(--warn); padding: 8px 0; animation: pulse 1.2s infinite; }
+.dispatch-progress-list { display: flex; flex-direction: column; gap: 8px; margin: 8px 0 12px; }
+.dispatch-progress { border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; }
+.dispatch-progress-title { font-size: 12px; color: var(--warn); margin-bottom: 4px; }
+.dispatch-stages { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 2px; font-size: 12px; }
+.dispatch-stage.done { color: var(--fg-dim); }
+.dispatch-stage.current { color: var(--warn); font-weight: 600; }
+.dispatch-stage.pending { color: var(--fg-dim); opacity: 0.55; }
 .dispatch-err { color: var(--danger); font-size: 12px; }
 .offline-banner { flex: none; text-align: center; font-size: 12px; padding: 5px; background: rgba(224,175,104,0.15); color: var(--warn); border-bottom: 1px solid var(--warn); }
 .error-actions { display: flex; gap: 12px; align-items: center; justify-content: center; height: 100%; }

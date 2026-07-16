@@ -4,8 +4,13 @@ import { useUi } from "../stores/ui"
 import { Composer } from "./Composer"
 import { makeDrafts, type DraftStorage } from "./drafts"
 import type { EngineInfo } from "../stores/types"
-import { useT } from "../i18n"
+import { useT, type MsgKey } from "../i18n"
 import { useSettings } from "../settings/settings"
+import {
+  DISPATCH_STAGES,
+  type DispatchProgress,
+  type DispatchStage,
+} from "./dispatchProgress"
 
 const draftStorage: DraftStorage =
   typeof localStorage !== "undefined"
@@ -52,9 +57,67 @@ export const resolveDispatchDefaults = (
   }
 }
 
+const stageLabelKey = (stage: DispatchStage): MsgKey => `dispatch.stage.${stage}` as MsgKey
+
+const visibleStages = DISPATCH_STAGES.filter((stage) => stage !== "active")
+
+const DispatchProgressList = ({
+  progressByWs,
+  workspaces,
+}: {
+  progressByWs: Record<string, DispatchProgress>
+  workspaces: readonly { id: string; name: string; status: string; projectId: string }[]
+}) => {
+  const tr = useT()
+  const projectId = useUi((s) => s.dispatchProjectId)
+  const entries = Object.entries(progressByWs).filter(([wsId]) => {
+    const ws = workspaces.find((w) => w.id === wsId)
+    if (!ws) return true
+    if (projectId && ws.projectId !== projectId) return false
+    return ws.status === "creating" || ws.status === "error"
+  })
+  if (entries.length === 0) return null
+  return (
+    <div className="dispatch-progress-list">
+      {entries.map(([wsId, progress]) => {
+        const ws = workspaces.find((w) => w.id === wsId)
+        return (
+          <div className="dispatch-progress" key={wsId}>
+            <div className="dispatch-progress-title">
+              {ws?.name ?? wsId}
+              {progress.failure
+                ? <span className="b-error"> — {progress.failure.tag}</span>
+                : null}
+            </div>
+            <ol className="dispatch-stages">
+              {visibleStages.map((stage) => {
+                const done = progress.completed.includes(stage) ||
+                  (progress.current === "active" && !progress.failure)
+                const current = progress.current === stage
+                const cls = done ? "done" : current ? "current" : "pending"
+                return (
+                  <li key={stage} className={`dispatch-stage ${cls}`}>
+                    <span aria-hidden>{done ? "✓" : current ? "●" : "○"}</span>
+                    {" "}{tr(stageLabelKey(stage))}
+                  </li>
+                )
+              })}
+            </ol>
+            {progress.failure && (
+              <div className="dispatch-err">{progress.failure.tag}: {progress.failure.message}</div>
+            )}
+          </div>
+        )
+      })}
+    </div>
+  )
+}
+
 export const DispatchPanel = () => {
   const tr = useT()
   const projects = useData((s) => s.projects)
+  const workspaces = useData((s) => s.workspaces)
+  const progressByWs = useData((s) => s.dispatchProgressByWs)
   // Default outside the selector: a fresh [] inside the selector makes useSyncExternalStore
   // loop forever (Maximum update depth) — keep the selector returning a stable reference.
   const engines = useData((s) => s.config?.engines) ?? []
@@ -71,7 +134,7 @@ export const DispatchPanel = () => {
     project?.defaultBaseBranch ? [project.defaultBaseBranch] : [],
   )
   const [branchLoad, setBranchLoad] = useState<"loading" | "ready" | "error">("loading")
-  const [creating, setCreating] = useState(false)
+  const [postingIntent, setPostingIntent] = useState(false)
   const [err, setErr] = useState<string | null>(null)
   const namePool = useSettings((state) => state.namePool)
   const customNames = useSettings((state) => state.customNames)
@@ -122,11 +185,11 @@ export const DispatchPanel = () => {
 
   const submit = (prompt: string): void => {
     const api = useData.getState().getApi()
-    if (!api || !projectId || !baseBranch || !engine || creating) return
-    setCreating(true); setErr(null)
+    // Only gate on the cheap intent POST — ensure runs in the background so create-more stays open.
+    if (!api || !projectId || !baseBranch || !engine || postingIntent) return
+    setPostingIntent(true); setErr(null)
     void (async () => {
       try {
-        // Intent creation is cheap; ensure performs the first materialization and prompt delivery.
         const ws = await api.req("POST", "/workspaces", buildCreateBody({
           projectId,
           baseBranch,
@@ -137,12 +200,15 @@ export const DispatchPanel = () => {
           namePool,
           customNames,
         }))
-        await api.req("POST", `/workspaces/${ws.id}/ensure`, {})
+        useData.getState().seedDispatchProgress(ws.id)
         useUi.getState().selectWs(ws.id)
+        setPostingIntent(false)
+        void api.req("POST", `/workspaces/${ws.id}/ensure`, {}).catch((e: any) => {
+          useData.getState().pushWarning("workspace.ensure", e?.message ?? String(e))
+        })
       } catch (e: any) {
-        setErr(e?.message ?? String(e)) // status=error 的半成品会出现在左栏（! 徽标）供 Retry
-      } finally {
-        setCreating(false)
+        setErr(e?.message ?? String(e))
+        setPostingIntent(false)
       }
     })()
   }
@@ -198,10 +264,10 @@ export const DispatchPanel = () => {
         </select>
       </div>
       {err && <div className="dispatch-err">{tr("dispatch.createFailed").replace("{error}", err)}</div>}
-      {creating
-        ? <div className="dispatch-busy">◌ {tr("dispatch.creating")}</div>
-        : <Composer wsId={`dispatch:${projectId ?? "none"}`} onSubmitOverride={submit}
-            placeholder={tr("dispatch.placeholder")} />}
+      <DispatchProgressList progressByWs={progressByWs} workspaces={workspaces} />
+      <Composer wsId={`dispatch:${projectId ?? "none"}`} onSubmitOverride={submit}
+        placeholder={tr("dispatch.placeholder")} />
+      {postingIntent && <div className="dim dispatch-busy">◌ {tr("dispatch.postingIntent")}</div>}
     </div>
   )
 }
@@ -210,6 +276,9 @@ export const DispatchPanel = () => {
 export const ErrorActions = ({ wsId }: { wsId: string }) => {
   const tr = useT()
   const [busy, setBusy] = useState(false)
+  const ws = useData((s) => s.workspaces.find((w) => w.id === wsId))
+  const progress = useData((s) => s.dispatchProgressByWs[wsId])
+  const failure = ws?.lastError ?? progress?.failure ?? null
   const act = (fn: () => Promise<unknown>): void => {
     setBusy(true)
     void fn().catch((e: any) => useData.getState().pushWarning("workspace.lifecycle", e?.message ?? String(e)))
@@ -218,7 +287,11 @@ export const ErrorActions = ({ wsId }: { wsId: string }) => {
   const api = () => useData.getState().getApi()!
   return (
     <div className="error-actions">
-      <span className="b-error">! {tr("dispatch.errorRolledBack")}</span>
+      <span className="b-error">
+        ! {failure
+          ? `${failure.tag}: ${failure.message}`
+          : tr("dispatch.errorRolledBack")}
+      </span>
       <button className="btn" disabled={busy} onClick={() => act(() => api().req("POST", `/workspaces/${wsId}/retry`, {}))}>{tr("dispatch.retry")}</button>
       <button disabled={busy} onClick={() => act(() => api().req("DELETE", `/workspaces/${wsId}?force=1`))}>{tr("dispatch.deleteRecord")}</button>
     </div>
