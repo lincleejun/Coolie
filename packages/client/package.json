@@ -8,6 +8,7 @@
     "dev:web": "vite --config vite.web.config.ts",
     "build:vite": "vite build",
     "build:web": "vite build --config vite.web.config.ts",
+    "test:tauri": "VITE_COOLIE_WDIO=1 wdio run wdio.conf.ts",
     "tauri": "tauri"
   },
   "dependencies": {
@@ -23,6 +24,14 @@
     "zustand": "^5.0.0"
   },
   "devDependencies": {
+    "@types/mocha": "^10.0.10",
+    "@wdio/cli": "^9.20.0",
+    "@wdio/junit-reporter": "^9.20.0",
+    "@wdio/local-runner": "^9.20.0",
+    "@wdio/mocha-framework": "^9.20.0",
+    "@wdio/spec-reporter": "^9.20.0",
+    "@wdio/tauri-plugin": "^1.0.0",
+    "@wdio/tauri-service": "^1.0.0",
     "@tauri-apps/cli": "^2.9.0",
     "@types/node": "^22.0.0",
     "@types/react": "^18.3.0",
