@@ -6,6 +6,11 @@ import type { DiffStat, ChangesReport, EngineInfo, NamePoolInfo } from "./types"
 import { useUi } from "./ui"
 import { useAttention } from "./attention"
 import { setBadge } from "../chrome/notify"
+import {
+  applyDispatchEvent,
+  progressAt,
+  type DispatchProgress,
+} from "../composer/dispatchProgress"
 
 export interface PendingSend { id: number; wsId: string; text: string; mode: string; abort: AbortController }
 /** UI 警告面（prompt.delivery.degraded 等 server 侧降级信号 → toast/badge） */
@@ -24,6 +29,8 @@ interface DataState {
   pendingSends: PendingSend[]
   queuedByWs: Record<string, QueuedPrompt[]>
   warnings: Warning[]
+  dispatchProgressByWs: Record<string, DispatchProgress>
+  seedDispatchProgress(wsId: string): void
   setApi(api: Api): void
   getApi(): Api | null
   setStatus(s: DataState["status"]): void
@@ -87,6 +94,13 @@ export const useData = create<DataState>((set, get) => ({
   pendingSends: [],
   queuedByWs: {},
   warnings: [],
+  dispatchProgressByWs: {},
+  seedDispatchProgress: (wsId) => set((state) => ({
+    dispatchProgressByWs: {
+      ...state.dispatchProgressByWs,
+      [wsId]: progressAt(wsId, "environment"),
+    },
+  })),
   setApi: (a) => { api = a },
   getApi: () => api,
   setStatus: (status) => set({ status }),
@@ -145,6 +159,20 @@ export const useData = create<DataState>((set, get) => ({
   },
   applyEvent: (e, options = {}) => {
     const { refreshWorkspaces, refreshTabs, refreshProjects, refreshDiffstat, refreshQueue, pushWarning } = get()
+    const mapped = applyDispatchEvent(null, e)
+    if (mapped && e.workspaceId) {
+      set((state) => {
+        const prev = state.dispatchProgressByWs[e.workspaceId!] ?? null
+        const next = applyDispatchEvent(prev, e)
+        if (!next) return state
+        const dispatchProgressByWs = { ...state.dispatchProgressByWs, [e.workspaceId!]: next }
+        if (next.current === "active" && !next.failure) {
+          const { [e.workspaceId!]: _done, ...rest } = dispatchProgressByWs
+          return { dispatchProgressByWs: rest }
+        }
+        return { dispatchProgressByWs }
+      })
+    }
     if (e.type.startsWith("project.")) swallow(refreshProjects())
     else if (e.type.startsWith("workspace.")) {
       swallow(refreshWorkspaces())
@@ -155,6 +183,10 @@ export const useData = create<DataState>((set, get) => ({
           disposeWsSessions(e.workspaceId)
           useAttention.getState().purgeWorkspace(e.workspaceId)
           setBadge(useAttention.getState().count())
+          set((state) => {
+            const { [e.workspaceId!]: _removed, ...dispatchProgressByWs } = state.dispatchProgressByWs
+            return { dispatchProgressByWs }
+          })
         }
         // 删除时若删的正是当前选中 ws，清掉悬空选中态（归档仍留在列表可选，故只对 deleted 清）
         if (e.type === "workspace.deleted" && e.workspaceId) useUi.getState().clearWsIfSelected(e.workspaceId)

@@ -24,6 +24,14 @@ const ALLOWED_TRANSITIONS: Record<WorkspaceStatus, ReadonlyArray<WorkspaceStatus
 const rowToWorkspace = (r: any): Workspace => {
   let data: any = {}
   try { data = r.data ? JSON.parse(r.data) : {} } catch { /* 坏 JSON 视为无 data */ }
+  const lastError = data.lastError && typeof data.lastError === "object"
+    ? {
+        tag: typeof data.lastError.tag === "string" ? data.lastError.tag : "Error",
+        message: typeof data.lastError.message === "string" ? data.lastError.message : "failed",
+        at: typeof data.lastError.at === "number" ? data.lastError.at : r.created_at,
+        ...(typeof data.lastError.stage === "string" ? { stage: data.lastError.stage } : {}),
+      }
+    : null
   return new Workspace({
     id: r.id, projectId: r.project_id, name: r.name, path: r.path, branch: r.branch,
     baseBranch: r.base_branch, baseRef: r.base_ref, status: r.status,
@@ -33,6 +41,7 @@ const rowToWorkspace = (r: any): Workspace => {
     zenMode: data.layout?.zen === true,
     pinned: !!r.pinned, createdAt: r.created_at, archivedAt: r.archived_at ?? null,
     portBase: typeof data.portBase === "number" ? data.portBase : 0,
+    lastError,
   })
 }
 

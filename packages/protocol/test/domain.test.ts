@@ -64,6 +64,15 @@ describe("protocol domain", () => {
     expect(workspace.status).toBe("archiving")
     expect(workspace.ownership).toBe("managed")
   })
+  it("decodes optional lastError on Workspace", () => {
+    const workspace = decodeWorkspace({
+      id: "w1", projectId: "p1", name: "failed", path: "/tmp/ws",
+      branch: "coolie/failed", baseBranch: "main", baseRef: "abc123", status: "error",
+      pinned: false, createdAt: 1, archivedAt: null, portBase: 40000,
+      lastError: { tag: "SetupScriptError", message: "boom", at: 99 },
+    })
+    expect(workspace.lastError).toEqual({ tag: "SetupScriptError", message: "boom", at: 99 })
+  })
   it("rejects a bad workspace status", () => {
     expect(() => decodeWorkspace({
       id: "w1", projectId: "p1", name: "n", path: "/p", branch: "b",

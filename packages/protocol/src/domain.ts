@@ -9,6 +9,14 @@ export type TaskStatus = typeof TaskStatus.Type
 export const WorkspaceKind = Schema.Literal("main", "task")
 export type WorkspaceKind = typeof WorkspaceKind.Type
 
+export const WorkspaceLastError = Schema.Struct({
+  tag: Schema.String,
+  message: Schema.String,
+  at: Schema.Number,
+  stage: Schema.optional(Schema.String),
+})
+export type WorkspaceLastError = typeof WorkspaceLastError.Type
+
 export class Workspace extends Schema.Class<Workspace>("Workspace")({
   id: Schema.String,
   projectId: Schema.String,
@@ -28,6 +36,7 @@ export class Workspace extends Schema.Class<Workspace>("Workspace")({
   createdAt: Schema.Number,
   archivedAt: Schema.NullOr(Schema.Number),
   portBase: Schema.Number,
+  lastError: Schema.optionalWith(Schema.NullOr(WorkspaceLastError), { default: () => null }),
 }) {}
 export const decodeWorkspace = Schema.decodeUnknownSync(Workspace)
 
