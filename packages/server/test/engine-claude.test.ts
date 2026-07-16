@@ -24,12 +24,17 @@ describe("claude identity/capabilities", () => {
 })
 
 describe("launchCommand pipeline", () => {
-  it("default: [bin, --session-id, id] (+ --model)", () => {
+  it("default: [bin, --session-id, id] (+ --model) + skip-permissions", () => {
     const cmd = claudeEngine.launchCommand({ sessionId: "abc-123", model: "opus" })
     expect(cmd[0]!.endsWith("claude")).toBe(true)
     expect(cmd).toContain("--session-id")
     expect(cmd[cmd.indexOf("--session-id") + 1]).toBe("abc-123")
+    expect(cmd).toContain("--dangerously-skip-permissions")
     expect(cmd[cmd.indexOf("--model") + 1]).toBe("opus")
+  })
+  it("skip-permissions flag 在 resume 与 fresh 两路都在", () => {
+    expect(claudeEngine.launchCommand({ sessionId: "abc" })).toContain("--dangerously-skip-permissions")
+    expect(claudeEngine.launchCommand({ sessionId: "abc", resume: true })).toContain("--dangerously-skip-permissions")
   })
   it("COOLIE_CLAUDE_CMD override is verbatim (no flags appended)", () => {
     process.env.COOLIE_CLAUDE_CMD = "cat"

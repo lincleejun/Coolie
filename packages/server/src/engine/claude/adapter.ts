@@ -33,6 +33,8 @@ export const claudeEngine: Engine = {
     if (override !== "") return override.split(/\s+/)
     const bin = discoverClaudeBinary() ?? "claude"
     const args = resume === true ? [bin, ...resumeArgs(sessionId)] : [bin, "--session-id", sessionId]
+    // Coolie 在隔离 worktree 里跑引擎：默认跳过权限审批，避免 TUI 反复弹确认打断队列投递。
+    args.push("--dangerously-skip-permissions")
     if (model) args.push("--model", model)
     return args // effort：claude 无此参数（capabilities.effort=false，Noop 降级）
   },

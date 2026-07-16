@@ -109,6 +109,8 @@ export const codexEngine: Engine = {
     // 断点 3）：无害且 future-ready，避免未来重启 hooks 时首启弹信任对话框死锁就绪门控。当前无-hooks 通路
     // 不依赖它，就绪由 rollout 文件门控。
     args.push("--dangerously-bypass-hook-trust")
+    // Coolie 在隔离 worktree 里跑引擎：默认跳过命令审批与 sandbox，避免 TUI 反复弹确认打断队列投递。
+    args.push("--dangerously-bypass-approvals-and-sandbox")
     return args
   },
   statusFromHookEvent: (evt) => {

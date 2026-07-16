@@ -54,13 +54,17 @@ describe("codexEngine", () => {
     expect(fresh.join(" ")).toContain("model_reasoning_effort=high")
     expect(fresh).toContain("--model"); expect(fresh).toContain("gpt-5")
     expect(fresh).toContain("--dangerously-bypass-hook-trust") // 保留：抑制 trust 对话框，future-ready（无-hooks 通路不依赖）
+    expect(fresh).toContain("--dangerously-bypass-approvals-and-sandbox") // 默认跳过命令审批，避免 TUI 反复弹确认
   })
-  it("bypass-hook-trust flag 在 resume 与 fresh 两路都在", () => {
-    expect(codexEngine.launchCommand({ sessionId: "SID" })).toContain("--dangerously-bypass-hook-trust")
-    expect(codexEngine.launchCommand({ sessionId: "SID", resume: true })).toContain("--dangerously-bypass-hook-trust")
-    const res = codexEngine.launchCommand({ sessionId: "SID", resume: true })
-    expect(res.join(" ")).toContain("resume SID")
-    expect(res).not.toContain("--session-id")
+  it("bypass-hook-trust / approvals-and-sandbox flag 在 resume 与 fresh 两路都在", () => {
+    const fresh = codexEngine.launchCommand({ sessionId: "SID" })
+    const resumed = codexEngine.launchCommand({ sessionId: "SID", resume: true })
+    for (const cmd of [fresh, resumed]) {
+      expect(cmd).toContain("--dangerously-bypass-hook-trust")
+      expect(cmd).toContain("--dangerously-bypass-approvals-and-sandbox")
+    }
+    expect(resumed.join(" ")).toContain("resume SID")
+    expect(resumed).not.toContain("--session-id")
   })
   it("notify lane 仅在 fresh session 注入 per-session notify 配置", () => {
     const opts = { sessionId: "", workspaceId: "ws-1", home: "/tmp/coolie home" }
