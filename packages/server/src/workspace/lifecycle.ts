@@ -13,7 +13,8 @@ import {
   resolveInitContract, resolveSetupScripts,
 } from "./setup.js"
 import { customNamePool, getNamePool, pickName, sanitizeSlug } from "./names.js"
-import { allocatePortBase, portEnv } from "./ports.js"
+import { allocatePortBase } from "./ports.js"
+import { buildWorkspaceEnv } from "./env.js"
 import { injectInfoExclude, resolveFilesToCopyRules, selectIncludedPaths, copyIncludedFiles } from "./include.js"
 import { WorktreeEnvironment } from "./worktree-environment.js"
 import { CopyError } from "./environment.js"
@@ -208,7 +209,7 @@ export const WorkspaceLifecycleLive = Layer.effect(
               cwd: ws.path,
               windowName: "engine",
               command: ["/bin/sh", "-c", "while :; do sleep 3600; done"],
-              env: { COOLIE_ROOT: repoRoot, COOLIE_WORKSPACE: ws.id, ...portEnv(ws.portBase) },
+              env: buildWorkspaceEnv({ workspace: ws, repoRoot }),
             }).pipe(Effect.mapError((e) => new SetupScriptError({
               script: "", exitCode: e.exitCode, message: `setup tmux session 创建失败：${e.message}`, outputTail: e.stderr,
             })))
@@ -236,7 +237,7 @@ export const WorkspaceLifecycleLive = Layer.effect(
           const results = yield* setup.run({
             worktreePath: ws.path,
             scripts,
-            env: { COOLIE_ROOT: repoRoot, ...portEnv(ws.portBase) },
+            env: buildWorkspaceEnv({ workspace: ws, repoRoot }),
             ...(cfg.initTimeoutMs === undefined ? {} : { timeoutMs: cfg.initTimeoutMs }),
             ...(resultFile !== undefined ? { resultFile } : {}),
           })
