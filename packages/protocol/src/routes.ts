@@ -15,6 +15,14 @@ export const ROUTES = [
   { method: "POST",   path: "/shutdown",     description: "优雅退出 daemon" },
   { method: "GET",    path: "/clients",      description: "观察连接与 GUI lease 状态" },
   { method: "GET",    path: "/config",       description: "client 引导配置与 engine 能力" },
+  {
+    method: "GET",
+    path: "/state",
+    description: "读取 canonical current-state snapshot；可选 workspace scope",
+    request: "query: workspace?",
+    response: "CoolieStateSnapshot {asOfSeq,generatedAt,scope,projects,workspaces,tabs,openAttention,queuedPrompts,activeRuns}",
+    example: "GET /state?workspace=WORKSPACE_ID",
+  },
   { method: "GET",    path: "/engines/custom", description: "列出 custom engine 定义" },
   { method: "POST",   path: "/engines/custom", description: "创建或更新 custom engine argv 定义" },
   { method: "POST",   path: "/engines/custom/presets/copilot", description: "应用 Copilot custom-engine preset" },
@@ -91,7 +99,7 @@ export const ROUTES = [
 
 /** Route metadata is the single discovery source used by both compact and detailed CLI schema output. */
 export const routeGroup = (route: RouteSchema): RouteGroup => {
-  if (route.path === "/health" || route.path === "/shutdown" || route.path === "/clients" || route.path === "/config")
+  if (route.path === "/health" || route.path === "/shutdown" || route.path === "/clients" || route.path === "/config" || route.path === "/state")
     return "system"
   if (route.path === "/collect") return "workspaces"
   if (route.path.startsWith("/projects")) return "projects"

@@ -17,6 +17,7 @@ export const EXPECTED_PUBLIC_ENDPOINTS = [
   "GET /health",
   "GET /projects",
   "GET /projects/:id/worktrees/adoptable",
+  "GET /state",
   "GET /workspaces",
   "GET /workspaces/:id",
   "GET /workspaces/:id/checkpoints",
