@@ -13,13 +13,15 @@ import {
   type CopyPlan,
   type CopyResult,
 } from "./environment.js"
-import { selectIncludedPaths, resolveFilesToCopyRules } from "./include.js"
 import { NotFoundError } from "../repo/errors.js"
 
 export type WorktreeEnvironmentMode = "provision" | "explicit-recopy"
 
 export interface WorktreeEnvironmentShape {
-  readonly preview: (projectId: string) => Effect.Effect<CopyPlan, NotFoundError | CopyError>
+  readonly preview: (
+    projectId: string,
+    opts?: { projectPatterns?: readonly string[] },
+  ) => Effect.Effect<CopyPlan, NotFoundError | CopyError>
   readonly apply: (
     workspaceId: string,
     mode: WorktreeEnvironmentMode,
@@ -61,21 +63,17 @@ export const WorktreeEnvironmentLive = Layer.effect(
     const git = yield* GitService
 
     return {
-      preview: (projectId) => mapWorktreeEnvError(Effect.gen(function* () {
+      preview: (projectId, opts) => mapWorktreeEnvError(Effect.gen(function* () {
         const project = yield* projects.get(projectId)
         const candidates = yield* git.listIgnoredUntracked(project.repoRoot)
-        const { patterns } = resolveFilesToCopyRules(project.repoRoot)
-        const selected = selectIncludedPaths(candidates, patterns)
-        return buildCopyPlan(project.repoRoot, selected)
+        return buildCopyPlan(project.repoRoot, candidates, opts?.projectPatterns)
       })),
 
       apply: (workspaceId, mode, opts) => mapWorktreeEnvError(Effect.gen(function* () {
         const workspace = yield* workspaces.get(workspaceId)
         const project = yield* projects.get(workspace.projectId)
         const candidates = yield* git.listIgnoredUntracked(project.repoRoot)
-        const { patterns } = resolveFilesToCopyRules(project.repoRoot)
-        const selected = selectIncludedPaths(candidates, patterns)
-        let plan = buildCopyPlan(project.repoRoot, selected)
+        let plan = buildCopyPlan(project.repoRoot, candidates)
         if (mode === "explicit-recopy" && !opts?.force) plan = filterNoOverwrite(workspace.path, plan)
 
         const result = applyCopyPlan(project.repoRoot, workspace.path, plan, {

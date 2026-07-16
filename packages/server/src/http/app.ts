@@ -271,6 +271,7 @@ const errorFromCause = (
     if (e._tag === "EngineError") return { status: 500, body: { code: "EngineError", message } }
     if (e._tag === "FinishOpsError") return { status: 500, body: { code: "GitError", message } }
     if (e._tag === "MergeConflictError") return { status: 409, body: { code: "Conflict", message } }
+    if (e._tag === "CopyError") return { status: 400, body: { code: "Validation", message } }
     return { status: 500, body: { code: "Internal", message } }
   }
   // defect / interruption: no typed failure to recover, fall back to a pretty cause dump
@@ -620,7 +621,7 @@ export const createApp = ({ runtime, token, onShutdown, onError, bus, sseHeartbe
         }
         const projectEnvPreview = url.pathname.match(/^\/projects\/([^/]+)\/environment\/preview$/)
         if (req.method === "GET" && projectEnvPreview) {
-          return handleEnvironmentPreview(res, runtime, projectEnvPreview[1]!, (_res, cause) => { onError?.(cause) })
+          return handleEnvironmentPreview(res, runtime, projectEnvPreview[1]!, url, (_res, cause) => { onError?.(cause) })
         }
         if (route === "POST /projects") {
           const body = await readJson(req)

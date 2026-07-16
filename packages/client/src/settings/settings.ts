@@ -21,6 +21,7 @@ const LANG_STORAGE_KEY = "coolie.lang"
 const NAME_POOL_STORAGE_KEY = "coolie.namePool"
 const CUSTOM_NAMES_STORAGE_KEY = "coolie.customNames"
 const PREFS_STORAGE_KEY = "coolie.preferences"
+const FILES_TO_COPY_STORAGE_KEY = "coolie.filesToCopyPatterns"
 
 export interface AppPreferences {
   defaultEngine: string
@@ -63,6 +64,24 @@ const saveChoice = (key: string, value: string): void => {
   } catch { /* storage may be unavailable; in-memory preference still applies */ }
 }
 
+const loadFilesToCopyPatterns = (): Record<string, string[]> => {
+  if (typeof localStorage === "undefined") return {}
+  try {
+    const parsed = JSON.parse(localStorage.getItem(FILES_TO_COPY_STORAGE_KEY) ?? "{}") as Record<string, unknown>
+    const out: Record<string, string[]> = {}
+    for (const [projectId, value] of Object.entries(parsed)) {
+      if (Array.isArray(value) && value.every((line) => typeof line === "string")) out[projectId] = value
+    }
+    return out
+  } catch { return {} }
+}
+
+const saveFilesToCopyPatterns = (patterns: Record<string, string[]>): void => {
+  try {
+    if (typeof localStorage !== "undefined") localStorage.setItem(FILES_TO_COPY_STORAGE_KEY, JSON.stringify(patterns))
+  } catch { /* retain in-memory preference */ }
+}
+
 interface SettingsState {
   readonly theme: ThemePref
   readonly lang: Lang
@@ -72,12 +91,15 @@ interface SettingsState {
   readonly namePool: string
   readonly customNames: string[]
   readonly preferences: AppPreferences
+  readonly filesToCopyByProject: Record<string, string[]>
   setTheme(theme: ThemePref): void
   setLang(lang: Lang): void
   setNamePool(namePool: string): void
   setCustomNames(customNames: string[]): void
   setKeybindingOverrides(overrides: Record<string, string | null>): KeybindingValidation
   setPreference<K extends keyof AppPreferences>(key: K, value: AppPreferences[K]): void
+  filesToCopyPatterns(projectId: string): string[]
+  setFilesToCopyPatterns(projectId: string, patterns: string[]): void
   applyKeybindingJson(json: string): KeybindingValidation
   resetKeybindings(): void
 }
@@ -107,7 +129,7 @@ const persist = (overrides: Record<string, string | null>): string | null => {
   }
 }
 
-export const useSettings = create<SettingsState>((set) => {
+export const useSettings = create<SettingsState>((set, get) => {
   const applyValidated = (result: KeybindingValidation): KeybindingValidation => {
     if (!result.ok) {
       set({ keybindingError: result.error })
@@ -128,6 +150,7 @@ export const useSettings = create<SettingsState>((set) => {
     namePool: loadNamePool(),
     customNames: loadCustomNames(),
     preferences: loadPrefs(),
+    filesToCopyByProject: loadFilesToCopyPatterns(),
     keybindings: loaded.overrides,
     effectiveHotkeys: mergeKeybindings(HOTKEYS_REGISTRY, loaded.overrides),
     keybindingError: loaded.error,
@@ -155,6 +178,12 @@ export const useSettings = create<SettingsState>((set) => {
       const preferences = { ...state.preferences, [key]: value }
       try { if (typeof localStorage !== "undefined") localStorage.setItem(PREFS_STORAGE_KEY, JSON.stringify(preferences)) } catch {}
       return { preferences }
+    }),
+    filesToCopyPatterns: (projectId) => get().filesToCopyByProject[projectId] ?? [],
+    setFilesToCopyPatterns: (projectId, patterns) => set((state) => {
+      const filesToCopyByProject = { ...state.filesToCopyByProject, [projectId]: patterns }
+      saveFilesToCopyPatterns(filesToCopyByProject)
+      return { filesToCopyByProject }
     }),
     setKeybindingOverrides: (overrides) =>
       applyValidated(validateKeybindingOverrides(HOTKEYS_REGISTRY, overrides)),
