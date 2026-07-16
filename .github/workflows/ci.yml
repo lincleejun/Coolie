@@ -1,0 +1,73 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  fast:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+      - run: bun install --frozen-lockfile
+      - run: bun run typecheck
+      - run: bun run test:fast
+
+  runtime:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+      - run: bun install --frozen-lockfile
+      - run: bun run test:runtime
+
+  desktop-mock:
+    runs-on: macos-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+      - run: bun install --frozen-lockfile
+      - run: bun run test:tauri -- --suite mock
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: desktop-mock-diagnostics
+          path: |
+            packages/client/.wdio-logs/**
+            packages/client/test-results/**
+          if-no-files-found: ignore
+
+  desktop-real:
+    runs-on: macos-latest
+    timeout-minutes: 60
+    needs: [fast, runtime, desktop-mock]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+      - run: bun install --frozen-lockfile
+      - run: bun run test:tauri -- --suite real --maxInstances=1
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: desktop-real-diagnostics
+          path: |
+            packages/client/.wdio-logs/**
+            packages/client/test-results/**
+          if-no-files-found: ignore
