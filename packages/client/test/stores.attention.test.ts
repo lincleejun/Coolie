@@ -172,13 +172,13 @@ describe("attention store", () => {
     expect(useAttention.getState().count()).toBe(0)
   })
 
-  it("is safe when no DOM exists", async () => {
+  it("is safe when no DOM exists", () => {
     vi.stubGlobal("document", undefined)
     const info: ServerInfo = { port: 1, token: "t", pid: 1 }
     useData.getState().setApi(makeApi(info))
-    await expect(useData.getState().applyEvent({
+    expect(() => useData.getState().applyEvent({
       seq: 5, workspaceId: "w1", type: "tab.status.changed",
       payload: { status: "awaiting-input" }, ts: 1,
-    })).resolves.toBeUndefined()
+    })).not.toThrow()
   })
 })
