@@ -35,39 +35,63 @@ jobs:
 
   desktop-mock:
     runs-on: macos-latest
-    timeout-minutes: 45
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: latest
-      - run: bun install --frozen-lockfile
+      - name: Setup Node 22.22.3 for sidecar ABI
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22.22.3"
+      - name: Install with sidecar Node on PATH
+        run: |
+          export COOLIE_SIDECAR_NODE="$(command -v node)"
+          echo "COOLIE_SIDECAR_NODE=$COOLIE_SIDECAR_NODE" >> "$GITHUB_ENV"
+          PATH="$(dirname "$COOLIE_SIDECAR_NODE"):$PATH" bun install --frozen-lockfile
+          bun scripts/patch-wdio-native-utils.ts
+      - name: Build packaged test app
+        run: bun run build:packaged-test-app
       - run: bun run --cwd packages/client test:tauri:mock
       - uses: actions/upload-artifact@v4
         if: failure()
         with:
           name: desktop-mock-diagnostics
           path: |
+            packages/client/e2e/tauri/artifacts/**
             packages/client/.wdio-logs/**
             packages/client/test-results/**
           if-no-files-found: ignore
 
   desktop-real:
     runs-on: macos-latest
-    timeout-minutes: 60
+    timeout-minutes: 90
     needs: [fast, runtime, desktop-mock]
     steps:
       - uses: actions/checkout@v4
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: latest
-      - run: bun install --frozen-lockfile
+      - name: Setup Node 22.22.3 for sidecar ABI
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22.22.3"
+      - name: Install with sidecar Node on PATH
+        run: |
+          export COOLIE_SIDECAR_NODE="$(command -v node)"
+          echo "COOLIE_SIDECAR_NODE=$COOLIE_SIDECAR_NODE" >> "$GITHUB_ENV"
+          PATH="$(dirname "$COOLIE_SIDECAR_NODE"):$PATH" bun install --frozen-lockfile
+          bun scripts/patch-wdio-native-utils.ts
+      - name: Build packaged test app
+        run: bun run build:packaged-test-app
       - run: bun run --cwd packages/client test:tauri:real
       - uses: actions/upload-artifact@v4
         if: failure()
         with:
           name: desktop-real-diagnostics
           path: |
+            packages/client/e2e/tauri/artifacts/**
             packages/client/.wdio-logs/**
             packages/client/test-results/**
           if-no-files-found: ignore

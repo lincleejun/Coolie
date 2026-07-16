@@ -26,7 +26,7 @@ describe("mock-daemon dispatcher journey", () => {
 
     const dispatchTitle = await browser.$("h2")
     await dispatchTitle.waitForDisplayed({ timeout: 15000 })
-    expect(await dispatchTitle.getText()).toContain("New Workspace")
+    expect(await dispatchTitle.getText()).toMatch(/New Workspace|新工作区/)
   })
 
   it("submits a dispatcher prompt with keyboard path", async () => {

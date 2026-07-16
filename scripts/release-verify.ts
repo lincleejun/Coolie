@@ -80,13 +80,35 @@ if (existsSync(releaseApp)) {
   })
 }
 
-// North-star UI evidence from Task 3.9 suites (mock) — local harness, not artifact GUI.
-failed = !run(
-  "north-star-ui",
-  "North-star UI journeys (mock daily-flow)",
-  "bun",
-  ["run", "--cwd", "packages/client", "test:tauri:mock"],
-) || failed
+// North-star UI evidence — packaged debug test app + mock daily-flow (Tasks 3.9 / 4.2 / 4.5).
+const packagedTestApp = join(root, "packages/client/src-tauri/target/debug/bundle/macos/Coolie.app")
+if (!existsSync(packagedTestApp)) {
+  failed = !run(
+    "packaged-test-app",
+    "Build packaged WDIO test app",
+    "bun",
+    ["run", "build:packaged-test-app"],
+    { COOLIE_SIDECAR_NODE: node, PATH: `${dirname(node)}:${process.env.PATH ?? ""}` },
+  ) || failed
+}
+if (existsSync(packagedTestApp)) {
+  failed = !run(
+    "north-star-ui",
+    "North-star UI journeys (mock daily-flow on packaged test app)",
+    "bun",
+    ["run", "--cwd", "packages/client", "test:tauri:mock"],
+    { COOLIE_SIDECAR_NODE: node, PATH: `${dirname(node)}:${process.env.PATH ?? ""}` },
+  ) || failed
+} else {
+  steps.push({
+    id: "north-star-ui",
+    name: "North-star UI journeys (mock daily-flow on packaged test app)",
+    ok: false,
+    detail: `missing ${packagedTestApp}`,
+    ms: 0,
+  })
+  failed = true
+}
 
 const report = {
   version: "0.1.0",

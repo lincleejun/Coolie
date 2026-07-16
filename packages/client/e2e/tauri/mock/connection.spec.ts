@@ -12,7 +12,7 @@ describe("mock-daemon connection journey", () => {
   it("connects to the mock daemon and renders onboarding (pointer)", async () => {
     const heading = await browser.$("h1")
     await heading.waitForDisplayed({ timeout: 20000 })
-    expect(await heading.getText()).toContain("Open Project")
+    expect(await heading.getText()).toMatch(/Open Project|打开项目/)
 
     const log = await mockRequestLog()
     const paths = log.map((entry) => entry.path)

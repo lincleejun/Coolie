@@ -94,8 +94,15 @@ const readBody = async (req: IncomingMessage): Promise<string> => {
   return Buffer.concat(chunks).toString("utf8")
 }
 
+/** Match production server CORS — packaged Tauri webview is a cross-origin caller. */
+const corsHeaders: Record<string, string> = {
+  "access-control-allow-origin": "*",
+  "access-control-allow-methods": "GET, POST, DELETE, OPTIONS",
+  "access-control-allow-headers": "authorization, content-type, idempotency-key",
+}
+
 const json = (res: ServerResponse, status: number, body: unknown): void => {
-  res.writeHead(status, { "content-type": "application/json" })
+  res.writeHead(status, { "content-type": "application/json", ...corsHeaders })
   res.end(JSON.stringify(body))
 }
 
@@ -188,6 +195,12 @@ export const startMockDaemon = async (opts?: { token?: string; port?: number }):
   const server = createServer(async (req, res) => {
     logRequest(req)
     const url = new URL(req.url ?? "/", "http://local")
+    for (const [key, value] of Object.entries(corsHeaders)) res.setHeader(key, value)
+    if (req.method === "OPTIONS") {
+      res.writeHead(204, { ...corsHeaders, "access-control-max-age": "86400" })
+      res.end()
+      return
+    }
     const auth = (req.headers.authorization ?? "").replace(/^Bearer /, "")
     const needsAuth = !url.pathname.startsWith("/__test__") && url.pathname !== "/health"
     if (needsAuth && auth !== token) return json(res, 401, { error: "unauthorized" })
@@ -356,11 +369,12 @@ export const startMockDaemon = async (opts?: { token?: string; port?: number }):
     }
 
     if (req.method === "GET" && url.pathname === "/events/stream") {
-      if (sseBlocked) { res.writeHead(503).end(); return }
+      if (sseBlocked) { res.writeHead(503, corsHeaders).end(); return }
       res.writeHead(200, {
         "content-type": "text/event-stream",
         "cache-control": "no-cache",
         connection: "keep-alive",
+        ...corsHeaders,
       })
       res.write(":ok\n\n")
       const after = Number(url.searchParams.get("after") ?? "0")
