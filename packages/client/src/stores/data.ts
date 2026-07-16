@@ -5,7 +5,7 @@ import type { Project, Workspace, Tab, TaskStatus, CustomEngineDefinition, Engin
 import type { DiffStat, ChangesReport, EngineInfo, NamePoolInfo } from "./types"
 import { useUi } from "./ui"
 import { useAttention } from "./attention"
-import { notifyTurnComplete, setBadge } from "../chrome/notify"
+import { setBadge } from "../chrome/notify"
 
 export interface PendingSend { id: number; wsId: string; text: string; mode: string; abort: AbortController }
 /** UI 警告面（prompt.delivery.degraded 等 server 侧降级信号 → toast/badge） */
@@ -94,9 +94,13 @@ export const useData = create<DataState>((set, get) => ({
   setTabSessionDisposer: (fn) => { disposeTabTermSession = fn },
   bootstrap: async () => {
     if (!api) return
-    const [config, projects, workspaces] = await Promise.all([
-      api.req("GET", "/config"), api.req("GET", "/projects"), api.req("GET", "/workspaces"),
+    const [snapshot, config, projects, workspaces] = await Promise.all([
+      api.req("GET", "/state"),
+      api.req("GET", "/config"),
+      api.req("GET", "/projects"),
+      api.req("GET", "/workspaces"),
     ])
+    useAttention.getState().loadSnapshot(snapshot.openAttention ?? [])
     set({ config, projects, workspaces })
     for (const w of workspaces as Workspace[])
       if (w.status === "active") { swallow(get().refreshTabs(w.id)); swallow(get().refreshDiffstat(w.id)) }
@@ -147,7 +151,11 @@ export const useData = create<DataState>((set, get) => ({
       if (e.type === "workspace.archived" || e.type === "workspace.deleted") {
         // F2：归档/删除 = workspace 从列表移除 → 主动回收该 ws 全部终端会话（N×tabs 的 xterm+WS 否则永久泄漏）。
         // engine 本体归 tmux（archive 侧另行 kill-session），这里只断 GUI 侧的活连接。
-        if (e.workspaceId) disposeWsSessions(e.workspaceId)
+        if (e.workspaceId) {
+          disposeWsSessions(e.workspaceId)
+          useAttention.getState().purgeWorkspace(e.workspaceId)
+          setBadge(useAttention.getState().count())
+        }
         // 删除时若删的正是当前选中 ws，清掉悬空选中态（归档仍留在列表可选，故只对 deleted 清）
         if (e.type === "workspace.deleted" && e.workspaceId) useUi.getState().clearWsIfSelected(e.workspaceId)
       } else if (e.workspaceId) swallow(refreshTabs(e.workspaceId))
@@ -160,17 +168,15 @@ export const useData = create<DataState>((set, get) => ({
       if (e.type === "engine.turn.finished") swallow(refreshDiffstat(e.workspaceId)) // turn 结束大概率有新 diff
       if (options.allowAttention !== false &&
           e.type === "tab.status.changed" &&
-          (e.payload as { status?: unknown } | null)?.status === "awaiting-input") {
-        const wsId = e.workspaceId
-        const selectedWs = useUi.getState().selectedWs
-        const unattended = typeof document !== "undefined" &&
-          (document.hidden || (typeof document.hasFocus === "function" && !document.hasFocus()))
-        if (wsId !== selectedWs || unattended) {
-          useAttention.getState().raise(wsId)
-          const workspace = get().workspaces.find((item) => item.id === wsId)
-          notifyTurnComplete(workspace?.name ?? wsId, wsId)
-          setBadge(useAttention.getState().count())
-        }
+          (e.payload as { status?: unknown } | null)?.status === "awaiting-input" &&
+          e.workspaceId && api) {
+        void useAttention.getState().syncWorkspace(api, e.workspaceId, { notify: true })
+      }
+    } else if (e.type === "attention.acknowledged") {
+      const id = (e.payload as { id?: unknown } | null)?.id
+      if (typeof id === "string") {
+        useAttention.getState().remove(id)
+        setBadge(useAttention.getState().count())
       }
     } else if (e.type.startsWith("prompt.")) {
       // F5：prompt.* 家族（landed commit eb2932e）——至少把投递降级信号浮到 UI，别静默丢。

@@ -13,7 +13,7 @@ import { useData } from "./stores/data"
 import { useUi } from "./stores/ui"
 import { useAttention } from "./stores/attention"
 import { useGlobalHotkeys } from "./hotkeys/useGlobalHotkeys"
-import { requestNotifyPermission, setBadge } from "./chrome/notify"
+import { requestNotifyPermission } from "./chrome/notify"
 import { Titlebar } from "./chrome/Titlebar"
 import { TmuxGuide } from "./chrome/TmuxGuide"
 import { Cheatsheet } from "./chrome/Cheatsheet"
@@ -173,28 +173,29 @@ export const App = () => {
   const sidebarCollapsed = useUi((s) => s.sidebarCollapsed)
   const selectedWs = useUi((s) => s.selectedWs)
   const dispatchMode = useUi((s) => s.dispatchMode)
-  const needsYou = useAttention((s) => s.needsYou)
+  const attentionCount = useAttention((s) => s.count())
+  const openAttentionWs = useAttention((s) => s.openWorkspaceIds())
   const status = useData((s) => s.status)
   const selWs = useData((s) => s.workspaces.find((w) => w.id === selectedWs))
 
+  const selectedTab = useUi((s) => selectedWs ? s.selectedTabByWs[selectedWs] : undefined)
+
   useEffect(() => {
-    const clearSelectedAttention = (): void => {
-      if (!selectedWs) return
-      useAttention.getState().clear(selectedWs)
-      setBadge(useAttention.getState().count())
+    const api = useData.getState().getApi()
+    const tryAck = (): void => {
+      if (!api || !selectedWs) return
+      void useAttention.getState().tryAckVisible(api, selectedWs, selectedTab)
     }
-    clearSelectedAttention()
+    tryAck()
     if (typeof window === "undefined") return
-    window.addEventListener("focus", clearSelectedAttention)
-    return () => window.removeEventListener("focus", clearSelectedAttention)
-  }, [selectedWs])
+    window.addEventListener("focus", tryAck)
+    return () => window.removeEventListener("focus", tryAck)
+  }, [selectedWs, selectedTab])
 
   const selectAttentionWorkspace = (): void => {
-    const wsId = needsYou.values().next().value
+    const wsId = openAttentionWs[0]
     if (typeof wsId !== "string") return
     useUi.getState().selectWs(wsId)
-    useAttention.getState().clear(wsId)
-    setBadge(useAttention.getState().count())
   }
 
   if (bootErr)
@@ -216,9 +217,9 @@ export const App = () => {
   return (
     <div className="app-frame">
       <Titlebar />
-      {needsYou.size > 0 && (
+      {attentionCount > 0 && (
         <button className="attention-banner" onClick={selectAttentionWorkspace}>
-          ⚠ {tr("app.needsYou").replace("{count}", String(needsYou.size))}
+          ⚠ {tr("app.needsYou").replace("{count}", String(attentionCount))}
         </button>
       )}
       <div className="columns">
