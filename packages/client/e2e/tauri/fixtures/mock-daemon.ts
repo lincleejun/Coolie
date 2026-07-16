@@ -38,6 +38,15 @@ interface MockProject {
   readonly createdAt: number
 }
 
+interface MockFinishResult {
+  prUrl?: string
+  mergedBack: boolean
+  warnings: string[]
+  finishedAt: number
+  createPr: boolean
+  mergeBack: boolean
+}
+
 interface MockWorkspace {
   readonly id: string
   readonly projectId: string
@@ -50,6 +59,8 @@ interface MockWorkspace {
   readonly pinned: boolean
   readonly createdAt: number
   archivedAt: number | null
+  finishResult: MockFinishResult | null
+  taskStatus?: string
 }
 
 interface MockTab {
@@ -257,6 +268,7 @@ export const startMockDaemon = async (opts?: { token?: string; port?: number }):
         pinned: false,
         createdAt: Date.now(),
         archivedAt: null,
+        finishResult: null,
       }
       workspaces.push(ws)
       tabsByWs.set(ws.id, [{
@@ -278,12 +290,57 @@ export const startMockDaemon = async (opts?: { token?: string; port?: number }):
     if (req.method === "POST" && wsEnsure)
       return json(res, 200, { healed: true, sessionCreated: false })
 
+    const wsFinish = url.pathname.match(/^\/workspaces\/([^/]+)\/finish$/)
+    if (req.method === "POST" && wsFinish) {
+      const ws = workspaces.find((item) => item.id === wsFinish[1])
+      if (!ws) return json(res, 404, { error: "not found" })
+      if (ws.status !== "active") return json(res, 409, { code: "Conflict", message: "not active" })
+      const body = JSON.parse(await readBody(req) || "{}") as {
+        createPr?: boolean; mergeBack?: boolean; title?: string; failGh?: boolean
+      }
+      if (body.failGh || (globalThis as { __coolieMockFinishFailGh?: boolean }).__coolieMockFinishFailGh) {
+        return json(res, 409, { code: "Conflict", message: "gh CLI unavailable" })
+      }
+      const createPr = body.createPr === true
+      const mergeBack = body.mergeBack === true
+      ws.finishResult = {
+        ...(createPr ? { prUrl: "https://example.test/pr/42" } : {}),
+        mergedBack: mergeBack,
+        warnings: [],
+        finishedAt: Date.now(),
+        createPr,
+        mergeBack,
+      }
+      if (mergeBack) ws.taskStatus = "done"
+      else if (createPr) ws.taskStatus = "in_review"
+      append({ type: "workspace.finished", workspaceId: ws.id, payload: ws.finishResult })
+      return json(res, 200, {
+        ...(ws.finishResult.prUrl ? { prUrl: ws.finishResult.prUrl } : {}),
+        mergedBack: ws.finishResult.mergedBack,
+        warnings: ws.finishResult.warnings,
+      })
+    }
+
+    const wsFinishResult = url.pathname.match(/^\/workspaces\/([^/]+)\/finish-result$/)
+    if (req.method === "DELETE" && wsFinishResult) {
+      const ws = workspaces.find((item) => item.id === wsFinishResult[1])
+      if (!ws) return json(res, 404, { error: "not found" })
+      ws.finishResult = null
+      append({ type: "workspace.updated", workspaceId: ws.id, payload: { id: ws.id } })
+      return json(res, 200, ws)
+    }
+
     const wsArchive = url.pathname.match(/^\/workspaces\/([^/]+)\/archive$/)
     if (req.method === "POST" && wsArchive) {
       const ws = workspaces.find((item) => item.id === wsArchive[1])
       if (!ws) return json(res, 404, { error: "not found" })
+      const body = JSON.parse(await readBody(req) || "{}") as { force?: boolean; fail?: boolean }
+      if (body.fail || (globalThis as { __coolieMockArchiveFail?: boolean }).__coolieMockArchiveFail) {
+        return json(res, 409, { code: "Conflict", message: "worktree dirty" })
+      }
       ws.status = "archived"
       ws.archivedAt = Date.now()
+      ws.finishResult = null
       append({ type: "workspace.archived", workspaceId: ws.id, payload: { id: ws.id } })
       return json(res, 200, ws)
     }
@@ -351,6 +408,7 @@ export const startMockDaemon = async (opts?: { token?: string; port?: number }):
         pinned: body.pinned ?? false,
         createdAt: body.createdAt ?? Date.now(),
         archivedAt: body.archivedAt ?? null,
+        finishResult: body.finishResult ?? null,
       }
       workspaces.push(ws)
       tabsByWs.set(ws.id, body.id ? (tabsByWs.get(ws.id) ?? []) : [{

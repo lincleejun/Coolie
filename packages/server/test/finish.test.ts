@@ -30,22 +30,29 @@ const run = async (
     }),
   }
   const events: any[] = []
+  const finishResults: any[] = []
   const layer = WorkspaceFinisherLive.pipe(Layer.provideMerge(Layer.mergeAll(
     Layer.succeed(FinishOps, ops),
     Layer.succeed(ProjectsRepo, { add: null as any, get: () => Effect.succeed(project), list: null as any, remove: null as any }),
-    Layer.succeed(WorkspacesRepo, { get: () => Effect.succeed(selectedWorkspace) } as any),
+    Layer.succeed(WorkspacesRepo, {
+      get: () => Effect.succeed(selectedWorkspace),
+      setFinishResult: (_id: string, result: unknown) => Effect.sync(() => {
+        finishResults.push(result)
+        return selectedWorkspace
+      }),
+    } as any),
     Layer.succeed(EventsRepo, {
       append: (event: any) => Effect.sync(() => { events.push(event); return events.length }),
       listAfter: null as any,
     }),
   )))
   const finish = Effect.gen(function* () { return yield* (yield* WorkspaceFinisher).finish("ws1", request) })
-  return { exit: await Effect.runPromiseExit(Effect.provide(finish, layer)), calls, events }
+  return { exit: await Effect.runPromiseExit(Effect.provide(finish, layer)), calls, events, finishResults }
 }
 
 describe("WorkspaceFinisher", () => {
   it("creates PR with argv-only push/gh calls and warns for dirty files", async () => {
-    const { exit, calls, events } = await run({
+    const { exit, calls, events, finishResults } = await run({
       "git:/repo-wt:status --porcelain": " M local.txt\n",
       "git:/repo-wt:remote": "origin\n",
     })
@@ -56,7 +63,14 @@ describe("WorkspaceFinisher", () => {
     }
     expect(calls.some((call) => call.tool === "git" && call.args.join(" ") === "push -u origin feature/x")).toBe(true)
     expect(calls.some((call) => call.tool === "gh" && call.args.slice(0, 2).join(" ") === "pr create")).toBe(true)
+    expect(calls.some((call) => call.args.includes("worktree"))).toBe(false)
     expect(events[0].type).toBe("workspace.finished")
+    expect(finishResults[0]).toMatchObject({
+      prUrl: "https://example.test/pr/1",
+      createPr: true,
+      mergeBack: false,
+      mergedBack: false,
+    })
   })
 
   it("rejects an empty action set before invoking tools", async () => {

@@ -992,6 +992,17 @@ export const createApp = ({ runtime, token, onShutdown, onError, bus, sseHeartbe
           )
           return await (workspaceSerial ? workspaceSerial.run(workspaceId, handleFinish) : handleFinish())
         }
+        const wsFinishResult = url.pathname.match(/^\/workspaces\/([^/]+)\/finish-result$/)
+        if (req.method === "DELETE" && wsFinishResult) {
+          return await runRoute(
+            res, runtime,
+            Effect.gen(function* () {
+              return yield* (yield* WorkspacesRepo).clearFinishResult(wsFinishResult[1]!)
+            }),
+            (workspace) => send(res, 200, workspace),
+            onError,
+          )
+        }
         const checkpointCollection = url.pathname.match(/^\/workspaces\/([^/]+)\/checkpoints$/)
         if (checkpointCollection && (req.method === "GET" || req.method === "POST")) {
           const workspaceId = checkpointCollection[1]!

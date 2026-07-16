@@ -3,6 +3,7 @@ import { ulid } from "ulid"
 import {
   Workspace,
   type CoolieEvent,
+  type FinishResult,
   type TaskStatus,
   type WorkspaceStatus,
 } from "@coolie/protocol"
@@ -32,6 +33,19 @@ const rowToWorkspace = (r: any): Workspace => {
         ...(typeof data.lastError.stage === "string" ? { stage: data.lastError.stage } : {}),
       }
     : null
+  const finishRaw = data.finishResult
+  const finishResult = finishRaw && typeof finishRaw === "object"
+    ? {
+        mergedBack: finishRaw.mergedBack === true,
+        warnings: Array.isArray(finishRaw.warnings)
+          ? finishRaw.warnings.filter((w: unknown): w is string => typeof w === "string")
+          : [],
+        finishedAt: typeof finishRaw.finishedAt === "number" ? finishRaw.finishedAt : r.created_at,
+        createPr: finishRaw.createPr === true,
+        mergeBack: finishRaw.mergeBack === true,
+        ...(typeof finishRaw.prUrl === "string" ? { prUrl: finishRaw.prUrl } : {}),
+      } satisfies FinishResult
+    : null
   return new Workspace({
     id: r.id, projectId: r.project_id, name: r.name, path: r.path, branch: r.branch,
     baseBranch: r.base_branch, baseRef: r.base_ref, status: r.status,
@@ -42,6 +56,7 @@ const rowToWorkspace = (r: any): Workspace => {
     pinned: !!r.pinned, createdAt: r.created_at, archivedAt: r.archived_at ?? null,
     portBase: typeof data.portBase === "number" ? data.portBase : 0,
     lastError,
+    finishResult,
   })
 }
 
@@ -111,6 +126,9 @@ export interface WorkspacesRepoShape {
   }, NotFoundError>
   readonly getLayoutState: (id: string) => Effect.Effect<WorkspaceLayoutState, NotFoundError>
   readonly setLayoutState: (id: string, state: WorkspaceLayoutState) => Effect.Effect<void, NotFoundError>
+  /** Persist finish outcome without changing workspace.status (Task 3.8). */
+  readonly setFinishResult: (id: string, result: FinishResult) => Effect.Effect<Workspace, NotFoundError>
+  readonly clearFinishResult: (id: string) => Effect.Effect<Workspace, NotFoundError>
   readonly usedPortBases: () => Effect.Effect<number[]>
   readonly remove: (id: string) => Effect.Effect<void, NotFoundError | ConflictError>
 }
@@ -238,6 +256,7 @@ export const WorkspacesRepoLive = Layer.effect(
           return yield* new ConflictError({ message: `workspace 非 archiving（当前 ${r.status}）` })
         const data = rowData(r)
         delete data.archiveOperation
+        delete data.finishResult
         db.prepare(`UPDATE workspaces
           SET status = 'archived', task_status = 'done', archived_at = ?, data = ? WHERE id = ?`)
           .run(Date.now(), JSON.stringify(data), id)
@@ -426,6 +445,22 @@ export const WorkspacesRepoLive = Layer.effect(
           })
         })()
         broadcast(ev)
+      }),
+      setFinishResult: (id, result) => Effect.gen(function* () {
+        const r = yield* mustGetRow(id)
+        const data = rowData(r)
+        data.finishResult = result
+        const taskStatus = result.mergeBack ? "done" : result.createPr ? "in_review" : r.task_status
+        db.prepare("UPDATE workspaces SET data = ?, task_status = ? WHERE id = ?")
+          .run(JSON.stringify(data), taskStatus, id)
+        return rowToWorkspace(getRow(id))
+      }),
+      clearFinishResult: (id) => Effect.gen(function* () {
+        const r = yield* mustGetRow(id)
+        const data = rowData(r)
+        delete data.finishResult
+        db.prepare("UPDATE workspaces SET data = ? WHERE id = ?").run(JSON.stringify(data), id)
+        return rowToWorkspace(getRow(id))
       }),
       usedPortBases: () => Effect.sync(() =>
         (db.prepare("SELECT data FROM workspaces").all() as any[])

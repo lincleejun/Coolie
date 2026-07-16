@@ -26,6 +26,7 @@ import { deleteConfirmation } from "./sidebar/taskCommands"
 import { CenterArea } from "./terminal/TabsBar"
 import { Composer } from "./composer/Composer"
 import { DispatchPanel, ErrorActions } from "./composer/Dispatch"
+import { FinishSuccessPanel } from "./workspace/FinishSuccessPanel"
 import { RightPanel } from "./rightpanel/RightPanel"
 import { EmptyState } from "./chrome/EmptyState"
 import { createSafeDeepLinkRouter, installDeepLinkHandlers } from "./deeplink"
@@ -240,6 +241,8 @@ export const App = () => {
                   if (confirmed) return useData.getState().deleteWs(selectedWs, true)
                 }).catch((error: unknown) => showToast("task.lifecycle", error))}>{tr("task.delete")}</button>
               </div>
+            ) : selWs.status === "active" && selWs.finishResult ? (
+              <FinishSuccessPanel ws={selWs} />
             ) : (
               <>
                 <CenterArea wsId={selectedWs} />

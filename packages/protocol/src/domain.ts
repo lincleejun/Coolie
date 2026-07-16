@@ -17,6 +17,17 @@ export const WorkspaceLastError = Schema.Struct({
 })
 export type WorkspaceLastError = typeof WorkspaceLastError.Type
 
+/** Durable finish outcome for Finish→Archive daily loop (Task 3.8). */
+export const FinishResult = Schema.Struct({
+  prUrl: Schema.optional(Schema.String),
+  mergedBack: Schema.Boolean,
+  warnings: Schema.Array(Schema.String),
+  finishedAt: Schema.Number,
+  createPr: Schema.Boolean,
+  mergeBack: Schema.Boolean,
+})
+export type FinishResult = typeof FinishResult.Type
+
 export class Workspace extends Schema.Class<Workspace>("Workspace")({
   id: Schema.String,
   projectId: Schema.String,
@@ -37,6 +48,7 @@ export class Workspace extends Schema.Class<Workspace>("Workspace")({
   archivedAt: Schema.NullOr(Schema.Number),
   portBase: Schema.Number,
   lastError: Schema.optionalWith(Schema.NullOr(WorkspaceLastError), { default: () => null }),
+  finishResult: Schema.optionalWith(Schema.NullOr(FinishResult), { default: () => null }),
 }) {}
 export const decodeWorkspace = Schema.decodeUnknownSync(Workspace)
 
