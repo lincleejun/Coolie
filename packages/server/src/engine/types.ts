@@ -1,4 +1,4 @@
-import type { TabStatus } from "@coolie/protocol"
+import type { TabStatus, TranscriptReader } from "@coolie/protocol"
 
 /** 能力位（kobe registry 六件套裁剪版）：缺失能力 = Noop 降级，调用方必须 guard；UI 禁止硬编码 vendor 字符串。 */
 export interface EngineCapabilities {
@@ -53,4 +53,6 @@ export interface Engine {
    * 「Do you trust this folder?」对话框（该对话框在回答前不触发 SessionStart，会死锁就绪门控）。
    * 无此需求的 engine（fake/codex）不实现 = Noop，bootstrap guard 调用。 */
   readonly prepareWorkspace?: (ctx: { readonly cwd: string; readonly claudeConfigPath?: string | undefined; readonly codexConfigPath?: string | undefined }) => void
+  /** Structured transcript reader; absent or unavailable capability → HTTP returns capability unavailable. */
+  readonly transcriptReader?: TranscriptReader
 }
