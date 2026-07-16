@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto"
 import type { TabStatus } from "@coolie/protocol"
 import type { Engine } from "../types.js"
 import { discoverClaudeBinary } from "./binary.js"
-import { encodeCwd, transcriptPath, deriveTitle, resumeArgs } from "./transcript.js"
+import { encodeCwd, transcriptPath, deriveTitle, resumeArgs, claudeTranscriptReader } from "./transcript.js"
 import { seedFolderTrust, defaultClaudeConfigPath } from "./trust.js"
 
 const HOOK_STATUS: Record<string, TabStatus> = {
@@ -45,5 +45,6 @@ export const claudeEngine: Engine = {
   resumeArgs,
   // Coolie 自建 worktree 隐式受信：起 session 前预置 hasTrustDialogAccepted，跳过 trust dialog 死锁。
   prepareWorkspace: ({ cwd, claudeConfigPath }) => seedFolderTrust(claudeConfigPath ?? defaultClaudeConfigPath(), cwd),
+  transcriptReader: claudeTranscriptReader,
 }
 export { encodeCwd }

@@ -50,6 +50,8 @@ import type { SessionReadinessShape } from "../engine/readiness.js"
 import { AttentionCompletion } from "../attention/service.js"
 import { handleEnvironmentPreview, handleEnvironmentRecopy } from "./worktree-environment.js"
 import { handleAttentionAck, acknowledgeAttention, getAttention, listAttention } from "./attention.js"
+import { readTabTranscript } from "./transcript.js"
+import { listWorkspaceRuns, readWorkspaceRunLog, startWorkspaceRun, stopWorkspaceRun } from "./runs.js"
 export { newToken } from "./token.js"
 
 // `runtime` runs an AppServices-dependent Effect to completion and hands
@@ -58,7 +60,7 @@ export { newToken } from "./token.js"
 // on it is not a reliable way to recover the original TaggedError. Running via
 // `Effect.runPromiseExit` and unwrapping with `Exit.match` + `Cause.failureOption`
 // (mirrors the pattern already used in test/projects-repo.test.ts) is robust.
-export type AppServices = ProjectsRepo | EventsRepo | WorkspacesRepo | WorkspaceLifecycle | TabsRepo | QueueRepo | StateRepo | InputReceiptsRepo | EngineRegistry | CustomEngineStore | SessionEnsurer | WorkspaceAdopter | WorkspaceFinisher | WorkspaceCheckpoints | AttentionCompletion | import("../repo/attention.js").AttentionInbox | import("../workspace/worktree-environment.js").WorktreeEnvironment
+export type AppServices = ProjectsRepo | EventsRepo | WorkspacesRepo | WorkspaceLifecycle | TabsRepo | QueueRepo | StateRepo | InputReceiptsRepo | EngineRegistry | CustomEngineStore | SessionEnsurer | WorkspaceAdopter | WorkspaceFinisher | WorkspaceCheckpoints | AttentionCompletion | import("../repo/attention.js").AttentionInbox | import("../workspace/worktree-environment.js").WorktreeEnvironment | import("../runs/manager.js").RunManager | import("../repo/project-scripts.js").ProjectScriptsRepo
 export type Runtime = <A, E>(eff: Effect.Effect<A, E, AppServices>) => Promise<Exit.Exit<A, E>>
 export interface AppDeps {
   readonly runtime: Runtime
@@ -557,6 +559,30 @@ export const createApp = ({ runtime, token, onShutdown, onError, bus, sseHeartbe
             onError,
           )
         }
+        const tabTranscript = url.pathname.match(/^\/workspaces\/([^/]+)\/tabs\/([^/]+)\/transcript$/)
+        if (req.method === "GET" && tabTranscript) {
+          const cursor = url.searchParams.get("cursor")
+          const maxEntries = optionalInteger(url.searchParams.get("maxEntries"))
+          const maxBytes = optionalInteger(url.searchParams.get("maxBytes"))
+          if (maxEntries !== null && maxEntries <= 0)
+            return err(res, 400, "Validation", "maxEntries must be a positive integer")
+          if (maxBytes !== null && maxBytes <= 0)
+            return err(res, 400, "Validation", "maxBytes must be a positive integer")
+          return await runRoute(
+            res, runtime,
+            readTabTranscript({
+              workspaceId: tabTranscript[1]!,
+              tabId: tabTranscript[2]!,
+              ...(cursor !== null ? { cursor } : {}),
+              ...(maxEntries !== null ? { maxEntries } : {}),
+              ...(maxBytes !== null ? { maxBytes } : {}),
+              claudeHome: claudeHome ?? "",
+              codexHome: codexHome ?? "",
+            }),
+            (page) => send(res, 200, page),
+            onError,
+          )
+        }
         if (route === "GET /events") {
           const after = intParam(url, "after", 0)
           const limitRaw = intParam(url, "limit", 200)
@@ -583,6 +609,18 @@ export const createApp = ({ runtime, token, onShutdown, onError, bus, sseHeartbe
             onError,
           )
         }
+        const workspaceRuns = url.pathname.match(/^\/workspaces\/([^/]+)\/runs$/)
+        if (req.method === "GET" && workspaceRuns)
+          return await runRoute(res, runtime, listWorkspaceRuns(workspaceRuns[1]!), (runs) => send(res, 200, runs), onError)
+        const workspaceRunStart = url.pathname.match(/^\/workspaces\/([^/]+)\/runs\/([^/]+)\/start$/)
+        if (req.method === "POST" && workspaceRunStart)
+          return await runRoute(res, runtime, startWorkspaceRun(workspaceRunStart[1]!, workspaceRunStart[2]!), (run) => send(res, 200, run), onError)
+        const workspaceRunStop = url.pathname.match(/^\/workspaces\/([^/]+)\/runs\/([^/]+)\/stop$/)
+        if (req.method === "POST" && workspaceRunStop)
+          return await runRoute(res, runtime, stopWorkspaceRun(workspaceRunStop[1]!, workspaceRunStop[2]!), (run) => send(res, 200, run), onError)
+        const workspaceRunLog = url.pathname.match(/^\/workspaces\/([^/]+)\/runs\/([^/]+)\/log$/)
+        if (req.method === "GET" && workspaceRunLog)
+          return await runRoute(res, runtime, readWorkspaceRunLog(workspaceRunLog[1]!, workspaceRunLog[2]!), (log) => send(res, 200, log), onError)
         if (route === "GET /attention")
           return await runRoute(res, runtime, listAttention(url), (items) => send(res, 200, items), onError)
         const attentionItem = url.pathname.match(/^\/attention\/([^/]+)$/)
