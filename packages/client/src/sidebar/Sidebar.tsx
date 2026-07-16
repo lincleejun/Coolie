@@ -143,6 +143,7 @@ const WsRow = ({ ws, focused, onFocus, onDrop }: {
       className={`ws-row ${selected ? "selected" : ""} ${focused ? "keyboard-focused" : ""}`}
       role="option"
       aria-selected={selected}
+      aria-label={ws.name}
       tabIndex={focused ? 0 : -1}
       draggable
       data-workspace-id={ws.id}

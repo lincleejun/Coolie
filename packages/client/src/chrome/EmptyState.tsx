@@ -87,7 +87,7 @@ export const ProjectOnboarding = ({ onProjectReady }: {
   return (
     <div className="onboarding">
       <div className="onboarding-card">
-        <h1 className="onboarding-title">{tr("onboarding.openProject")}</h1>
+        <h1 className="onboarding-title" role="heading">{tr("onboarding.openProject")}</h1>
         <p className="onboarding-sub">{tr("onboarding.openSubtitle")}</p>
         <div className="onboarding-actions">
           {capabilities.directoryPicker && (
@@ -97,7 +97,7 @@ export const ProjectOnboarding = ({ onProjectReady }: {
               <span className="ob-hint">{tr("onboarding.localHint")}</span>
             </button>
           )}
-          <button className={`ob-action ${mode === "clone" ? "active" : ""}`} onClick={() => { setMode("clone"); setErr(null) }}>
+          <button className={`ob-action ${mode === "clone" ? "active" : ""}`} aria-label={tr("onboarding.openRepository")} onClick={() => { setMode("clone"); setErr(null) }}>
             <span className="ob-icon">⬇</span>
             <span className="ob-label">{tr("onboarding.openRepository")}</span>
             <span className="ob-hint">{tr("onboarding.cloneHint")}</span>
@@ -131,7 +131,7 @@ const NoWorkspaceHint = () => {
   return (
     <div className="onboarding">
       <div className="onboarding-card">
-        <h1 className="onboarding-title">{tr("onboarding.newTitle")}</h1>
+        <h1 className="onboarding-title" role="heading">{tr("onboarding.newTitle")}</h1>
         <p className="onboarding-sub">{tr("onboarding.newSubtitle")}</p>
         <div className="onboarding-actions">
           <button className="ob-action wide" onClick={() => useUi.getState().setDispatchMode(true, projects[0]?.id ?? null)}>

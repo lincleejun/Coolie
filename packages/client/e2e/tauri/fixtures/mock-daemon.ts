@@ -30,17 +30,38 @@ interface TerminalSession {
   rows: number
 }
 
-const emptySnapshot = (asOfSeq: number) => ({
-  asOfSeq,
-  generatedAt: Date.now(),
-  scope: null,
-  projects: [],
-  workspaces: [],
-  tabs: [],
-  openAttention: [],
-  queuedPrompts: [],
-  activeRuns: [],
-})
+interface MockProject {
+  readonly id: string
+  readonly name: string
+  readonly repoRoot: string
+  readonly defaultBaseBranch: string
+  readonly createdAt: number
+}
+
+interface MockWorkspace {
+  readonly id: string
+  readonly projectId: string
+  readonly name: string
+  readonly path: string
+  readonly branch: string
+  readonly baseBranch: string
+  readonly baseRef: string
+  status: "active" | "archived" | "archiving" | "error"
+  readonly pinned: boolean
+  readonly createdAt: number
+  archivedAt: number | null
+}
+
+interface MockTab {
+  readonly id: string
+  readonly workspaceId: string
+  readonly kind: "engine" | "shell" | "setup"
+  readonly engineId: string | null
+  readonly engineSessionId: string | null
+  readonly tmuxWindow: number | null
+  readonly title: string | null
+  readonly status: string
+}
 
 const readBody = async (req: IncomingMessage): Promise<string> => {
   const chunks: Buffer[] = []
@@ -61,7 +82,10 @@ const sendSseEvent = (client: SseClient, event: CoolieEvent): void => {
   client.lastSent = event.seq
 }
 
-export const startMockDaemon = async (opts?: { token?: string }): Promise<MockDaemonControl> => {
+let idCounter = 0
+const nextId = (prefix: string): string => `${prefix}-${++idCounter}`
+
+export const startMockDaemon = async (opts?: { token?: string; port?: number }): Promise<MockDaemonControl> => {
   const token = opts?.token ?? "mock-token"
   let seq = 0
   let sseBlocked = false
@@ -69,15 +93,40 @@ export const startMockDaemon = async (opts?: { token?: string }): Promise<MockDa
   const requests: Array<{ method: string; path: string; at: number }> = []
   const sseClients = new Set<SseClient>()
   const terminals = new Map<string, TerminalSession>()
+  const projects: MockProject[] = []
+  const workspaces: MockWorkspace[] = []
+  const tabsByWs = new Map<string, MockTab[]>()
+
+  const snapshot = () => ({
+    asOfSeq: seq,
+    generatedAt: Date.now(),
+    scope: null,
+    projects,
+    workspaces,
+    tabs: [...tabsByWs.values()].flat(),
+    openAttention: [],
+    queuedPrompts: [],
+    activeRuns: [],
+  })
+
+  const append = (event: Omit<CoolieEvent, "seq" | "ts"> & { seq?: number; ts?: number }): CoolieEvent => {
+    const stored: CoolieEvent = {
+      seq: event.seq ?? ++seq,
+      workspaceId: event.workspaceId ?? null,
+      type: event.type,
+      payload: event.payload,
+      ts: event.ts ?? Date.now(),
+    }
+    if (stored.seq > seq) seq = stored.seq
+    events.push(stored)
+    for (const client of sseClients) sendSseEvent(client, stored)
+    return stored
+  }
 
   const logRequest = (req: IncomingMessage): void => {
     const url = new URL(req.url ?? "/", "http://local")
     if (url.pathname.startsWith("/__test__")) return
     requests.push({ method: req.method ?? "GET", path: url.pathname, at: Date.now() })
-  }
-
-  const broadcast = (event: CoolieEvent): void => {
-    for (const client of sseClients) sendSseEvent(client, event)
   }
 
   const server = createServer(async (req, res) => {
@@ -88,10 +137,99 @@ export const startMockDaemon = async (opts?: { token?: string }): Promise<MockDa
     if (needsAuth && auth !== token) return json(res, 401, { error: "unauthorized" })
 
     if (req.method === "GET" && url.pathname === "/health") return json(res, 200, { ok: true })
-    if (req.method === "GET" && url.pathname === "/config")
-      return json(res, 200, { tmuxSocket: "coolie-mock", engines: [], namePools: {} })
-    if (req.method === "GET" && url.pathname === "/state")
-      return json(res, 200, emptySnapshot(seq))
+    if (req.method === "GET" && url.pathname === "/config") {
+      return json(res, 200, {
+        tmuxSocket: "coolie-mock",
+        engines: [{ id: "claude", displayName: "Claude", models: ["default"], enabled: true, availability: { available: true } }],
+        namePools: { national_parks: { id: "national_parks", label: "National Parks" } },
+      })
+    }
+    if (req.method === "GET" && url.pathname === "/state") return json(res, 200, snapshot())
+    if (req.method === "GET" && url.pathname === "/projects") return json(res, 200, projects)
+    if (req.method === "GET" && url.pathname === "/workspaces") return json(res, 200, workspaces)
+
+    const wsTabs = url.pathname.match(/^\/workspaces\/([^/]+)\/tabs$/)
+    if (req.method === "GET" && wsTabs)
+      return json(res, 200, tabsByWs.get(wsTabs[1]!) ?? [])
+
+    const projectBranches = url.pathname.match(/^\/projects\/([^/]+)\/branches$/)
+    if (req.method === "GET" && projectBranches) {
+      const project = projects.find((item) => item.id === projectBranches[1])
+      if (!project) return json(res, 404, { error: "not found" })
+      return json(res, 200, { branches: [project.defaultBaseBranch, "develop"] })
+    }
+
+    if (req.method === "POST" && url.pathname === "/projects") {
+      const body = JSON.parse(await readBody(req)) as { repoRoot?: string }
+      const project: MockProject = {
+        id: nextId("p"),
+        name: "demo-repo",
+        repoRoot: body.repoRoot ?? "/tmp/demo",
+        defaultBaseBranch: "main",
+        createdAt: Date.now(),
+      }
+      projects.push(project)
+      append({ type: "project.added", workspaceId: null, payload: project })
+      return json(res, 201, project)
+    }
+
+    if (req.method === "POST" && url.pathname === "/workspaces") {
+      const body = JSON.parse(await readBody(req)) as { projectId?: string; initialPrompt?: string }
+      const project = projects.find((item) => item.id === body.projectId)
+      if (!project) return json(res, 404, { error: "project not found" })
+      const ws: MockWorkspace = {
+        id: nextId("w"),
+        projectId: project.id,
+        name: "yosemite",
+        path: `/tmp/${project.name}/yosemite`,
+        branch: "coolie/yosemite",
+        baseBranch: project.defaultBaseBranch,
+        baseRef: "abc123",
+        status: "active",
+        pinned: false,
+        createdAt: Date.now(),
+        archivedAt: null,
+      }
+      workspaces.push(ws)
+      tabsByWs.set(ws.id, [{
+        id: nextId("t"),
+        workspaceId: ws.id,
+        kind: "engine",
+        engineId: "claude",
+        engineSessionId: "sess-1",
+        tmuxWindow: 0,
+        title: "Claude",
+        status: "idle",
+      }])
+      append({ type: "workspace.intent.created", workspaceId: ws.id, payload: { id: ws.id } })
+      append({ type: "workspace.created", workspaceId: ws.id, payload: { id: ws.id, branch: ws.branch, path: ws.path } })
+      return json(res, 201, ws)
+    }
+
+    const wsEnsure = url.pathname.match(/^\/workspaces\/([^/]+)\/ensure$/)
+    if (req.method === "POST" && wsEnsure)
+      return json(res, 200, { healed: true, sessionCreated: false })
+
+    const wsArchive = url.pathname.match(/^\/workspaces\/([^/]+)\/archive$/)
+    if (req.method === "POST" && wsArchive) {
+      const ws = workspaces.find((item) => item.id === wsArchive[1])
+      if (!ws) return json(res, 404, { error: "not found" })
+      ws.status = "archived"
+      ws.archivedAt = Date.now()
+      append({ type: "workspace.archived", workspaceId: ws.id, payload: { id: ws.id } })
+      return json(res, 200, ws)
+    }
+
+    const wsUnarchive = url.pathname.match(/^\/workspaces\/([^/]+)\/unarchive$/)
+    if (req.method === "POST" && wsUnarchive) {
+      const ws = workspaces.find((item) => item.id === wsUnarchive[1])
+      if (!ws) return json(res, 404, { error: "not found" })
+      ws.status = "active"
+      ws.archivedAt = null
+      append({ type: "workspace.unarchived", workspaceId: ws.id, payload: { id: ws.id } })
+      return json(res, 200, ws)
+    }
+
     if (req.method === "GET" && url.pathname === "/events/stream") {
       if (sseBlocked) { res.writeHead(503).end(); return }
       res.writeHead(200, {
@@ -116,17 +254,49 @@ export const startMockDaemon = async (opts?: { token?: string }): Promise<MockDa
 
     if (req.method === "POST" && url.pathname === "/__test__/emit") {
       const body = JSON.parse(await readBody(req)) as MockEmitEvent
-      const event: CoolieEvent = {
-        seq: body.seq ?? ++seq,
-        workspaceId: body.workspaceId ?? null,
-        type: body.type,
-        payload: body.payload,
-        ts: body.ts ?? Date.now(),
+      return json(res, 200, append(body))
+    }
+    if (req.method === "POST" && url.pathname === "/__test__/seed/project") {
+      const body = JSON.parse(await readBody(req)) as Partial<MockProject>
+      const project: MockProject = {
+        id: body.id ?? nextId("p"),
+        name: body.name ?? "demo-repo",
+        repoRoot: body.repoRoot ?? "/tmp/demo",
+        defaultBaseBranch: body.defaultBaseBranch ?? "main",
+        createdAt: body.createdAt ?? Date.now(),
       }
-      if (event.seq > seq) seq = event.seq
-      events.push(event)
-      broadcast(event)
-      return json(res, 200, event)
+      projects.push(project)
+      append({ type: "project.added", workspaceId: null, payload: project })
+      return json(res, 200, project)
+    }
+    if (req.method === "POST" && url.pathname === "/__test__/seed/workspace") {
+      const body = JSON.parse(await readBody(req)) as Partial<MockWorkspace> & { projectId: string }
+      const ws: MockWorkspace = {
+        id: body.id ?? nextId("w"),
+        projectId: body.projectId,
+        name: body.name ?? "yosemite",
+        path: body.path ?? `/tmp/${body.name ?? "yosemite"}`,
+        branch: body.branch ?? "coolie/yosemite",
+        baseBranch: body.baseBranch ?? "main",
+        baseRef: body.baseRef ?? "abc123",
+        status: body.status ?? "active",
+        pinned: body.pinned ?? false,
+        createdAt: body.createdAt ?? Date.now(),
+        archivedAt: body.archivedAt ?? null,
+      }
+      workspaces.push(ws)
+      tabsByWs.set(ws.id, body.id ? (tabsByWs.get(ws.id) ?? []) : [{
+        id: nextId("t"),
+        workspaceId: ws.id,
+        kind: "engine",
+        engineId: "claude",
+        engineSessionId: "sess-1",
+        tmuxWindow: 0,
+        title: "Claude",
+        status: "idle",
+      }])
+      append({ type: "workspace.created", workspaceId: ws.id, payload: { id: ws.id } })
+      return json(res, 200, ws)
     }
     if (req.method === "POST" && url.pathname === "/__test__/disconnect-sse") {
       for (const client of sseClients) client.res.end()
@@ -157,8 +327,12 @@ export const startMockDaemon = async (opts?: { token?: string }): Promise<MockDa
     if (req.method === "POST" && url.pathname === "/__test__/reset") {
       events.length = 0
       requests.length = 0
+      projects.length = 0
+      workspaces.length = 0
+      tabsByWs.clear()
       seq = 0
       sseBlocked = false
+      idCounter = 0
       return json(res, 204, null)
     }
 
@@ -179,12 +353,8 @@ export const startMockDaemon = async (opts?: { token?: string }): Promise<MockDa
         rows: Number(url.searchParams.get("rows") ?? "32"),
       }
       terminals.set(key, session)
-
       ws.on("message", (data, isBinary) => {
-        if (isBinary) {
-          ws.send(data, { binary: true })
-          return
-        }
+        if (isBinary) { ws.send(data, { binary: true }); return }
         const text = data.toString("utf8")
         try {
           const msg = JSON.parse(text) as { type?: string; cols?: number; rows?: number }
@@ -197,12 +367,16 @@ export const startMockDaemon = async (opts?: { token?: string }): Promise<MockDa
           ws.send(Buffer.from(`echo:${text}`, "utf8"), { binary: false })
         }
       })
-
       ws.on("close", () => { terminals.delete(key) })
     })
   })
 
-  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve))
+  await new Promise<void>((resolve, reject) => {
+    const onListen = (): void => resolve()
+    if (opts?.port) server.listen(opts.port, "127.0.0.1", onListen)
+    else server.listen(0, "127.0.0.1", onListen)
+    server.on("error", reject)
+  })
   const port = (server.address() as AddressInfo).port
 
   return {
@@ -210,19 +384,7 @@ export const startMockDaemon = async (opts?: { token?: string }): Promise<MockDa
     token,
     baseUrl: `http://127.0.0.1:${port}`,
     serverInfo: JSON.stringify({ port, token, pid: process.pid }),
-    emitEvent: (event) => {
-      const stored: CoolieEvent = {
-        seq: event.seq ?? ++seq,
-        workspaceId: event.workspaceId ?? null,
-        type: event.type,
-        payload: event.payload,
-        ts: event.ts ?? Date.now(),
-      }
-      if (stored.seq > seq) seq = stored.seq
-      events.push(stored)
-      broadcast(stored)
-      return stored
-    },
+    emitEvent: (event) => append(event),
     disconnectSseClients: () => {
       for (const client of sseClients) client.res.end()
       sseClients.clear()
@@ -232,8 +394,12 @@ export const startMockDaemon = async (opts?: { token?: string }): Promise<MockDa
     reset: () => {
       events.length = 0
       requests.length = 0
+      projects.length = 0
+      workspaces.length = 0
+      tabsByWs.clear()
       seq = 0
       sseBlocked = false
+      idCounter = 0
     },
     close: () => new Promise((resolve, reject) => {
       for (const client of sseClients) client.res.end()
@@ -253,3 +419,6 @@ export const parseMockServerSpecifier = (raw: string): { port: number; token: st
   if (!Number.isInteger(port) || port < 1 || port > 65_535 || token === "") return null
   return { port, token }
 }
+
+export const MOCK_E2E_PORT = 45_123
+export const MOCK_E2E_TOKEN = "mock-e2e"
