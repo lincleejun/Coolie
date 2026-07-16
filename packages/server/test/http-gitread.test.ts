@@ -139,6 +139,7 @@ describe("git read routes", () => {
     expect(fakeGitRead.calls.at(-1)).toEqual(["diff", ws.path, ws.baseRef, "unstaged", "src/a.ts"])
 
     expect((await get(`/workspaces/${ws.id}/git/diff?section=unstaged`)).status).toBe(400)
+    expect((await get(`/workspaces/${ws.id}/git/diff?section=untracked&path=${encodeURIComponent("u.txt")}`)).status).toBe(200)
     expect((await get(`/workspaces/${ws.id}/git/diff?section=bogus&path=a.txt`)).status).toBe(400)
     expect((await get(`/workspaces/${ws.id}/git/diff?section=unstaged&path=${encodeURIComponent("../../etc/passwd")}`)).status).toBe(400)
     expect((await get("/workspaces/does-not-exist/git/diff?section=bogus&path=a.txt")).status).toBe(400)
