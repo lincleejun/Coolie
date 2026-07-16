@@ -8,38 +8,7 @@ import {
   decodeTab,
   decodeWorkspace,
 } from "./domain.js"
-
-/** Attention episode surfaced in current-state snapshots (FR-7.1). */
-export const AttentionKind = Schema.Literal(
-  "turn-finished",
-  "permission",
-  "elicitation",
-  "rate-limit",
-  "error",
-  "inferred",
-)
-export type AttentionKind = typeof AttentionKind.Type
-
-export const AttentionSource = Schema.Literal("hook", "notify", "transcript-poller")
-export type AttentionSource = typeof AttentionSource.Type
-
-export const AttentionState = Schema.Literal("open", "acknowledged")
-export type AttentionState = typeof AttentionState.Type
-
-export const AttentionSnapshotItem = Schema.Struct({
-  id: Schema.String,
-  workspaceId: Schema.String,
-  tabId: Schema.String,
-  kind: AttentionKind,
-  source: AttentionSource,
-  sourceEventSeq: Schema.Number,
-  sessionTurnId: Schema.NullOr(Schema.String),
-  summary: Schema.String,
-  state: AttentionState,
-  createdAt: Schema.Number,
-  acknowledgedAt: Schema.NullOr(Schema.Number),
-})
-export type AttentionSnapshotItem = typeof AttentionSnapshotItem.Type
+import { AttentionSnapshotItem, decodeAttentionItemStrict } from "./attention.js"
 
 /** Named run script instance included in current-state snapshots (FR-4.2 / FR-8.1). */
 export const RunScriptType = Schema.Literal("setup", "run", "archive")
@@ -79,16 +48,8 @@ export const CoolieStateSnapshot = Schema.Struct({
 })
 export type CoolieStateSnapshot = typeof CoolieStateSnapshot.Type
 
-const decodeAttentionSnapshotItem = Schema.decodeUnknownSync(AttentionSnapshotItem)
 const decodeRunSnapshotItem = Schema.decodeUnknownSync(RunSnapshotItem)
 const decodeQueuedPromptDto = Schema.decodeUnknownSync(QueuedPromptDto)
-
-const assertAttentionTimestamps = (item: AttentionSnapshotItem): void => {
-  if (item.state === "open" && item.acknowledgedAt !== null)
-    throw new Error("open attention item must not carry acknowledgedAt")
-  if (item.state === "acknowledged" && item.acknowledgedAt === null)
-    throw new Error("acknowledged attention item requires acknowledgedAt")
-}
 
 const assertRunLifecycle = (run: RunSnapshotItem): void => {
   if (run.status === "running") {
@@ -107,10 +68,8 @@ export const decodeCoolieStateSnapshot = (input: unknown): CoolieStateSnapshot =
     throw new Error("asOfSeq must be a non-negative integer")
   if (!Number.isFinite(snapshot.generatedAt) || snapshot.generatedAt <= 0)
     throw new Error("generatedAt must be a positive timestamp")
-  for (const item of snapshot.openAttention) {
-    decodeAttentionSnapshotItem(item)
-    assertAttentionTimestamps(item)
-  }
+  for (const item of snapshot.openAttention)
+    decodeAttentionItemStrict(item)
   for (const run of snapshot.activeRuns) {
     decodeRunSnapshotItem(run)
     assertRunLifecycle(run)

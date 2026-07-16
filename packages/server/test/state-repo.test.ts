@@ -150,17 +150,18 @@ describe("StateRepo", () => {
       .run("w1", "t1", "only-w1", "send", "queued", 1)
     db.prepare("INSERT INTO prompt_queue (workspace_id, tab_id, text, mode, state, created_at) VALUES (?,?,?,?,?,?)")
       .run("w2", "t2", "only-w2", "send", "queued", 2)
+    const ev1 = appendEventRow(db, { workspaceId: "w1", type: "seed", payload: {} })
+    const ev2 = appendEventRow(db, { workspaceId: "w2", type: "seed", payload: {} })
     db.prepare(`INSERT INTO attention_items
       (id, workspace_id, tab_id, kind, source, source_event_seq, summary, state, created_at, acknowledged_at)
       VALUES (?,?,?,?,?,?,?,?,?,?)`).run(
-      "a1", "w1", "t1", "turn-finished", "hook", 1, "w1 attention", "open", 10, null,
+      "a1", "w1", "t1", "turn-finished", "hook", ev1.seq, "w1 attention", "open", 10, null,
     )
     db.prepare(`INSERT INTO attention_items
       (id, workspace_id, tab_id, kind, source, source_event_seq, summary, state, created_at, acknowledged_at)
       VALUES (?,?,?,?,?,?,?,?,?,?)`).run(
-      "a2", "w2", "t2", "error", "notify", 2, "w2 attention", "open", 20, null,
+      "a2", "w2", "t2", "error", "notify", ev2.seq, "w2 attention", "open", 20, null,
     )
-    appendEventRow(db, { workspaceId: "w1", type: "seed", payload: {} })
 
     const exit = await run(db, Effect.gen(function* () {
       return yield* (yield* StateRepo).read({ workspaceId: "w1" })
@@ -187,17 +188,17 @@ describe("StateRepo", () => {
       seedTab(db, `t${i}`, id)
       db.prepare("INSERT INTO prompt_queue (workspace_id, tab_id, text, mode, state, created_at) VALUES (?,?,?,?,?,?)")
         .run(id, `t${i}`, `prompt-${i}`, "send", "queued", i)
+      const ev = appendEventRow(db, { workspaceId: id, type: "seed", payload: { i } })
       db.prepare(`INSERT INTO attention_items
         (id, workspace_id, tab_id, kind, source, source_event_seq, summary, state, created_at, acknowledged_at)
         VALUES (?,?,?,?,?,?,?,?,?,?)`).run(
-        `a${i}`, id, `t${i}`, "turn-finished", "hook", i, `summary-${i}`, "open", i, null,
+        `a${i}`, id, `t${i}`, "turn-finished", "hook", ev.seq, `summary-${i}`, "open", i + 1, null,
       )
       db.prepare(`INSERT INTO run_instances
         (id, workspace_id, run_id, script_type, status, started_at, exited_at, exit_code)
         VALUES (?,?,?,?,?,?,?,?)`).run(
         `r${i}`, id, `run-${i}`, "run", "running", i, null, null,
       )
-      appendEventRow(db, { workspaceId: id, type: "seed", payload: { i } })
     }
 
     let statements = 0

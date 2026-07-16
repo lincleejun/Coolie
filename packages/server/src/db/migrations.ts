@@ -165,6 +165,77 @@ const MIGRATIONS: Migration[] = [
       `)
     },
   },
+  {
+    id: "m0009-attention-items",
+    up: (db) => {
+      if (!db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'workspaces'").get())
+        return
+      db.exec(`
+        CREATE TABLE attention_items (
+          id TEXT PRIMARY KEY,
+          workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+          tab_id TEXT NOT NULL REFERENCES tabs(id) ON DELETE CASCADE,
+          kind TEXT NOT NULL,
+          source TEXT NOT NULL,
+          source_event_seq INTEGER NOT NULL UNIQUE REFERENCES events(seq),
+          session_turn_id TEXT,
+          summary TEXT NOT NULL,
+          state TEXT NOT NULL CHECK (state IN ('open', 'acknowledged')),
+          created_at INTEGER NOT NULL,
+          acknowledged_at INTEGER
+        );
+        CREATE INDEX idx_attention_items_workspace_state
+          ON attention_items(workspace_id, state, created_at, id);
+        CREATE INDEX idx_attention_items_tab
+          ON attention_items(tab_id, state);
+      `)
+
+      if (!db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'tabs'").get())
+        return
+
+      const awaiting = db.prepare(`
+        SELECT t.id AS tabId, t.workspace_id AS workspaceId, t.engine_session_id AS sessionTurnId,
+               COALESCE(t.title, 'Awaiting input') AS summary
+        FROM tabs t
+        WHERE t.kind = 'engine' AND t.status = 'awaiting-input'
+      `).all() as Array<{
+        tabId: string
+        workspaceId: string
+        sessionTurnId: string | null
+        summary: string
+      }>
+
+      const insertEvent = db.prepare(`
+        INSERT INTO events (workspace_id, type, payload, ts)
+        VALUES (?, 'attention.migrated', ?, ?)
+      `)
+      const insertItem = db.prepare(`
+        INSERT INTO attention_items
+          (id, workspace_id, tab_id, kind, source, source_event_seq, session_turn_id,
+           summary, state, created_at, acknowledged_at)
+        VALUES (?, ?, ?, 'turn-finished', 'hook', ?, ?, ?, 'open', ?, NULL)
+      `)
+
+      const now = Date.now()
+      for (const row of awaiting) {
+        const payload = JSON.stringify({
+          tabId: row.tabId,
+          reason: "awaiting-input-backfill",
+        })
+        const event = insertEvent.run(row.workspaceId, payload, now)
+        const sourceEventSeq = Number(event.lastInsertRowid)
+        insertItem.run(
+          `attn-mig-${row.tabId}`,
+          row.workspaceId,
+          row.tabId,
+          sourceEventSeq,
+          row.sessionTurnId,
+          row.summary,
+          now,
+        )
+      }
+    },
+  },
 ]
 
 export const runMigrations = (db: Database.Database): void => {
