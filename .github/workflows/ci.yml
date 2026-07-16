@@ -42,7 +42,7 @@ jobs:
         with:
           bun-version: latest
       - run: bun install --frozen-lockfile
-      - run: bun run test:tauri -- --suite mock
+      - run: bun run --cwd packages/client test:tauri:mock
       - uses: actions/upload-artifact@v4
         if: failure()
         with:
@@ -62,7 +62,7 @@ jobs:
         with:
           bun-version: latest
       - run: bun install --frozen-lockfile
-      - run: bun run test:tauri -- --suite real --maxInstances=1
+      - run: bun run --cwd packages/client test:tauri:real
       - uses: actions/upload-artifact@v4
         if: failure()
         with:

@@ -85,7 +85,7 @@ failed = !run(
   "north-star-ui",
   "North-star UI journeys (mock daily-flow)",
   "bun",
-  ["run", "test:tauri", "--", "--suite", "mock"],
+  ["run", "--cwd", "packages/client", "test:tauri:mock"],
 ) || failed
 
 const report = {

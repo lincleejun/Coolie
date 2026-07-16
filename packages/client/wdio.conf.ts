@@ -7,7 +7,8 @@ import { ensureRealHarness } from "./e2e/tauri/fixtures/real-harness.js"
 const rootDir = path.dirname(fileURLToPath(import.meta.url))
 
 const suiteArg = process.argv.indexOf("--suite")
-const suite = suiteArg >= 0 ? process.argv[suiteArg + 1] : "all"
+const suite = process.env.COOLIE_TAURI_SUITE
+  ?? (suiteArg >= 0 ? process.argv[suiteArg + 1] : "all")
 
 const mockSpecs = ["./e2e/tauri/mock/**/*.spec.ts"]
 const realSpecs = ["./e2e/tauri/real/**/*.spec.ts"]
@@ -17,11 +18,14 @@ const allSpecs = ["./e2e/tauri/mock/**/*.spec.ts", "./e2e/tauri/smoke.spec.ts"]
 
 export const config: WebdriverIO.Config = {
   runner: "local",
-  specs: suite === "mock" ? mockSpecs
-    : suite === "real" ? realSpecs
-      : suite === "visual" ? visualSpecs
-        : suite === "native" ? nativeSpecs
-          : allSpecs,
+  specs: allSpecs,
+  suites: {
+    mock: mockSpecs,
+    real: realSpecs,
+    visual: visualSpecs,
+    native: nativeSpecs,
+    all: allSpecs,
+  },
   exclude: ["./e2e/tauri/fixtures/**"],
   maxInstances: suite === "real" ? 1 : 1,
   capabilities: [{
