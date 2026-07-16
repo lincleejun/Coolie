@@ -3,6 +3,7 @@ import * as fs from "node:fs"
 import { Context, Data, Effect, Layer } from "effect"
 import type { CustomEngineDefinition, EngineAvailability } from "@coolie/protocol"
 import { Db } from "../db/sqlite.js"
+import { isBuiltinEngineId } from "./copilot-migration.js"
 
 export class CustomEngineValidationError extends Data.TaggedError("ValidationError")<{ readonly message: string }> {}
 export class CustomEngineNotFoundError extends Data.TaggedError("NotFoundError")<{ readonly message: string }> {}
@@ -17,7 +18,7 @@ const validateTemplate = (value: string): boolean => {
 export const validateCustomEngine = (input: unknown): CustomEngineDefinition => {
   const value = input as Partial<CustomEngineDefinition>
   if (!value || typeof value !== "object") throw new CustomEngineValidationError({ message: "engine definition 必须是对象" })
-  if (typeof value.id !== "string" || !ID.test(value.id) || value.id === "claude" || value.id === "codex")
+  if (typeof value.id !== "string" || !ID.test(value.id) || isBuiltinEngineId(value.id))
     throw new CustomEngineValidationError({ message: "id 必须为 2-48 位小写字母/数字/连字符，且不能覆盖内置 engine" })
   if (typeof value.displayName !== "string" || value.displayName.trim() === "")
     throw new CustomEngineValidationError({ message: "displayName 不能为空" })

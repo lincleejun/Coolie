@@ -21,7 +21,9 @@ import { QueueRepo } from "../repo/queue.js"
 import { StateRepo } from "../repo/state.js"
 import { EngineRegistry, engineHome } from "../engine/registry.js"
 import { CustomEngineStore, detectArgvAvailability, detectCustomEngine, copilotPreset } from "../engine/custom-store.js"
+import { isBuiltinEngineId } from "../engine/copilot-migration.js"
 import { makeCustomEngine } from "../engine/custom-adapter.js"
+import { isBuiltinEngineId } from "../engine/copilot-migration.js"
 import { ConflictError, NotFoundError } from "../repo/errors.js"
 import {
   InputReceiptsRepo,
@@ -1171,17 +1173,29 @@ export const createApp = ({ runtime, token, onShutdown, onError, bus, sseHeartbe
         }
         if (route === "POST /engines/custom/presets/copilot") {
           const body = await readJson(req)
+          const requestedId = typeof body.id === "string" ? body.id : "copilot"
+          // Built-in Copilot owns `copilot`; compat endpoint stays but returns deprecation.
+          if (isBuiltinEngineId(requestedId)) {
+            res.setHeader("Deprecation", "true")
+            res.setHeader("Sunset", "coolie-0.2.0")
+            return send(res, 200, {
+              deprecated: true,
+              message: "GitHub Copilot is built-in; POST /engines/custom/presets/copilot is deprecated",
+              engineId: "copilot",
+            })
+          }
           return await runRoute(
             res, runtime,
             Effect.gen(function* () {
-              const definition = yield* (yield* CustomEngineStore).put(copilotPreset(
-                typeof body.id === "string" ? body.id : "copilot",
-              ))
+              const definition = yield* (yield* CustomEngineStore).put(copilotPreset(requestedId))
               const registry = yield* EngineRegistry
               ;(registry as Map<string, any>).set(definition.id, makeCustomEngine(definition))
-              return definition
+              return { ...definition, deprecated: true, message: "Copilot preset install is deprecated; prefer built-in engineId=copilot" }
             }),
-            (definition) => send(res, 201, definition),
+            (definition) => {
+              res.setHeader("Deprecation", "true")
+              return send(res, 201, definition)
+            },
             onError,
           )
         }

@@ -1,4 +1,5 @@
 import type Database from "better-sqlite3"
+import { migrateCopilotCustomRows } from "../engine/copilot-migration.js"
 
 interface Migration { id: string; up: (db: Database.Database) => void }
 
@@ -283,6 +284,12 @@ const MIGRATIONS: Migration[] = [
         CREATE INDEX idx_run_log_metadata_workspace
           ON run_log_metadata(workspace_id, updated_at DESC, id);
       `)
+    },
+  },
+  {
+    id: "m0011-copilot-builtin-migration",
+    up: (db) => {
+      migrateCopilotCustomRows(db)
     },
   },
 ]
