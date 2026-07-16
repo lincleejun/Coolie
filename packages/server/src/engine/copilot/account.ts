@@ -96,8 +96,14 @@ export const probeCopilot = async (opts?: {
 }): Promise<CopilotProbeResult> => {
   const binary = probeCopilotBinary(opts)
   const version = binary.available
-    ? await probeCopilotVersion({ binaryPath: binary.path, exec: opts?.exec })
+    ? await probeCopilotVersion({
+        binaryPath: binary.path,
+        ...(opts?.exec ? { exec: opts.exec } : {}),
+      })
     : { ok: false, version: null, error: binary.error }
-  const auth = await probeCopilotAuth({ ghArgv: opts?.ghArgv, exec: opts?.exec })
+  const auth = await probeCopilotAuth({
+    ...(opts?.ghArgv ? { ghArgv: opts.ghArgv } : {}),
+    ...(opts?.exec ? { exec: opts.exec } : {}),
+  })
   return { binary, version, auth }
 }
