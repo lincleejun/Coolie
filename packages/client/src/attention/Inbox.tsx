@@ -19,7 +19,9 @@ export const InboxPanel = () => {
   const tr = useT()
   const open = useUi((state) => state.inboxOpen)
   const close = (): void => useUi.getState().setInboxOpen(false)
-  const items = useAttention((state) => Object.values(state.items))
+  // Select the record, not Object.values(): a fresh [] every snapshot makes
+  // useSyncExternalStore loop forever → blank Tauri window (see KeybindingSettings).
+  const itemsRecord = useAttention((state) => state.items)
   const workspaces = useData((state) => state.workspaces)
   const projects = useData((state) => state.projects)
   const tabsByWs = useData((state) => state.tabsByWs)
@@ -28,6 +30,7 @@ export const InboxPanel = () => {
   const [selectedIndex, setSelectedIndex] = useState(0)
   const listRef = useRef<HTMLDivElement>(null)
 
+  const items = useMemo(() => Object.values(itemsRecord), [itemsRecord])
   const workspaceById = useMemo(
     () => new Map(workspaces.map((workspace) => [workspace.id, workspace])),
     [workspaces],

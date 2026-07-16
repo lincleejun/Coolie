@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react"
+import { useCallback, useEffect, useMemo, useState } from "react"
 import type { Api } from "../api/client"
 import { useSettings } from "./settings"
 import { useData } from "../stores/data"
@@ -20,7 +20,12 @@ const formatBytes = (bytes: number): string => {
 export const ProjectSettings = ({ projectId }: { projectId: string }) => {
   const tr = useT()
   const api = useData((state) => state.getApi())
-  const workspaces = useData((state) => state.workspaces.filter((workspace) => workspace.projectId === projectId && workspace.kind === "task"))
+  // Filter outside the selector — .filter() returns a new array every snapshot.
+  const allWorkspaces = useData((state) => state.workspaces)
+  const workspaces = useMemo(
+    () => allWorkspaces.filter((workspace) => workspace.projectId === projectId && workspace.kind === "task"),
+    [allWorkspaces, projectId],
+  )
   const patterns = useSettings((state) => state.filesToCopyPatterns(projectId))
   const [draft, setDraft] = useState(patterns.join("\n"))
   const [preview, setPreview] = useState<CopyPlanPreview | null>(null)
