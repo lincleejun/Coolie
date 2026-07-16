@@ -7,7 +7,11 @@
     "dev:vite": "vite",
     "dev:web": "vite --config vite.web.config.ts",
     "build:vite": "vite build",
+    "build:vite:packaged": "COOLIE_VITE_PACKAGED=1 vite build",
+    "build:sidecar": "bun run --cwd ../.. sidecar:build",
+    "build:release-assets": "bun run build:vite:packaged && bun run build:sidecar",
     "build:web": "vite build --config vite.web.config.ts",
+    "build:app": "tauri build",
     "test:tauri": "VITE_COOLIE_WDIO=1 VITE_COOLIE_MOCK_SERVER=45123:mock-e2e wdio run wdio.conf.ts",
     "tauri": "tauri"
   },

@@ -36,7 +36,9 @@ fn spawn_detached(program: &str, args: &[String]) -> Result<(), String> {
         .map_err(|e| format!("spawn {program} failed: {e}"))
 }
 
-fn server_argv() -> (String, Vec<String>) {
+/// Dev checkout spawn: tsx + TypeScript entry (never used in release bundles).
+#[cfg(any(debug_assertions, test))]
+fn dev_server_argv() -> (String, Vec<String>) {
     let repo_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../..");
     (
         repo_root
@@ -53,9 +55,55 @@ fn server_argv() -> (String, Vec<String>) {
     )
 }
 
+/// Packaged spawn: bundled Node + server.cjs from Tauri resources (ADR-005).
+/// Never searches PATH for Node; never references checkout/tsx.
+#[cfg(any(not(debug_assertions), test))]
+fn packaged_server_argv(resource_dir: &Path) -> Result<(String, Vec<String>), String> {
+    let sidecar = resource_dir.join("sidecar");
+    let node = sidecar.join("node");
+    let server = sidecar.join("server.cjs");
+    if !node.is_file() {
+        return Err(format!(
+            "packaged sidecar node missing at {}",
+            node.display()
+        ));
+    }
+    if !server.is_file() {
+        return Err(format!(
+            "packaged sidecar server.cjs missing at {}",
+            server.display()
+        ));
+    }
+    let node_s = node.to_string_lossy().into_owned();
+    let server_s = server.to_string_lossy().into_owned();
+    if node_s.contains("node_modules/.bin/tsx")
+        || server_s.contains("packages/server/src/main.ts")
+        || server_s.ends_with(".ts")
+    {
+        return Err("packaged sidecar must not reference tsx or TypeScript sources".into());
+    }
+    Ok((node_s, vec![server_s, "start".to_string()]))
+}
+
+fn server_argv(app: &tauri::AppHandle) -> Result<(String, Vec<String>), String> {
+    #[cfg(debug_assertions)]
+    {
+        let _ = app;
+        Ok(dev_server_argv())
+    }
+    #[cfg(not(debug_assertions))]
+    {
+        let resource_dir = app
+            .path()
+            .resource_dir()
+            .map_err(|e| format!("resource_dir: {e}"))?;
+        packaged_server_argv(&resource_dir)
+    }
+}
+
 #[tauri::command]
-fn spawn_server() -> Result<(), String> {
-    let (program, args) = server_argv();
+fn spawn_server(app: tauri::AppHandle) -> Result<(), String> {
+    let (program, args) = server_argv(&app)?;
     spawn_detached(&program, &args)
 }
 
@@ -296,6 +344,7 @@ fn open_in_editor(workspace_path: String, relative_path: String) -> Result<(), E
 }
 
 fn main() {
+    #[allow(unused_mut)]
     let mut builder = tauri::Builder::default()
         .plugin(tauri_plugin_deep_link::init())
         .plugin(tauri_plugin_dialog::init());
@@ -357,8 +406,8 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::{
-        editor_argv, external_terminal_argv, parse_tmux_attach, resolve_editor_target, server_argv,
-        ExternalTerminal,
+        dev_server_argv, editor_argv, external_terminal_argv, packaged_server_argv,
+        parse_tmux_attach, resolve_editor_target, ExternalTerminal,
     };
     use std::fs;
 
@@ -375,11 +424,27 @@ mod tests {
     }
 
     #[test]
-    fn server_command_is_fixed_and_argv_only() {
-        let (program, args) = server_argv();
+    fn dev_server_command_is_fixed_and_argv_only() {
+        let (program, args) = dev_server_argv();
         assert!(program.ends_with("/node_modules/.bin/tsx"));
         assert!(args[0].ends_with("/packages/server/src/main.ts"));
         assert_eq!(args[1], "start");
+    }
+
+    #[test]
+    fn packaged_server_uses_bundled_node_not_tsx() {
+        let dir = std::env::temp_dir().join(format!("coolie-sidecar-argv-{}", std::process::id()));
+        let sidecar = dir.join("sidecar");
+        fs::create_dir_all(&sidecar).unwrap();
+        fs::write(sidecar.join("node"), b"#!/bin/sh\n").unwrap();
+        fs::write(sidecar.join("server.cjs"), b"console.log(1)\n").unwrap();
+        let (program, args) = packaged_server_argv(&dir).unwrap();
+        assert!(program.ends_with("/sidecar/node"));
+        assert!(args[0].ends_with("/sidecar/server.cjs"));
+        assert_eq!(args[1], "start");
+        assert!(!program.contains("tsx"));
+        assert!(!args[0].ends_with(".ts"));
+        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]
