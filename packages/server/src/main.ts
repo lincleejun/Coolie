@@ -35,6 +35,7 @@ import { WorktreeEnvironmentLive } from "./workspace/worktree-environment.js"
 import { ensureHookScript } from "./engine/claude/hooks.js"
 import { startTranscriptPoller } from "./engine/monitor.js"
 import { AttentionCompletion, AttentionCompletionLive } from "./attention/service.js"
+import { AttentionInboxLive } from "./repo/attention.js"
 import { createWorkspaceSerial, resumeQueuedWorkspaces, startQueueDrainer, type DrainDeps } from "./engine/queue-drain.js"
 import { attachTerminalWs } from "./http/ws.js"
 import { createApp, newToken } from "./http/app.js"
@@ -89,7 +90,7 @@ const cmdStart = async (): Promise<void> => {
       TmuxServiceLive,
       EngineRegistryLive.pipe(Layer.provide(CustomEngineStoreLive)),
     )),
-    Layer.provideMerge(Layer.mergeAll(ProjectsRepoLive, EventsRepoLive, WorkspacesRepoLive, TabsRepoLive, QueueRepoLive, StateRepoLive, InputReceiptsRepoLive, CustomEngineStoreLive)),
+    Layer.provideMerge(Layer.mergeAll(ProjectsRepoLive, EventsRepoLive, WorkspacesRepoLive, TabsRepoLive, QueueRepoLive, StateRepoLive, InputReceiptsRepoLive, CustomEngineStoreLive, AttentionInboxLive)),
     Layer.provideMerge(EventsBusLive), // Plan 2 的 dead export 转正：单一构造点
     Layer.provideMerge(DbLive),
     Layer.provideMerge(CoolieConfigLive),

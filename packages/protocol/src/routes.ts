@@ -112,6 +112,37 @@ export const ROUTES = [
   },
   {
     method: "GET",
+    path: "/attention",
+    name: "get.attention",
+    description: "列出 durable attention inbox items；支持 workspace/kind/state/cursor 过滤",
+    request: "query: workspace?,kind?,state?,cursorCreatedAt?,cursorId?,limit?",
+    response: "AttentionItem[]",
+    sideEffects: "read-only",
+    errors: ["400 Validation", "401 Validation"],
+  },
+  {
+    method: "GET",
+    path: "/attention/:id",
+    name: "get.attention.item",
+    description: "读取单个 attention item",
+    request: "path: id",
+    response: "AttentionItem",
+    sideEffects: "read-only",
+    errors: ["404 NotFound"],
+  },
+  {
+    method: "POST",
+    path: "/attention/:id/ack",
+    name: "post.attention.ack",
+    description: "acknowledge attention item；幂等；写入 attention.acknowledged 事件",
+    request: "{expectedEpisode?}",
+    response: "AttentionItem",
+    sideEffects: "updates attention item; may append attention.acknowledged event",
+    idempotency: "same id returns acknowledged item; duplicate ack is no-op",
+    errors: ["404 NotFound", "409 Conflict"],
+  },
+  {
+    method: "GET",
     path: "/engines/custom",
     name: "get.engines.custom",
     description: "列出 custom engine 定义",
@@ -644,6 +675,7 @@ export const routeGroup = (route: RouteSchema): RouteGroup => {
   if (route.group) return route.group
   if (route.path === "/health" || route.path === "/shutdown" || route.path === "/clients" || route.path === "/config" || route.path === "/state")
     return "system"
+  if (route.path.startsWith("/attention")) return "workspaces"
   if (route.path === "/collect") return "workspaces"
   if (route.path.startsWith("/projects")) return "projects"
   if (route.path.startsWith("/events")) return "events"

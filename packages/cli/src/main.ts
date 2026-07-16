@@ -6,6 +6,7 @@ import {
   decodeWorkspace,
   decodeCoolieEvent,
   decodeCoolieStateSnapshot,
+  decodeAttentionItem,
   decodeHealOutcome,
   RouteFilterError,
   tmuxSessionName,
@@ -272,6 +273,47 @@ program.command("state [wsId]")
       const path = id ? `/state?workspace=${encodeURIComponent(id)}` : "/state"
       const snapshot = decodeCoolieStateSnapshot(await api("GET", path))
       process.stdout.write(JSON.stringify(snapshot, null, 2) + "\n")
+    } catch (error) { fail(error) }
+  })
+
+const inbox = program.command("inbox").description("durable attention inbox")
+inbox.command("list")
+  .description("列出 open/acknowledged attention items")
+  .option("--workspace <id>", "按 workspace 过滤")
+  .option("--kind <kind>", "turn-finished|permission|elicitation|rate-limit|error|inferred")
+  .option("--state <state>", "open|acknowledged")
+  .option("--limit <n>", "最大条数", (value) => Number(value))
+  .action(async (opts: { workspace?: string; kind?: string; state?: string; limit?: number }) => {
+    try {
+      const params = new URLSearchParams()
+      if (opts.workspace) params.set("workspace", opts.workspace)
+      if (opts.kind) params.set("kind", opts.kind)
+      if (opts.state) params.set("state", opts.state)
+      if (opts.limit !== undefined) params.set("limit", String(opts.limit))
+      const query = params.toString()
+      const items = await api("GET", `/attention${query ? `?${query}` : ""}`)
+      if (!Array.isArray(items)) throw new Error("unexpected inbox list response")
+      process.stdout.write(JSON.stringify(items.map((item) => decodeAttentionItem(item)), null, 2) + "\n")
+    } catch (error) { fail(error) }
+  })
+inbox.command("get <id>")
+  .description("读取单个 attention item")
+  .action(async (id: string) => {
+    try {
+      process.stdout.write(JSON.stringify(decodeAttentionItem(await api("GET", `/attention/${encodeURIComponent(id)}`)), null, 2) + "\n")
+    } catch (error) { fail(error) }
+  })
+inbox.command("ack <ids...>")
+  .description("批量 acknowledge attention items")
+  .option("--expected-episode <id>", "episode guard；不匹配时 409")
+  .action(async (ids: string[], opts: { expectedEpisode?: string }) => {
+    try {
+      const results = []
+      for (const id of ids) {
+        const body = opts.expectedEpisode !== undefined ? { expectedEpisode: opts.expectedEpisode } : {}
+        results.push(decodeAttentionItem(await api("POST", `/attention/${encodeURIComponent(id)}/ack`, body)))
+      }
+      process.stdout.write(JSON.stringify(results.length === 1 ? results[0] : results, null, 2) + "\n")
     } catch (error) { fail(error) }
   })
 

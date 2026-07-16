@@ -49,6 +49,7 @@ import type { BackgroundCollector } from "../collector/background.js"
 import type { SessionReadinessShape } from "../engine/readiness.js"
 import { AttentionCompletion } from "../attention/service.js"
 import { handleEnvironmentPreview, handleEnvironmentRecopy } from "./worktree-environment.js"
+import { handleAttentionAck, acknowledgeAttention, getAttention, listAttention } from "./attention.js"
 export { newToken } from "./token.js"
 
 // `runtime` runs an AppServices-dependent Effect to completion and hands
@@ -57,7 +58,7 @@ export { newToken } from "./token.js"
 // on it is not a reliable way to recover the original TaggedError. Running via
 // `Effect.runPromiseExit` and unwrapping with `Exit.match` + `Cause.failureOption`
 // (mirrors the pattern already used in test/projects-repo.test.ts) is robust.
-export type AppServices = ProjectsRepo | EventsRepo | WorkspacesRepo | WorkspaceLifecycle | TabsRepo | QueueRepo | StateRepo | InputReceiptsRepo | EngineRegistry | CustomEngineStore | SessionEnsurer | WorkspaceAdopter | WorkspaceFinisher | WorkspaceCheckpoints | AttentionCompletion | import("../workspace/worktree-environment.js").WorktreeEnvironment
+export type AppServices = ProjectsRepo | EventsRepo | WorkspacesRepo | WorkspaceLifecycle | TabsRepo | QueueRepo | StateRepo | InputReceiptsRepo | EngineRegistry | CustomEngineStore | SessionEnsurer | WorkspaceAdopter | WorkspaceFinisher | WorkspaceCheckpoints | AttentionCompletion | import("../repo/attention.js").AttentionInbox | import("../workspace/worktree-environment.js").WorktreeEnvironment
 export type Runtime = <A, E>(eff: Effect.Effect<A, E, AppServices>) => Promise<Exit.Exit<A, E>>
 export interface AppDeps {
   readonly runtime: Runtime
@@ -578,6 +579,22 @@ export const createApp = ({ runtime, token, onShutdown, onError, bus, sseHeartbe
             res, runtime,
             readStateSnapshot(workspaceId),
             (snapshot) => send(res, 200, snapshot),
+            onError,
+          )
+        }
+        if (route === "GET /attention")
+          return await runRoute(res, runtime, listAttention(url), (items) => send(res, 200, items), onError)
+        const attentionItem = url.pathname.match(/^\/attention\/([^/]+)$/)
+        if (req.method === "GET" && attentionItem)
+          return await runRoute(res, runtime, getAttention(attentionItem[1]!), (item) => send(res, 200, item), onError)
+        const attentionAck = url.pathname.match(/^\/attention\/([^/]+)\/ack$/)
+        if (req.method === "POST" && attentionAck) {
+          const ackBody = await handleAttentionAck(req, res, attentionAck[1]!, readJson, err)
+          if (ackBody === "invalid") return
+          return await runRoute(
+            res, runtime,
+            acknowledgeAttention(attentionAck[1]!, ackBody.expectedEpisode),
+            (item) => send(res, 200, item),
             onError,
           )
         }
