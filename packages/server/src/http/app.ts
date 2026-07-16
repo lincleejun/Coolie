@@ -54,6 +54,7 @@ import { handleAttentionAck, acknowledgeAttention, getAttention, listAttention }
 import { readTabTranscript } from "./transcript.js"
 import { listWorkspaceRuns, readWorkspaceRunLog, startWorkspaceRun, stopWorkspaceRun } from "./runs.js"
 import { handleWorkspaceReview } from "./review.js"
+import { collectWorkspaceChecksEffect } from "./checks.js"
 export { newToken } from "./token.js"
 
 // `runtime` runs an AppServices-dependent Effect to completion and hands
@@ -607,6 +608,21 @@ export const createApp = ({ runtime, token, onShutdown, onError, bus, sseHeartbe
           return await runRoute(
             res, runtime,
             readStateSnapshot(workspaceId),
+            (snapshot) => send(res, 200, snapshot),
+            onError,
+          )
+        }
+        const workspaceChecks = url.pathname.match(/^\/workspaces\/([^/]+)\/checks$/)
+        if (req.method === "GET" && workspaceChecks) {
+          const unsentComments = intParam(url, "unsentComments", 0)
+          if (unsentComments === null)
+            return err(res, 400, "Validation", "unsentComments must be a non-negative integer")
+          return await runRoute(
+            res, runtime,
+            collectWorkspaceChecksEffect(workspaceChecks[1]!, {
+              unsentComments,
+              ...(collector ? { collector } : {}),
+            }),
             (snapshot) => send(res, 200, snapshot),
             onError,
           )

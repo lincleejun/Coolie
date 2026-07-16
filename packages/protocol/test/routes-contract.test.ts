@@ -32,6 +32,7 @@ export const EXPECTED_PUBLIC_ENDPOINTS = [
   "GET /workspaces",
   "GET /workspaces/:id",
   "GET /workspaces/:id/checkpoints",
+  "GET /workspaces/:id/checks",
   "GET /workspaces/:id/commands",
   "GET /workspaces/:id/files",
   "GET /workspaces/:id/git/changes",

@@ -20,7 +20,7 @@ export type ModalId =
 export interface UiState {
   selectedWs: string | null
   selectedTabByWs: Record<string, string>
-  rightPanel: "collapsed" | "changes" | "files"
+  rightPanel: "collapsed" | "changes" | "files" | "checks"
   sidebarCollapsed: boolean        // 标题栏「折叠侧栏」图标切换（隐藏左列）
   collapsedProjects: Record<string, boolean> // 侧栏项目分组的折叠态（chevron）
   dispatchMode: boolean            // Cmd+N：composer 变新 workspace 首条 prompt 输入
