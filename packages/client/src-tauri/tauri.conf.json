@@ -7,7 +7,7 @@
     "devUrl": "http://localhost:5173",
     "beforeDevCommand": "bun run dev:vite",
     "frontendDist": "../dist",
-    "beforeBuildCommand": "bun run build:vite"
+    "beforeBuildCommand": "bun run build:release-assets"
   },
   "app": {
     "macOSPrivateApi": true,
@@ -43,6 +43,9 @@
       "icons/icon.icns",
       "icons/icon.ico"
     ],
+    "resources": {
+      "resources/sidecar": "sidecar"
+    },
     "macOS": { "minimumSystemVersion": "12.0" }
   }
 }
