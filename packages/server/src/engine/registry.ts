@@ -6,6 +6,7 @@ import { copilotEngine } from "./copilot/adapter.js"
 import { resolveCodexHooks } from "./codex/version.js"
 import { CustomEngineStore } from "./custom-store.js"
 import { makeCustomEngine } from "./custom-adapter.js"
+import { isBuiltinEngineId } from "./copilot-migration.js"
 import type { CustomEngineDefinition } from "@coolie/protocol"
 
 export class EngineError extends Data.TaggedError("EngineError")<{ readonly message: string }> {}
@@ -22,8 +23,11 @@ export const makeEngineRegistry = (custom: readonly CustomEngineDefinition[] = [
     [codex.id, codex],
     [copilotEngine.id, copilotEngine],
   ])
-  for (const definition of custom)
-    if (definition.enabled) registry.set(definition.id, makeCustomEngine(definition))
+  for (const definition of custom) {
+    // Stale custom rows must not override built-ins after Task 3.2 migration.
+    if (definition.enabled && !isBuiltinEngineId(definition.id))
+      registry.set(definition.id, makeCustomEngine(definition))
+  }
   return registry
 }
 
