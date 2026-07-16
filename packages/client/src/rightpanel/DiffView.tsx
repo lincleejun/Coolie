@@ -1,7 +1,9 @@
 import { useEffect, useState } from "react"
 import { useData } from "../stores/data"
+import { useUi } from "../stores/ui"
 import type { DiffSection, FileDiff } from "../stores/types"
 import { parseUnifiedDiff, type DiffLine } from "./diff"
+import { shouldApplyAsyncResult } from "./stale"
 import { t, useT } from "../i18n"
 
 export interface LineSelection {
@@ -27,6 +29,7 @@ export const DiffView = ({ wsId, section, path, onComment }: {
 
   useEffect(() => {
     let cancelled = false
+    const requestedWs = wsId
     setLines(null)
     setBinary(false)
     setError(null)
@@ -39,12 +42,15 @@ export const DiffView = ({ wsId, section, path, onComment }: {
     }
     void api.req("GET", `/workspaces/${wsId}/git/diff?section=${section}&path=${encodeURIComponent(path)}`)
       .then((result: FileDiff) => {
-        if (cancelled) return
+        const currentWs = useUi.getState().selectedWs
+        if (!shouldApplyAsyncResult(requestedWs, currentWs, cancelled)) return
         setBinary(result.binary)
         setLines(parseUnifiedDiff(result.unified))
       })
       .catch((reason: unknown) => {
-        if (!cancelled) setError(reason instanceof Error ? reason.message : String(reason))
+        const currentWs = useUi.getState().selectedWs
+        if (!shouldApplyAsyncResult(requestedWs, currentWs, cancelled)) return
+        setError(reason instanceof Error ? reason.message : String(reason))
       })
     return () => { cancelled = true }
   }, [wsId, section, path])

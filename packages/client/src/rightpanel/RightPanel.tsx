@@ -141,7 +141,8 @@ export const RightPanel = ({ wsId, forcePanel }: {
     const requestedWs = wsId
     void useData.getState().getApi()?.req("GET", `/workspaces/${wsId}/files`)
       .then((r) => {
-        if (!shouldApplyAsyncResult(requestedWs, wsId, cancelled)) return
+        const currentWs = useUi.getState().selectedWs
+        if (!shouldApplyAsyncResult(requestedWs, currentWs, cancelled)) return
         setFiles(r.files)
       }).catch(() => {})
     return () => { cancelled = true }
