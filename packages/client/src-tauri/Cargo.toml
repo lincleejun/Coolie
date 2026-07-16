@@ -14,5 +14,9 @@ window-vibrancy = "0.6"
 tauri-plugin-deep-link = "2"
 tauri-plugin-dialog = "2"
 
+[target.'cfg(debug_assertions)'.dependencies]
+tauri-plugin-wdio = "1"
+tauri-plugin-wdio-webdriver = "1"
+
 [profile.dev]
 incremental = true
