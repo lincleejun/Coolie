@@ -48,6 +48,7 @@ export const GitBranchIcon = stroke(<><circle cx="4" cy="3.5" r="1.5" /><circle 
 export const HelpIcon = stroke(<><circle cx="8" cy="8" r="6" /><path d="M6.3 6.2a1.7 1.7 0 1 1 2.4 1.6c-.5.3-.7.6-.7 1.1M8 11.2v.1" /></>)
 export const SettingsIcon = stroke(<><circle cx="8" cy="8" r="2.1" /><path d="M8 1.6v1.7M8 12.7v1.7M14.4 8h-1.7M3.3 8H1.6M12.5 3.5l-1.2 1.2M4.7 11.3l-1.2 1.2M12.5 12.5l-1.2-1.2M4.7 4.7 3.5 3.5" /></>, 1.3)
 export const SearchIcon = stroke(<><circle cx="7" cy="7" r="4.3" /><path d="M10.2 10.2 13.5 13.5" /></>)
+export const InboxIcon = stroke(<><rect x="2.2" y="3.5" width="11.6" height="9.2" rx="1.4" /><path d="M2.2 5.8 5.4 8.2 8 5.8l3 2.4 2.8-2.4" /></>)
 export const ListIcon = stroke(<path d="M3 4h2M3 8h2M3 12h2M7 4h6M7 8h6M7 12h6" />)
 export const CloseIcon = stroke(<path d="M4 4l8 8M12 4l-8 8" />, 1.5)
 export const SendIcon = stroke(<path d="M10 15.5V5M5.5 9.5 10 5l4.5 4.5" />, 1.7, "0 0 20 20")

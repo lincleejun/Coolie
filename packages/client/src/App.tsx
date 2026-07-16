@@ -21,6 +21,7 @@ import { CommandPalette } from "./chrome/CommandPalette"
 import { Footer } from "./chrome/Footer"
 import { showToast, WarningToasts } from "./chrome/Toasts"
 import { Sidebar } from "./sidebar/Sidebar"
+import { InboxPanel } from "./attention/Inbox"
 import { deleteConfirmation } from "./sidebar/taskCommands"
 import { CenterArea } from "./terminal/TabsBar"
 import { Composer } from "./composer/Composer"
@@ -174,7 +175,6 @@ export const App = () => {
   const selectedWs = useUi((s) => s.selectedWs)
   const dispatchMode = useUi((s) => s.dispatchMode)
   const attentionCount = useAttention((s) => s.count())
-  const openAttentionWs = useAttention((s) => s.openWorkspaceIds())
   const status = useData((s) => s.status)
   const selWs = useData((s) => s.workspaces.find((w) => w.id === selectedWs))
 
@@ -192,11 +192,7 @@ export const App = () => {
     return () => window.removeEventListener("focus", tryAck)
   }, [selectedWs, selectedTab])
 
-  const selectAttentionWorkspace = (): void => {
-    const wsId = openAttentionWs[0]
-    if (typeof wsId !== "string") return
-    useUi.getState().selectWs(wsId)
-  }
+  const openInbox = (): void => useUi.getState().setInboxOpen(true)
 
   if (bootErr)
     return (
@@ -218,7 +214,7 @@ export const App = () => {
     <div className="app-frame">
       <Titlebar />
       {attentionCount > 0 && (
-        <button className="attention-banner" onClick={selectAttentionWorkspace}>
+        <button className="attention-banner" onClick={openInbox}>
           ⚠ {tr("app.needsYou").replace("{count}", String(attentionCount))}
         </button>
       )}
@@ -265,6 +261,7 @@ export const App = () => {
       <KeybindingSettings />
       <WarningToasts />
       <DialogHost />
+      <InboxPanel />
     </div>
   )
 }

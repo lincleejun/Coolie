@@ -14,6 +14,7 @@ export type ModalId =
   | "cheatsheet"
   | "project-picker"
   | "tmux-guide"
+  | "inbox"
   | (string & {})
 
 export interface UiState {
@@ -27,6 +28,7 @@ export interface UiState {
   cheatsheetOpen: boolean
   paletteOpen: boolean
   settingsOpen: boolean
+  inboxOpen: boolean
   modalStack: ModalId[]
   searchQuery: string
   composerFocusNonce: number       // 递增触发 composer focus（Cmd+L / 创建流）
@@ -42,6 +44,7 @@ export interface UiState {
   setCheatsheet(open: boolean): void
   setPalette(open: boolean): void
   setSettings(open: boolean): void
+  setInboxOpen(open: boolean): void
   openModal(id: ModalId): void
   closeModal(id: ModalId): void
   setSearch(q: string): void
@@ -96,6 +99,7 @@ export const useUi = create<UiState>((set) => ({
   cheatsheetOpen: false,
   paletteOpen: false,
   settingsOpen: false,
+  inboxOpen: false,
   modalStack: [],
   searchQuery: "",
   composerFocusNonce: 0,
@@ -139,11 +143,20 @@ export const useUi = create<UiState>((set) => ({
   })),
   setSettings: (settingsOpen) => set((state) => ({
     settingsOpen,
-    ...(settingsOpen ? { cheatsheetOpen: false, paletteOpen: false } : {}),
+    ...(settingsOpen ? { cheatsheetOpen: false, paletteOpen: false, inboxOpen: false } : {}),
     modalStack: withModal(
-      withModal(withModal(state.modalStack, "cheatsheet", false), "command-palette", false),
+      withModal(withModal(withModal(state.modalStack, "cheatsheet", false), "command-palette", false), "inbox", false),
       "settings",
       settingsOpen,
+    ),
+  })),
+  setInboxOpen: (inboxOpen) => set((state) => ({
+    inboxOpen,
+    ...(inboxOpen ? { cheatsheetOpen: false, paletteOpen: false, settingsOpen: false } : {}),
+    modalStack: withModal(
+      withModal(withModal(withModal(state.modalStack, "cheatsheet", false), "command-palette", false), "settings", false),
+      "inbox",
+      inboxOpen,
     ),
   })),
   openModal: (id) => set((state) => ({ modalStack: withModal(state.modalStack, id, true) })),

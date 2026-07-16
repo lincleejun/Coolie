@@ -2,7 +2,9 @@ import { useEffect } from "react"
 import { dispatchHotkey, pushHotkeyLayer } from "./dispatch"
 import { useData } from "../stores/data"
 import { isModalActive, useUi } from "../stores/ui"
+import { useAttention } from "../stores/attention"
 import { resolveHotkey, type HotkeyId } from "./registry"
+import { jumpToAttentionItem, defaultInboxFilter, pickNextAttentionItem } from "../attention/inbox-logic"
 
 /** pinned 稳定分组：置顶项优先，两个组内均保留输入顺序。 */
 export const pinnedFirst = <T extends { pinned: boolean }>(items: readonly T[]): T[] => [
@@ -67,6 +69,14 @@ export const useGlobalHotkeys = (): void => {
       "app.cheatsheet": () => useUi.getState().setCheatsheet(!useUi.getState().cheatsheetOpen),
       "app.commandPalette": () => useUi.getState().setPalette(!useUi.getState().paletteOpen),
       "app.settings": () => useUi.getState().setSettings(!useUi.getState().settingsOpen),
+      "app.inbox": () => useUi.getState().setInboxOpen(!useUi.getState().inboxOpen),
+      "attention.next": () => {
+        const items = Object.values(useAttention.getState().items)
+        const workspaceById = new Map(useData.getState().workspaces.map((workspace) => [workspace.id, workspace]))
+        const next = pickNextAttentionItem(items, defaultInboxFilter(), workspaceById)
+        if (!next) return
+        jumpToAttentionItem(next, useUi.getState().selectWs, useUi.getState().selectTab)
+      },
     }
     const pop = pushHotkeyLayer(handlers)
     const onKey = (event: KeyboardEvent): void => { dispatchGlobalHotkey(event) }

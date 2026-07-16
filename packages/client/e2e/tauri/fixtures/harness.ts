@@ -43,6 +43,19 @@ export const seedMockWorkspace = async (
   return response.json() as Promise<{ id: string; name: string }>
 }
 
+export const seedMockAttention = async (
+  input: Record<string, unknown> & { workspaceId: string; tabId: string; summary: string },
+): Promise<{ id: string }> => {
+  const daemon = await ensureMockHarness()
+  const response = await fetch(`${daemon.baseUrl}/__test__/seed/attention`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(input),
+  })
+  if (!response.ok) throw new Error(`seed attention failed: ${response.status}`)
+  return response.json() as Promise<{ id: string }>
+}
+
 export const mockRequestLog = async (): Promise<Array<{ method: string; path: string }>> => {
   const daemon = await ensureMockHarness()
   const response = await fetch(`${daemon.baseUrl}/__test__/requests`)

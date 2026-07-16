@@ -12,7 +12,7 @@ export type HotkeyId =
   | "workspace.jump.6" | "workspace.jump.7" | "workspace.jump.8" | "workspace.jump.9"
   | "workspace.prev" | "workspace.next"
   | "composer.focus" | "engine.interrupt" | "app.cheatsheet"
-  | "app.commandPalette" | "app.settings" | "workspace.zen"
+  | "app.commandPalette" | "app.settings" | "app.inbox" | "attention.next" | "workspace.zen"
 
 export type HotkeyCategory = "workspace" | "tab" | "composer" | "app"
 export interface HotkeyDef {
@@ -42,6 +42,8 @@ export const HOTKEYS_REGISTRY: readonly HotkeyDef[] = [
   { id: "app.cheatsheet", chord: "meta+/", labelKey: "hotkey.app.cheatsheet", category: "app" },
   { id: "app.commandPalette", chord: "meta+k", labelKey: "hotkey.app.commandPalette", category: "app" },
   { id: "app.settings", chord: "meta+,", labelKey: "hotkey.app.settings", category: "app" },
+  { id: "app.inbox", chord: "meta+shift+i", labelKey: "hotkey.app.inbox", category: "app" },
+  { id: "attention.next", chord: "meta+shift+a", labelKey: "hotkey.attention.next", category: "app" },
 ]
 
 export const hotkeyCategoryKey = (category: HotkeyCategory): MsgKey => `hotkey.category.${category}`

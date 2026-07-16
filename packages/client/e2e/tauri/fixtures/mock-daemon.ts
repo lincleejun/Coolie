@@ -63,6 +63,20 @@ interface MockTab {
   readonly status: string
 }
 
+interface MockAttentionItem {
+  id: string
+  workspaceId: string
+  tabId: string
+  kind: "turn-finished" | "permission" | "elicitation" | "rate-limit" | "error" | "inferred"
+  source: "hook" | "notify" | "transcript-poller"
+  sourceEventSeq: number
+  sessionTurnId: string | null
+  summary: string
+  state: "open" | "acknowledged"
+  createdAt: number
+  acknowledgedAt: number | null
+}
+
 const readBody = async (req: IncomingMessage): Promise<string> => {
   const chunks: Buffer[] = []
   for await (const chunk of req) chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk))
@@ -96,6 +110,7 @@ export const startMockDaemon = async (opts?: { token?: string; port?: number }):
   const projects: MockProject[] = []
   const workspaces: MockWorkspace[] = []
   const tabsByWs = new Map<string, MockTab[]>()
+  const attentionItems: MockAttentionItem[] = []
 
   const snapshot = () => ({
     asOfSeq: seq,
@@ -104,7 +119,7 @@ export const startMockDaemon = async (opts?: { token?: string; port?: number }):
     projects,
     workspaces,
     tabs: [...tabsByWs.values()].flat(),
-    openAttention: [],
+    openAttention: attentionItems.filter((item) => item.state === "open"),
     queuedPrompts: [],
     activeRuns: [],
   })
@@ -147,6 +162,29 @@ export const startMockDaemon = async (opts?: { token?: string; port?: number }):
     if (req.method === "GET" && url.pathname === "/state") return json(res, 200, snapshot())
     if (req.method === "GET" && url.pathname === "/projects") return json(res, 200, projects)
     if (req.method === "GET" && url.pathname === "/workspaces") return json(res, 200, workspaces)
+
+    if (req.method === "GET" && url.pathname.startsWith("/attention")) {
+      const workspace = url.searchParams.get("workspace")
+      const state = url.searchParams.get("state") ?? "open"
+      const items = attentionItems.filter((item) =>
+        (state === "" || item.state === state)
+        && (workspace === null || item.workspaceId === workspace))
+      return json(res, 200, items)
+    }
+
+    const ackMatch = url.pathname.match(/^\/attention\/([^/]+)\/ack$/)
+    if (req.method === "POST" && ackMatch) {
+      const item = attentionItems.find((entry) => entry.id === ackMatch[1])
+      if (!item) return json(res, 404, { error: "not found" })
+      item.state = "acknowledged"
+      item.acknowledgedAt = Date.now()
+      append({
+        type: "attention.acknowledged",
+        workspaceId: item.workspaceId,
+        payload: { id: item.id, tabId: item.tabId, kind: item.kind },
+      })
+      return json(res, 200, item)
+    }
 
     const wsTabs = url.pathname.match(/^\/workspaces\/([^/]+)\/tabs$/)
     if (req.method === "GET" && wsTabs)
@@ -298,6 +336,33 @@ export const startMockDaemon = async (opts?: { token?: string; port?: number }):
       append({ type: "workspace.created", workspaceId: ws.id, payload: { id: ws.id } })
       return json(res, 200, ws)
     }
+    if (req.method === "POST" && url.pathname === "/__test__/seed/attention") {
+      const body = JSON.parse(await readBody(req)) as Partial<MockAttentionItem> & {
+        workspaceId: string
+        tabId: string
+        summary: string
+      }
+      const event = append({
+        type: "attention.recorded",
+        workspaceId: body.workspaceId,
+        payload: { tabId: body.tabId, summary: body.summary },
+      })
+      const item: MockAttentionItem = {
+        id: body.id ?? nextId("att"),
+        workspaceId: body.workspaceId,
+        tabId: body.tabId,
+        kind: body.kind ?? "turn-finished",
+        source: body.source ?? "hook",
+        sourceEventSeq: body.sourceEventSeq ?? event.seq,
+        sessionTurnId: body.sessionTurnId ?? null,
+        summary: body.summary,
+        state: "open",
+        createdAt: body.createdAt ?? Date.now(),
+        acknowledgedAt: null,
+      }
+      attentionItems.push(item)
+      return json(res, 200, item)
+    }
     if (req.method === "POST" && url.pathname === "/__test__/disconnect-sse") {
       for (const client of sseClients) client.res.end()
       sseClients.clear()
@@ -330,6 +395,7 @@ export const startMockDaemon = async (opts?: { token?: string; port?: number }):
       projects.length = 0
       workspaces.length = 0
       tabsByWs.clear()
+      attentionItems.length = 0
       seq = 0
       sseBlocked = false
       idCounter = 0
@@ -397,6 +463,7 @@ export const startMockDaemon = async (opts?: { token?: string; port?: number }):
       projects.length = 0
       workspaces.length = 0
       tabsByWs.clear()
+      attentionItems.length = 0
       seq = 0
       sseBlocked = false
       idCounter = 0

@@ -5,7 +5,7 @@ import { consumeModalKey, useUi } from "../stores/ui"
 import { useAttention } from "../stores/attention"
 import { ApiError } from "../api/client"
 import { orderedActiveWs, pinnedFirst } from "../hotkeys/useGlobalHotkeys"
-import { CaretRightIcon, ChevronDownIcon, FolderPlusIcon, GitBranchIcon, HelpIcon, PlusIcon, SearchIcon, SettingsIcon } from "../chrome/icons"
+import { CaretRightIcon, ChevronDownIcon, FolderPlusIcon, GitBranchIcon, HelpIcon, InboxIcon, PlusIcon, SearchIcon, SettingsIcon } from "../chrome/icons"
 import { ProjectOnboarding } from "../chrome/EmptyState"
 import { archiveForceConfirmation, buildTaskCommands, deleteConfirmation } from "./taskCommands"
 import { confirmDialog, promptDialog, trapTabKey, useAppDialogOpen } from "../chrome/dialogs"
@@ -181,6 +181,7 @@ export const Sidebar = () => {
   const dispatchMode = useUi((s) => s.dispatchMode)
   const dispatchProjectId = useUi((s) => s.dispatchProjectId)
   const settingsOpen = useUi((s) => s.settingsOpen)
+  const inboxCount = useAttention((s) => s.count())
   const [projectPickerOpen, setProjectPickerOpen] = useState(false)
   const [projectFilter, setProjectFilter] = useState("")
   const [focusedId, setFocusedId] = useState<string | null>(null)
@@ -387,6 +388,15 @@ export const Sidebar = () => {
       </div>
       <div className="side-footer">
         <span className="side-foot-sp" />
+        <button
+          className="icobtn inbox-btn"
+          title={tr("inbox.title")}
+          aria-label={tr("inbox.title")}
+          onClick={() => useUi.getState().setInboxOpen(true)}
+        >
+          <InboxIcon size={16} />
+          {inboxCount > 0 && <span className="inbox-badge">{inboxCount}</span>}
+        </button>
         <button className="icobtn" title={`${tr("sidebar.help")} · ⌘/`} aria-label={tr("sidebar.help")} onClick={() => useUi.getState().setCheatsheet(true)}>
           <HelpIcon size={16} />
         </button>

@@ -158,6 +158,35 @@ button { font: inherit; color: inherit; background: none; border: none; cursor: 
 }
 .attention-banner:hover { background: rgba(224,175,104,0.22); }
 
+.inbox-btn { position: relative; }
+.inbox-badge {
+  position: absolute; top: -4px; right: -4px; min-width: 14px; height: 14px; padding: 0 3px;
+  border-radius: 999px; background: var(--warn); color: #111; font-size: 10px; line-height: 14px; text-align: center;
+}
+.inbox-panel { width: min(560px, 92vw); max-height: 80vh; display: flex; flex-direction: column; gap: 12px; }
+.inbox-header { display: flex; align-items: center; gap: 10px; }
+.inbox-header h2 { margin: 0; flex: 1; }
+.inbox-count {
+  min-width: 24px; height: 24px; border-radius: 999px; display: inline-flex; align-items: center; justify-content: center;
+  background: var(--input-bg); border: 1px solid var(--line-2); font-size: 12px;
+}
+.inbox-filters { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
+.inbox-filters label { display: flex; flex-direction: column; gap: 4px; font-size: 11px; color: var(--muted); }
+.inbox-filters select { width: 100%; }
+.inbox-list { display: flex; flex-direction: column; gap: 6px; overflow-y: auto; min-height: 120px; }
+.inbox-row {
+  display: grid; grid-template-columns: auto 1fr; gap: 4px 10px; text-align: left; padding: 10px 12px;
+  border: 1px solid var(--line-1); border-radius: 8px; background: var(--surface-2);
+}
+.inbox-row.selected, .inbox-row:focus-visible { border-color: var(--accent); outline: none; }
+.inbox-status { font-size: 10px; text-transform: uppercase; letter-spacing: 0.04em; grid-column: 1 / -1; }
+.inbox-status-archived { color: var(--muted); }
+.inbox-status-error { color: var(--danger); }
+.inbox-summary { font-size: 13px; grid-column: 1 / -1; }
+.inbox-meta { font-size: 11px; color: var(--muted); grid-column: 1 / -1; }
+.inbox-empty { padding: 12px 0; }
+.inbox-footer { font-size: 11px; }
+
 /* === sidebar (Task 9 · Conductor project→workspace tree) === */
 .sidebar { display: flex; flex-direction: column; height: 100%; }
 .side-actions { padding: 8px; display: flex; flex-direction: column; gap: 6px; border-bottom: 1px solid var(--line); }
