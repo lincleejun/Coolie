@@ -46,7 +46,29 @@ const assertAttentionTimestamps = (item: AttentionItem): void => {
     throw new Error("acknowledged attention item requires acknowledgedAt")
 }
 
-/** Decode and validate lifecycle timestamps for attention rows. */
+/** Signal that creates or deduplicates an attention inbox episode (Task 2A.2). */
+export const CompletionSignal = Schema.Struct({
+  workspaceId: Schema.String,
+  tabId: Schema.String,
+  kind: AttentionKind,
+  source: AttentionSource,
+  sourceEventSeq: Schema.Number,
+  sessionTurnId: Schema.NullOr(Schema.String),
+  summary: Schema.String,
+  createdAt: Schema.optional(Schema.Number),
+})
+export type CompletionSignal = typeof CompletionSignal.Type
+
+export const AttentionFilter = Schema.Struct({
+  workspaceId: Schema.optional(Schema.String),
+  kind: Schema.optional(AttentionKind),
+  state: Schema.optional(AttentionState),
+  cursorCreatedAt: Schema.optional(Schema.Number),
+  cursorId: Schema.optional(Schema.String),
+  limit: Schema.optional(Schema.Number),
+})
+export type AttentionFilter = typeof AttentionFilter.Type
+
 export const decodeAttentionItemStrict = (input: unknown): AttentionItem => {
   const item = decodeAttentionItem(input)
   assertAttentionTimestamps(item)
