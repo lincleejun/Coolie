@@ -9,8 +9,9 @@ import { HOTKEYS_REGISTRY } from "../hotkeys/registry"
 import { playTurnCompleteSound } from "../chrome/notify"
 import { promptDialog, trapTabKey, useAppDialogOpen } from "../chrome/dialogs"
 import { showToast } from "../chrome/Toasts"
+import { ProjectSettings } from "./ProjectSettings"
 
-type Section = "general" | "engines" | "accounts" | "keybindings" | "feedback" | "dev"
+type Section = "general" | "project" | "engines" | "accounts" | "keybindings" | "feedback" | "dev"
 
 export const KeybindingSettings = ({ forceOpen = false }: { forceOpen?: boolean }) => {
   const tr = useT()
@@ -23,9 +24,13 @@ export const KeybindingSettings = ({ forceOpen = false }: { forceOpen?: boolean 
   const customNames = useSettings((state) => state.customNames)
   // Default outside the selector: returning a fresh [] inside a zustand selector makes
   // useSyncExternalStore see a new snapshot every render → infinite re-render (blank screen).
+  const projects = useData((state) => state.projects)
   const namePools = useData((state) => state.config?.namePools) ?? []
   const engines = useData((state) => state.config?.engines) ?? []
   const selectedWs = useUi((state) => state.selectedWs)
+  const selectedProjectId = selectedWs
+    ? useData.getState().workspaces.find((workspace) => workspace.id === selectedWs)?.projectId
+    : projects[0]?.id
   const [draft, setDraft] = useState("{}")
   const [engineDraft, setEngineDraft] = useState("")
   const [engineMessage, setEngineMessage] = useState<string | null>(null)
@@ -84,7 +89,7 @@ export const KeybindingSettings = ({ forceOpen = false }: { forceOpen?: boolean 
         </div>
         <div className="settings-layout">
         <nav className="settings-nav" aria-label={tr("settings.dialog")}>
-          {(["general", "engines", "accounts", "keybindings", "feedback", "dev"] as const).map((id) =>
+          {(["general", "project", "engines", "accounts", "keybindings", "feedback", "dev"] as const).map((id) =>
             <button key={id} ref={id === "general" ? firstNav : undefined}
               className={section === id ? "active" : ""} onClick={() => setSection(id)}>
               {tr(`settings.section.${id}`)}
@@ -146,6 +151,8 @@ export const KeybindingSettings = ({ forceOpen = false }: { forceOpen?: boolean 
           <button className="btn-secondary" onClick={playTurnCompleteSound}>{tr("settings.testSound")}</button>
         </fieldset>
         }
+        {section === "project" && selectedProjectId && <ProjectSettings projectId={selectedProjectId} />}
+        {section === "project" && !selectedProjectId && <p className="hint">{tr("projectSettings.noProject")}</p>}
         {section === "accounts" && <fieldset className="settings-preferences"><legend>{tr("settings.section.accounts")}</legend>
           {engines.map((engine) => <div key={engine.id} className="settings-engine-row"><strong>{engine.displayName}</strong>
             <span className="dim">{engine.availability?.accountHint ?? engine.availability?.error ?? tr("settings.notDetected")}</span></div>)}
