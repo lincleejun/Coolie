@@ -15,6 +15,8 @@ import {
 import { customNamePool, getNamePool, pickName, sanitizeSlug } from "./names.js"
 import { allocatePortBase, portEnv } from "./ports.js"
 import { injectInfoExclude, resolveFilesToCopyRules, selectIncludedPaths, copyIncludedFiles } from "./include.js"
+import { WorktreeEnvironment } from "./worktree-environment.js"
+import { CopyError } from "./environment.js"
 import { TmuxService, type TmuxError } from "../tmux/service.js"
 import { TabsRepo } from "../repo/tabs.js"
 import { QueueRepo } from "../repo/queue.js"
@@ -79,6 +81,7 @@ export const WorkspaceLifecycleLive = Layer.effect(
     const tabsOpt = yield* Effect.serviceOption(TabsRepo)
     const queueOpt = yield* Effect.serviceOption(QueueRepo)
     const ensurerOpt = yield* Effect.serviceOption(SessionEnsurer)
+    const envOpt = yield* Effect.serviceOption(WorktreeEnvironment)
     const workspaceLocks = new Map<string, Promise<void>>()
 
     const acquireWorkspaceLock = (id: string): Promise<() => void> => {
@@ -169,13 +172,21 @@ export const WorkspaceLifecycleLive = Layer.effect(
           try: () => injectInfoExclude(repoRoot),
           catch: (e) => new GitError({ op: "info/exclude", message: `注入 .git/info/exclude 失败：${String(e)}`, exitCode: null, stderr: "" }),
         })
-        const { patterns } = resolveFilesToCopyRules(repoRoot)
-        const candidates = yield* git.listIgnoredUntracked(repoRoot)
-        const ignored = selectIncludedPaths(candidates, patterns)
-        yield* Effect.try({
-          try: () => copyIncludedFiles(repoRoot, ws.path, ignored),
-          catch: (e) => new GitError({ op: "worktreeinclude", message: `复制 .worktreeinclude 文件失败：${String(e)}`, exitCode: null, stderr: "" }),
-        })
+        if (Option.isSome(envOpt)) {
+          yield* (yield* envOpt.value).apply(ws.id, "provision").pipe(
+            Effect.mapError((e) => e instanceof CopyError
+              ? new GitError({ op: "worktreeinclude", message: e.message, exitCode: null, stderr: "" })
+              : e),
+          )
+        } else {
+          const { patterns } = resolveFilesToCopyRules(repoRoot)
+          const candidates = yield* git.listIgnoredUntracked(repoRoot)
+          const ignored = selectIncludedPaths(candidates, patterns)
+          yield* Effect.try({
+            try: () => copyIncludedFiles(repoRoot, ws.path, ignored),
+            catch: (e) => new GitError({ op: "worktreeinclude", message: `复制 .worktreeinclude 文件失败：${String(e)}`, exitCode: null, stderr: "" }),
+          })
+        }
         const setupScripts = resolveSetupScripts({ worktreePath: ws.path, repoRoot, projectId: ws.projectId, home: cfg.home })
         const init = resolveInitContract({ worktreePath: ws.path, home: cfg.home })
         const scripts = [...setupScripts, ...init.scripts]

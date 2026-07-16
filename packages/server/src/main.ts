@@ -31,6 +31,7 @@ import { SessionEnsurerLive } from "./workspace/heal.js"
 import { WorkspaceAdopterLive } from "./workspace/adopt.js"
 import { FinishOpsLive, WorkspaceFinisherLive } from "./workspace/finish.js"
 import { WorkspaceCheckpointsLive } from "./workspace/checkpoint.js"
+import { WorktreeEnvironmentLive } from "./workspace/worktree-environment.js"
 import { ensureHookScript } from "./engine/claude/hooks.js"
 import { startTranscriptPoller } from "./engine/monitor.js"
 import { AttentionCompletion, AttentionCompletionLive } from "./attention/service.js"
@@ -88,7 +89,11 @@ const cmdStart = async (): Promise<void> => {
       TmuxServiceLive,
       EngineRegistryLive.pipe(Layer.provide(CustomEngineStoreLive)),
     )),
+<<<<<<< HEAD
     Layer.provideMerge(Layer.mergeAll(ProjectsRepoLive, EventsRepoLive, WorkspacesRepoLive, TabsRepoLive, QueueRepoLive, StateRepoLive, InputReceiptsRepoLive, CustomEngineStoreLive, AttentionCompletionLive)),
+=======
+    Layer.provideMerge(Layer.mergeAll(ProjectsRepoLive, EventsRepoLive, WorkspacesRepoLive, TabsRepoLive, QueueRepoLive, StateRepoLive, InputReceiptsRepoLive, CustomEngineStoreLive, WorktreeEnvironmentLive)),
+>>>>>>> wave2b-2B3-provision-recopy
     Layer.provideMerge(EventsBusLive), // Plan 2 的 dead export 转正：单一构造点
     Layer.provideMerge(DbLive),
     Layer.provideMerge(CoolieConfigLive),
