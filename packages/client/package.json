@@ -32,6 +32,8 @@
     "@wdio/spec-reporter": "^9.20.0",
     "@wdio/tauri-plugin": "^1.0.0",
     "@wdio/tauri-service": "^1.0.0",
+    "@types/ws": "^8.5.13",
+    "ws": "^8.18.0",
     "@tauri-apps/cli": "^2.9.0",
     "@types/node": "^22.0.0",
     "@types/react": "^18.3.0",
