@@ -13,6 +13,12 @@ describe("engineHome", () => {
 })
 
 describe("custom registry merge", () => {
+  it("defaults include built-in copilot without a preset row", () => {
+    const registry = makeEngineRegistry()
+    expect(registry.has("copilot")).toBe(true)
+    expect(registry.get("copilot")?.displayName).toBe("GitHub Copilot")
+  })
+
   it("keeps built-ins and merges only enabled custom engines", () => {
     const disabled = { ...copilotPreset("disabled-agent"), enabled: false }
     const registry = makeEngineRegistry([copilotPreset(), disabled])
