@@ -10,13 +10,13 @@ describe("migrations", () => {
     const db = new Database(":memory:")
     runMigrations(db)
     const t = tables(db)
-    for (const n of ["projects", "workspaces", "tabs", "events", "prompt_queue", "custom_engines", "input_receipts", "attention_items", "schema_migrations"]) expect(t).toContain(n)
+    for (const n of ["projects", "workspaces", "tabs", "events", "prompt_queue", "custom_engines", "input_receipts", "attention_items", "project_scripts", "run_instances", "run_log_metadata", "schema_migrations"]) expect(t).toContain(n)
   })
   it("is idempotent", () => {
     const db = new Database(":memory:")
     runMigrations(db)
     expect(() => runMigrations(db)).not.toThrow()
-    expect(db.prepare("SELECT COUNT(*) c FROM schema_migrations").get()).toEqual({ c: 9 })
+    expect(db.prepare("SELECT COUNT(*) c FROM schema_migrations").get()).toEqual({ c: 10 })
   })
 
   it("adds queue state to databases that already ran the original m0003", () => {

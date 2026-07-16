@@ -236,6 +236,55 @@ const MIGRATIONS: Migration[] = [
       }
     },
   },
+  {
+    id: "m0010-project-scripts-runs",
+    up: (db) => {
+      if (!db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'projects'").get())
+        return
+      db.exec(`
+        CREATE TABLE project_scripts (
+          id TEXT PRIMARY KEY,
+          project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+          run_id TEXT NOT NULL,
+          script_type TEXT NOT NULL CHECK (script_type IN ('setup', 'run', 'archive')),
+          scope TEXT NOT NULL CHECK (scope IN ('project', 'workspace')),
+          command TEXT NOT NULL,
+          args_json TEXT NOT NULL DEFAULT '[]',
+          created_at INTEGER NOT NULL,
+          updated_at INTEGER NOT NULL,
+          UNIQUE (project_id, run_id)
+        );
+        CREATE INDEX idx_project_scripts_project_type
+          ON project_scripts(project_id, script_type, run_id);
+
+        CREATE TABLE run_instances (
+          id TEXT PRIMARY KEY,
+          workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+          run_id TEXT NOT NULL,
+          script_type TEXT NOT NULL CHECK (script_type IN ('setup', 'run', 'archive')),
+          status TEXT NOT NULL CHECK (status IN ('running', 'exited', 'error')),
+          started_at INTEGER NOT NULL,
+          exited_at INTEGER,
+          exit_code INTEGER,
+          UNIQUE (workspace_id, run_id)
+        );
+        CREATE INDEX idx_run_instances_workspace_status
+          ON run_instances(workspace_id, status, started_at, id);
+
+        CREATE TABLE run_log_metadata (
+          id TEXT PRIMARY KEY,
+          run_instance_id TEXT NOT NULL REFERENCES run_instances(id) ON DELETE CASCADE,
+          workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+          script_type TEXT NOT NULL CHECK (script_type IN ('setup', 'run', 'archive')),
+          bytes INTEGER NOT NULL,
+          truncated INTEGER NOT NULL DEFAULT 0,
+          updated_at INTEGER NOT NULL
+        );
+        CREATE INDEX idx_run_log_metadata_workspace
+          ON run_log_metadata(workspace_id, updated_at DESC, id);
+      `)
+    },
+  },
 ]
 
 export const runMigrations = (db: Database.Database): void => {
