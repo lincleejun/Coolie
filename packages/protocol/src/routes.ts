@@ -193,6 +193,16 @@ export const ROUTES = [
   },
   {
     method: "GET",
+    path: "/projects/:id/environment/preview",
+    name: "get.projects.environment.preview",
+    description: "预览 files-to-copy 计划（路径/字节统计，不含内容）",
+    request: "path: id",
+    response: "CopyPlan",
+    sideEffects: "read-only",
+    errors: ["404 NotFound", "400 CopyError"],
+  },
+  {
+    method: "GET",
     path: "/projects/:id/worktrees/adoptable",
     name: "get.projects.worktrees.adoptable",
     description: "发现可采用的已有 branch worktree",
@@ -364,6 +374,16 @@ export const ROUTES = [
     request: "path: id",
     response: "HealOutcome",
     sideEffects: "may recreate tmux session",
+  },
+  {
+    method: "POST",
+    path: "/workspaces/:id/environment/recopy",
+    name: "post.workspaces.environment.recopy",
+    description: "显式重复制 files-to-copy；默认不覆盖已有文件，force 需明确确认",
+    request: "{force?}",
+    response: "CopyResult",
+    sideEffects: "copies gitignored files + writes manifest/event",
+    errors: ["404 NotFound", "400 CopyError"],
   },
   {
     method: "POST",

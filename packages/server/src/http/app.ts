@@ -47,6 +47,7 @@ import { readStateSnapshot } from "./state.js"
 import type { WorkspaceLayoutState } from "../tmux/layout.js"
 import type { BackgroundCollector } from "../collector/background.js"
 import type { SessionReadinessShape } from "../engine/readiness.js"
+import { handleEnvironmentPreview, handleEnvironmentRecopy } from "./worktree-environment.js"
 export { newToken } from "./token.js"
 
 // `runtime` runs an AppServices-dependent Effect to completion and hands
@@ -55,7 +56,7 @@ export { newToken } from "./token.js"
 // on it is not a reliable way to recover the original TaggedError. Running via
 // `Effect.runPromiseExit` and unwrapping with `Exit.match` + `Cause.failureOption`
 // (mirrors the pattern already used in test/projects-repo.test.ts) is robust.
-export type AppServices = ProjectsRepo | EventsRepo | WorkspacesRepo | WorkspaceLifecycle | TabsRepo | QueueRepo | StateRepo | InputReceiptsRepo | EngineRegistry | CustomEngineStore | SessionEnsurer | WorkspaceAdopter | WorkspaceFinisher | WorkspaceCheckpoints
+export type AppServices = ProjectsRepo | EventsRepo | WorkspacesRepo | WorkspaceLifecycle | TabsRepo | QueueRepo | StateRepo | InputReceiptsRepo | EngineRegistry | CustomEngineStore | SessionEnsurer | WorkspaceAdopter | WorkspaceFinisher | WorkspaceCheckpoints | import("../workspace/worktree-environment.js").WorktreeEnvironment
 export type Runtime = <A, E>(eff: Effect.Effect<A, E, AppServices>) => Promise<Exit.Exit<A, E>>
 export interface AppDeps {
   readonly runtime: Runtime
@@ -592,6 +593,10 @@ export const createApp = ({ runtime, token, onShutdown, onError, bus, sseHeartbe
             onError,
           )
         }
+        const projectEnvPreview = url.pathname.match(/^\/projects\/([^/]+)\/environment\/preview$/)
+        if (req.method === "GET" && projectEnvPreview) {
+          return handleEnvironmentPreview(res, runtime, projectEnvPreview[1]!, onError)
+        }
         if (route === "POST /projects") {
           const body = await readJson(req)
           if (typeof body.repoRoot !== "string") return err(res, 400, "Validation", "repoRoot required")
@@ -832,6 +837,10 @@ export const createApp = ({ runtime, token, onShutdown, onError, bus, sseHeartbe
           return await (workspaceSerial
             ? workspaceSerial.run(id, handleAction)
             : handleAction())
+        }
+        const wsEnvRecopy = url.pathname.match(/^\/workspaces\/([^/]+)\/environment\/recopy$/)
+        if (req.method === "POST" && wsEnvRecopy) {
+          return handleEnvironmentRecopy(req, res, runtime, wsEnvRecopy[1]!, readJson, onError)
         }
         const wsEnsure = url.pathname.match(/^\/workspaces\/([^/]+)\/ensure$/)
         if (req.method === "POST" && wsEnsure) {
