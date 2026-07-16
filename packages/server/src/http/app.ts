@@ -22,6 +22,11 @@ import { StateRepo } from "../repo/state.js"
 import { EngineRegistry, engineHome } from "../engine/registry.js"
 import { CustomEngineStore, detectArgvAvailability, detectCustomEngine, copilotPreset } from "../engine/custom-store.js"
 import { isBuiltinEngineId } from "../engine/copilot-migration.js"
+import {
+  copilotToEngineAvailability,
+  probeCopilot,
+} from "../engine/copilot/account.js"
+import type { EngineAvailability } from "@coolie/protocol"
 import { makeCustomEngine } from "../engine/custom-adapter.js"
 import { ConflictError, NotFoundError } from "../repo/errors.js"
 import {
@@ -102,6 +107,8 @@ export interface AppDeps {
   readonly attachmentsDir?: string
   /** Background aggregate collector; omitted in narrow HTTP unit tests. */
   readonly collector?: Pick<BackgroundCollector, "collect" | "snapshots">
+  /** Injectable Copilot availability for GET /config (tests); defaults to probeCopilot. */
+  readonly probeCopilotAvailability?: () => Promise<EngineAvailability>
 }
 
 const send = (res: ServerResponse, status: number, body?: unknown) => {
@@ -319,7 +326,7 @@ export const deriveRepoName = (url: string): string | null => {
   return name === "" || name === "." || name === ".." ? null : name
 }
 
-export const createApp = ({ runtime, token, onShutdown, onError, bus, sseHeartbeatMs, claudeHome, codexHome, gitRead, config, clients, composerOps, layoutOps, workspaceSerial, sessionReadiness, cloneRepo, attachmentsDir, collector }: AppDeps) =>
+export const createApp = ({ runtime, token, onShutdown, onError, bus, sseHeartbeatMs, claudeHome, codexHome, gitRead, config, clients, composerOps, layoutOps, workspaceSerial, sessionReadiness, cloneRepo, attachmentsDir, collector, probeCopilotAvailability }: AppDeps) =>
 
   (req: IncomingMessage, res: ServerResponse): void => {
     void (async () => {
@@ -1286,9 +1293,14 @@ export const createApp = ({ runtime, token, onShutdown, onError, bus, sseHeartbe
               const availability = yield* Effect.promise(async () => new Map(await Promise.all(
                 [...registry.values()].map(async (engine) => {
                   const definition = byId.get(engine.id)
-                  return [engine.id, definition
-                    ? await detectCustomEngine(definition)
-                    : await detectArgvAvailability([engine.id, "--version"])] as const
+                  if (definition) return [engine.id, await detectCustomEngine(definition)] as const
+                  if (engine.id === "copilot") {
+                    const avail = probeCopilotAvailability
+                      ? await probeCopilotAvailability()
+                      : copilotToEngineAvailability(await probeCopilot())
+                    return [engine.id, avail] as const
+                  }
+                  return [engine.id, await detectArgvAvailability([engine.id, "--version"])] as const
                 }),
               )))
               const engines: any[] = [...registry.values()].map((e) => ({

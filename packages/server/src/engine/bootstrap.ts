@@ -10,6 +10,7 @@ import { EngineRegistry } from "./registry.js"
 import { CoolieConfig } from "../config.js"
 import { deliverPrompt } from "../tmux/delivery.js"
 import { startEngineSession } from "./session.js"
+import { assertCopilotReadyToLaunch } from "./copilot/account.js"
 import { injectInfoExclude } from "../workspace/include.js"
 import { ensureHookScript, injectClaudeHooks, hooksDisabled } from "./claude/hooks.js"
 import { injectCodexHooks } from "./codex/hooks.js"
@@ -139,6 +140,15 @@ export const EngineBootstrapHookLive = Layer.effect(
         // Codex hooks-off lane uses per-session `notify`; hooks-capable versions use the injected hook file above.
         if (engine.id === "codex" && !engine.capabilities.hooks && !hooksDisabled())
           yield* Effect.sync(() => ensureNotifyScript(cfg.home, engine.id))
+        // Built-in Copilot: never start tmux without binary+auth (Task 3.3).
+        if (engine.id === "copilot") {
+          yield* Effect.tryPromise({
+            try: () => assertCopilotReadyToLaunch(),
+            catch: (e) => new HookError({
+              message: e instanceof Error ? e.message : String(e),
+            }),
+          })
+        }
         const tab = yield* tabs.insert({
           workspaceId: ws.id, kind: "engine", engineId: engine.id, engineSessionId: sessionId, tmuxWindow: 0,
         })

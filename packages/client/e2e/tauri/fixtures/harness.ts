@@ -62,6 +62,16 @@ export const mockRequestLog = async (): Promise<Array<{ method: string; path: st
   return response.json() as Promise<Array<{ method: string; path: string }>>
 }
 
+export const setMockConfig = async (body: Record<string, unknown>): Promise<void> => {
+  const daemon = await ensureMockHarness()
+  const response = await fetch(`${daemon.baseUrl}/__test__/set-config`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body),
+  })
+  if (!response.ok) throw new Error(`set-config failed: ${response.status}`)
+}
+
 export const closeMockHarness = async (): Promise<void> => {
   await sharedDaemon?.close()
   sharedDaemon = null

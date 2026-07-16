@@ -186,9 +186,21 @@ export const KeybindingSettings = ({ forceOpen = false }: { forceOpen?: boolean 
                 </button>}
             </div>
           ))}
+          <p className="hint" data-testid="settings-copilot-builtin">{tr("settings.copilotBuiltin")}</p>
           <div className="settings-actions">
-            <button className="btn-secondary" onClick={() => runSettingAction("settings.engine.preset",
-              () => useData.getState().applyCopilotPreset())}>{tr("settings.copilotPreset")}</button>
+            <button
+              className="btn-secondary"
+              data-testid="settings-refresh-engines"
+              onClick={() => runSettingAction("settings.engine.refresh",
+                () => useData.getState().refreshConfig().then(() => {
+                  const copilot = useData.getState().config?.engines.find((e) => e.id === "copilot")
+                  setEngineMessage(
+                    copilot?.availability?.accountHint
+                      ?? copilot?.availability?.error
+                      ?? tr("settings.notDetected"),
+                  )
+                }))}
+            >{tr("settings.refreshEngines")}</button>
             <button className="btn-secondary" onClick={() => setEngineDraft(JSON.stringify({
               id: "my-engine", displayName: "My Engine", enabled: true,
               command: ["my-engine", "--session", "{sessionId}"],
