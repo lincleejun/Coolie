@@ -40,27 +40,19 @@ describe("mock daemon fixture", () => {
     expect(sse.status).toBe(200)
     const reader = sse.body!.getReader()
     const decoder = new TextDecoder()
-
-    const readUntil = async (deadlineMs: number): Promise<void> => {
-      const deadline = Date.now() + deadlineMs
-      let buffer = ""
-      while (Date.now() < deadline) {
-        const { value, done } = await Promise.race([
-          reader.read(),
-          new Promise<{ value: undefined; done: false }>((r) => setTimeout(() => r({ value: undefined, done: false }), 25)),
-        ])
+    const collect = async (): Promise<void> => {
+      while (events.length < 1) {
+        const { value, done } = await reader.read()
         if (done) break
-        if (value) buffer += decoder.decode(value, { stream: true })
-        for (const line of buffer.split("\n")) {
+        for (const line of decoder.decode(value).split("\n")) {
           if (line.startsWith("data: ")) events.push(JSON.parse(line.slice(6)))
         }
-        if (events.length > 0) return
       }
     }
-
-    await readUntil(500)
+    const pending = collect()
+    await new Promise((r) => setTimeout(r, 30))
     daemon.emitEvent({ type: "tab.created", workspaceId: "w1", payload: { tabId: "t1" } })
-    await readUntil(500)
+    await pending
     expect(events).toHaveLength(1)
 
     daemon.disconnectSseClients()
