@@ -5,6 +5,8 @@ import { useUi } from "../stores/ui"
 import { useTerminal } from "../stores/terminal"
 import { pushHotkeyLayer } from "../hotkeys/dispatch"
 import { TerminalView } from "./Terminal"
+import { TranscriptView } from "../transcript/TranscriptView"
+import { shouldOfferTranscript, useTranscript } from "../stores/transcript"
 import { buildAttachCommand, type TerminalId } from "./terminals"
 import { capabilities } from "../platform"
 import { CloseIcon, PlusIcon } from "../chrome/icons"
@@ -51,6 +53,7 @@ export const CenterArea = ({ wsId }: { wsId: string }) => {
   const activeDiff = centerDiff?.wsId === wsId ? centerDiff : null
   const terminalApp = useTerminal((s) => s.terminalApp)
   const external = useTerminal((s) => capabilities.externalTerminal && s.externalByWs[wsId] === true)
+  const transcriptMode = useTranscript((s) => selected ? s.getMode(selected.id) : "terminal")
   const terminalLabel = terminalApp === "iterm2"
     ? "iTerm2"
     : terminalApp === "terminal" ? "Terminal.app" : "WezTerm"
@@ -165,6 +168,16 @@ export const CenterArea = ({ wsId }: { wsId: string }) => {
           title={tr("terminal.toggleZen")}
           onClick={() => void toggleZen().catch(report)}
         >{workspace?.zenMode ? tr("terminal.exitZen") : "Zen"}</button>
+        {selected?.kind === "engine" && shouldOfferTranscript(selected.kind) && (
+          <button
+            className={`term-mode-toggle ${transcriptMode === "transcript" ? "active" : ""}`}
+            title={tr("transcript.toggle")}
+            onClick={() => useTranscript.getState().setMode(
+              selected.id,
+              transcriptMode === "transcript" ? "terminal" : "transcript",
+            )}
+          >{transcriptMode === "transcript" ? tr("transcript.showTerminal") : tr("transcript.showTranscript")}</button>
+        )}
         {capabilities.externalTerminal && (
           <>
             <Dropdown
@@ -206,22 +219,29 @@ export const CenterArea = ({ wsId }: { wsId: string }) => {
             </div>
           ) : (
             <div className="term-stack">
-              {tabs.filter((t) => t.tmuxWindow !== null).map((t) =>
-                // 惰性挂载（F3）：active 或已看过 → 活 TerminalView（active 条件保证首帧不闪占位）；否则零 WS 占位符。
-                viewed.has(t.id) || t.id === selected?.id ? (
-                  <TerminalView
-                    key={t.id}
-                    wsId={wsId}
-                    tabId={t.id}
-                    kind={t.kind}
-                    tabStatus={t.status}
-                    windowIdx={t.tmuxWindow!}
-                    active={t.id === selected?.id}
-                  />
+              {tabs.filter((t) => t.tmuxWindow !== null).map((t) => {
+                const mode = useTranscript.getState().getMode(t.id)
+                const showTranscript = t.kind === "engine" && mode === "transcript" && (viewed.has(t.id) || t.id === selected?.id)
+                return showTranscript ? (
+                  <div key={t.id} className={`term-wrap ${t.id === selected?.id ? "" : "term-hidden"}`}>
+                    <TranscriptView wsId={wsId} tabId={t.id} active={t.id === selected?.id} />
+                  </div>
                 ) : (
-                  <div key={t.id} className="term-wrap term-placeholder" style={{ visibility: "hidden" }} aria-hidden />
-                ),
-              )}
+                  viewed.has(t.id) || t.id === selected?.id ? (
+                    <TerminalView
+                      key={t.id}
+                      wsId={wsId}
+                      tabId={t.id}
+                      kind={t.kind}
+                      tabStatus={t.status}
+                      windowIdx={t.tmuxWindow!}
+                      active={t.id === selected?.id}
+                    />
+                  ) : (
+                    <div key={t.id} className="term-wrap term-placeholder" style={{ visibility: "hidden" }} aria-hidden />
+                  )
+                )
+              })}
               {tabs.length === 0 && <div className="dim center-empty">{tr("terminal.empty")}</div>}
             </div>
           )}
