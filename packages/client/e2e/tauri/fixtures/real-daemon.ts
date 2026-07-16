@@ -18,6 +18,8 @@ export interface RealDaemonFixture extends RuntimeCleanupTarget {
   readonly token: string
   readonly baseUrl: string
   readonly child: ChildProcess
+  readonly daemonEnv: NodeJS.ProcessEnv
+  restart(): Promise<void>
   close(): Promise<void>
 }
 
@@ -33,6 +35,21 @@ const waitForHealth = async (port: number, deadlineMs = 20_000): Promise<void> =
   throw new Error(`real daemon did not become healthy on port ${port}`)
 }
 
+const spawnDaemonChild = (env: NodeJS.ProcessEnv): ChildProcess => {
+  const child = spawn(tsx, [serverMain, "start"], {
+    env,
+    stdio: "pipe",
+    detached: true,
+  })
+  child.on("error", () => {})
+  return child
+}
+
+const killChild = (child: ChildProcess): void => {
+  if (!child.pid) return
+  try { process.kill(-child.pid, "SIGKILL") } catch { child.kill("SIGKILL") }
+}
+
 export const startRealDaemon = async (): Promise<RealDaemonFixture> => {
   const root = fs.realpathSync(fs.mkdtempSync("/tmp/coolie-real-daemon-"))
   const home = path.join(root, "home")
@@ -46,7 +63,7 @@ export const startRealDaemon = async (): Promise<RealDaemonFixture> => {
   const portBase = 46_000 + (process.pid % 900) * 10
   const repo = path.join(reposRoot, "demo")
   fs.mkdirSync(repo, { recursive: true })
-  initTempGitRepo(repo, { envFile: "SECRET=42\n" })
+  initTempGitRepo(repo, { envFile: "SECRET=42\n", withSetup: true })
 
   const env = {
     ...process.env,
@@ -61,12 +78,7 @@ export const startRealDaemon = async (): Promise<RealDaemonFixture> => {
     ...fakeEngineProcessEnv(home),
   }
 
-  const child = spawn(tsx, [serverMain, "start"], {
-    env,
-    stdio: "pipe",
-    detached: true,
-  })
-  child.on("error", () => {})
+  const child = spawnDaemonChild(env)
 
   const serverInfoPath = path.join(home, ".coolie", "server.json")
   let info: { port: number; token: string } | null = null
@@ -85,6 +97,7 @@ export const startRealDaemon = async (): Promise<RealDaemonFixture> => {
 
   await waitForHealth(info.port)
 
+  let activeChild = child
   const target: RealDaemonFixture = {
     root,
     home,
@@ -94,7 +107,20 @@ export const startRealDaemon = async (): Promise<RealDaemonFixture> => {
     port: info.port,
     token: info.token,
     baseUrl: `http://127.0.0.1:${info.port}`,
-    child,
+    get child() { return activeChild },
+    daemonEnv: env,
+    restart: async () => {
+      try {
+        await fetch(`http://127.0.0.1:${info.port}/shutdown`, {
+          method: "POST",
+          headers: { Authorization: `Bearer ${info.token}` },
+        })
+      } catch { /* best effort */ }
+      killChild(activeChild)
+      await new Promise((resolve) => setTimeout(resolve, 500))
+      activeChild = spawnDaemonChild(env)
+      await waitForHealth(info.port, 30_000)
+    },
     close: async () => {
       try {
         await fetch(`${target.baseUrl}/shutdown`, {
@@ -102,9 +128,7 @@ export const startRealDaemon = async (): Promise<RealDaemonFixture> => {
           headers: { Authorization: `Bearer ${target.token}` },
         })
       } catch { /* best effort */ }
-      if (child.pid) {
-        try { process.kill(-child.pid, "SIGKILL") } catch { child.kill("SIGKILL") }
-      }
+      killChild(activeChild)
       await cleanupRuntimeTarget(target)
     },
   }
