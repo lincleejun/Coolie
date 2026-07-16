@@ -11,6 +11,25 @@ export const INPUT_RECEIPT_TTL_MS = 7 * 24 * 60 * 60 * 1000
 export const hashInputBody = (body: string | Uint8Array): string =>
   createHash("sha256").update(body).digest("hex")
 
+export interface InputIdempotencyFields {
+  readonly text: string
+  readonly mode: string
+  readonly tabId?: string
+  readonly skipStable?: boolean
+}
+
+/** Canonical request body for idempotency hashing — excludes the key itself. */
+export const canonicalInputIdempotencyBody = (fields: InputIdempotencyFields): string =>
+  JSON.stringify({
+    text: fields.text,
+    mode: fields.mode,
+    ...(typeof fields.tabId === "string" ? { tabId: fields.tabId } : {}),
+    ...(fields.skipStable === true ? { skipStable: true } : {}),
+  })
+
+export const inputReceiptStatus = (response: Record<string, unknown>): number =>
+  response.queued === true ? 202 : 200
+
 export interface StoredInputReceipt {
   readonly workspaceId: string
   readonly key: string

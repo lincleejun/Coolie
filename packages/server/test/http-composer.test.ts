@@ -8,6 +8,7 @@ import { WorkspacesRepoLive } from "../src/repo/workspaces.js"
 import { EventsRepoLive } from "../src/repo/events.js"
 import { TabsRepoLive } from "../src/repo/tabs.js"
 import { QueueRepoLive } from "../src/repo/queue.js"
+import { InputReceiptsRepoLive } from "../src/repo/input-receipts.js"
 import { EngineRegistryLive } from "../src/engine/registry.js"
 import { createApp, newToken } from "../src/http/app.js"
 import { createWorkspaceSerial } from "../src/engine/queue-drain.js"
@@ -54,7 +55,7 @@ beforeEach(async () => {
   fakeOps.calls = []
   inputGate = null
   db = new Database(":memory:"); runMigrations(db)
-  const layer = Layer.mergeAll(WorkspacesRepoLive, TabsRepoLive, EventsRepoLive, QueueRepoLive, EngineRegistryLive)
+  const layer = Layer.mergeAll(WorkspacesRepoLive, TabsRepoLive, EventsRepoLive, QueueRepoLive, InputReceiptsRepoLive, EngineRegistryLive)
     .pipe(Layer.provide(Layer.succeed(Db, db)))
   token = newToken()
   const app = createApp({
