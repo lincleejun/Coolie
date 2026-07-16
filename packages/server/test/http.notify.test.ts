@@ -8,6 +8,7 @@ import { Effect, Layer } from "effect"
 import { Db } from "../src/db/sqlite.js"
 import { runMigrations } from "../src/db/migrations.js"
 import { EngineRegistryLive } from "../src/engine/registry.js"
+import { AttentionCompletionLive } from "../src/attention/service.js"
 import { createApp, newToken } from "../src/http/app.js"
 import { EventsRepoLive } from "../src/repo/events.js"
 import { TabsRepoLive } from "../src/repo/tabs.js"
@@ -37,7 +38,7 @@ describe("POST /notify/:engine", () => {
       (id, workspace_id, kind, engine_id, engine_session_id, tmux_window, title, status, data)
       VALUES ('t1', 'w1', 'engine', 'codex', 's1', 0, NULL, 'working', '{}')`).run()
 
-    const layer = Layer.mergeAll(TabsRepoLive, EventsRepoLive, WorkspacesRepoLive, EngineRegistryLive)
+    const layer = Layer.mergeAll(TabsRepoLive, EventsRepoLive, WorkspacesRepoLive, EngineRegistryLive, AttentionCompletionLive)
       .pipe(Layer.provide(Layer.succeed(Db, db)))
     token = newToken()
     server = http.createServer(createApp({

@@ -12,6 +12,7 @@ import { ProjectsRepoLive } from "../src/repo/projects.js"
 import { EventsRepoLive } from "../src/repo/events.js"
 import { ensureHookScript, injectClaudeHooks, hookScriptPath, hooksDisabled } from "../src/engine/claude/hooks.js"
 import { encodeCwd } from "../src/engine/claude/adapter.js"
+import { AttentionCompletionLive } from "../src/attention/service.js"
 import { createApp, newToken } from "../src/http/app.js"
 
 describe("hook script + settings injection（纯 fs）", () => {
@@ -75,7 +76,7 @@ describe("POST /hooks/claude endpoint", () => {
     db.prepare(`INSERT INTO projects (id, name, repo_root, default_base_branch, created_at) VALUES ('p1','x','/tmp/x','main',1)`).run()
     db.prepare(`INSERT INTO workspaces (id, project_id, name, path, branch, base_branch, base_ref, status, pinned, created_at, archived_at, data)
       VALUES ('w1','p1','usa-zion',?,'coolie/a','main','r','active',0,1,NULL,'{}')`).run(wsPath)
-    const layer = Layer.mergeAll(ProjectsRepoLive, EventsRepoLive, WorkspacesRepoLive, TabsRepoLive, EngineRegistryLive)
+    const layer = Layer.mergeAll(ProjectsRepoLive, EventsRepoLive, WorkspacesRepoLive, TabsRepoLive, EngineRegistryLive, AttentionCompletionLive)
       .pipe(Layer.provide(Layer.succeed(Db, db)))
     const runtime = (eff: any) => Effect.runPromiseExit(Effect.provide(eff, layer) as Effect.Effect<any, never, never>)
     tabId = (await Effect.runPromise(Effect.provide(Effect.gen(function* () {

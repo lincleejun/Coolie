@@ -77,7 +77,7 @@ const cmdStart = async (): Promise<void> => {
 
   const scope = Effect.runSync(Scope.make())
   const sessionReadiness = makeSessionReadiness()
-  const appLayer = Layer.mergeAll(WorkspaceLifecycleLive, WorkspaceAdopterLive, WorkspaceFinisherLive, WorkspaceCheckpointsLive).pipe(
+  const appLayer = Layer.mergeAll(WorkspaceLifecycleLive, WorkspaceAdopterLive, WorkspaceFinisherLive, WorkspaceCheckpointsLive, AttentionCompletionLive, WorktreeEnvironmentLive).pipe(
     Layer.provideMerge(Layer.mergeAll(
       EngineBootstrapHookLive.pipe(Layer.provide(Layer.succeed(SessionReadiness, sessionReadiness))),
       SessionEnsurerLive,
@@ -89,11 +89,7 @@ const cmdStart = async (): Promise<void> => {
       TmuxServiceLive,
       EngineRegistryLive.pipe(Layer.provide(CustomEngineStoreLive)),
     )),
-<<<<<<< HEAD
-    Layer.provideMerge(Layer.mergeAll(ProjectsRepoLive, EventsRepoLive, WorkspacesRepoLive, TabsRepoLive, QueueRepoLive, StateRepoLive, InputReceiptsRepoLive, CustomEngineStoreLive, AttentionCompletionLive)),
-=======
-    Layer.provideMerge(Layer.mergeAll(ProjectsRepoLive, EventsRepoLive, WorkspacesRepoLive, TabsRepoLive, QueueRepoLive, StateRepoLive, InputReceiptsRepoLive, CustomEngineStoreLive, WorktreeEnvironmentLive)),
->>>>>>> wave2b-2B3-provision-recopy
+    Layer.provideMerge(Layer.mergeAll(ProjectsRepoLive, EventsRepoLive, WorkspacesRepoLive, TabsRepoLive, QueueRepoLive, StateRepoLive, InputReceiptsRepoLive, CustomEngineStoreLive)),
     Layer.provideMerge(EventsBusLive), // Plan 2 的 dead export 转正：单一构造点
     Layer.provideMerge(DbLive),
     Layer.provideMerge(CoolieConfigLive),

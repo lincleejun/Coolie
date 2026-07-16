@@ -83,7 +83,7 @@ describe("completion single-transaction writes (Task 2A.3)", () => {
 
     expect((db.prepare("SELECT status FROM tabs WHERE id = ?").get(tabId) as any).status).toBe("awaiting-input")
     const events = db.prepare("SELECT type FROM events ORDER BY seq").all() as Array<{ type: string }>
-    expect(events.map((e) => e.type)).toEqual(["tab.status.changed", "engine.turn.finished"])
+    expect(events.map((e) => e.type).filter((t) => t !== "tab.created")).toEqual(["tab.status.changed", "engine.turn.finished"])
     expect(db.prepare("SELECT COUNT(*) c FROM attention_items").get()).toEqual({ c: 1 })
     expect(db.prepare("SELECT kind, source FROM attention_items").get()).toEqual({
       kind: "turn-finished",
@@ -110,7 +110,7 @@ describe("completion single-transaction writes (Task 2A.3)", () => {
     const response = await postHook({ hook_event_name: "Stop", session_id: "sess-1" })
     expect(response.status).not.toBe(200)
     expect((db.prepare("SELECT status FROM tabs WHERE id = ?").get(tabId) as any).status).toBe("working")
-    expect(db.prepare("SELECT COUNT(*) c FROM events").get()).toEqual({ c: 0 })
+    expect(db.prepare("SELECT COUNT(*) c FROM events WHERE type = 'tab.status.changed'").get()).toEqual({ c: 0 })
     db.exec("DROP TRIGGER break_attention")
   })
 

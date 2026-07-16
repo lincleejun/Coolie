@@ -173,7 +173,7 @@ export const WorkspaceLifecycleLive = Layer.effect(
           catch: (e) => new GitError({ op: "info/exclude", message: `注入 .git/info/exclude 失败：${String(e)}`, exitCode: null, stderr: "" }),
         })
         if (Option.isSome(envOpt)) {
-          yield* (yield* envOpt.value).apply(ws.id, "provision").pipe(
+          yield* envOpt.value.apply(ws.id, "provision").pipe(
             Effect.mapError((e) => e instanceof CopyError
               ? new GitError({ op: "worktreeinclude", message: e.message, exitCode: null, stderr: "" })
               : e),

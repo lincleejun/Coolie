@@ -105,7 +105,17 @@ export const makeAttentionCompletion = (
 
   return {
     apply: (input) => Effect.sync(() => {
-      const row = db.prepare("SELECT * FROM tabs WHERE id = ?").get(input.tabId)
+      const row = db.prepare("SELECT * FROM tabs WHERE id = ?").get(input.tabId) as {
+        status: string
+        workspace_id: string
+        kind: string
+        engine_id: string | null
+        engine_session_id: string | null
+        tmux_window: number | null
+        title: string | null
+        data: string | null
+        id: string
+      } | undefined
       if (!row) throw new NotFoundError({ message: `tab 不存在：${input.tabId}` })
 
       // Poller inferred completion: one attention item per awaiting-input cycle.

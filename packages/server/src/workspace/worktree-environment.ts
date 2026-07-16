@@ -5,16 +5,16 @@ import { Db } from "../db/sqlite.js"
 import { ProjectsRepo } from "../repo/projects.js"
 import { WorkspacesRepo } from "../repo/workspaces.js"
 import { EventsRepo } from "../repo/events.js"
-import { GitService } from "../git/service.js"
+import { GitService, GitError } from "../git/service.js"
 import {
   applyCopyPlan,
   buildCopyPlan,
-  type CopyError,
+  CopyError,
   type CopyPlan,
   type CopyResult,
 } from "./environment.js"
 import { selectIncludedPaths, resolveFilesToCopyRules } from "./include.js"
-import type { NotFoundError } from "../repo/errors.js"
+import { NotFoundError } from "../repo/errors.js"
 
 export type WorktreeEnvironmentMode = "provision" | "explicit-recopy"
 
@@ -44,6 +44,13 @@ const filterNoOverwrite = (
   }
 }
 
+const mapWorktreeEnvError = <A, E>(eff: Effect.Effect<A, E, never>): Effect.Effect<A, NotFoundError | CopyError, never> =>
+  eff.pipe(Effect.mapError((e) => {
+    if (e instanceof CopyError || e instanceof NotFoundError) return e
+    if (e instanceof GitError) return new CopyError({ code: "apply-failed", message: e.message })
+    return new CopyError({ code: "apply-failed", message: String(e) })
+  }))
+
 export const WorktreeEnvironmentLive = Layer.effect(
   WorktreeEnvironment,
   Effect.gen(function* () {
@@ -54,15 +61,15 @@ export const WorktreeEnvironmentLive = Layer.effect(
     const git = yield* GitService
 
     return {
-      preview: (projectId) => Effect.gen(function* () {
+      preview: (projectId) => mapWorktreeEnvError(Effect.gen(function* () {
         const project = yield* projects.get(projectId)
         const candidates = yield* git.listIgnoredUntracked(project.repoRoot)
         const { patterns } = resolveFilesToCopyRules(project.repoRoot)
         const selected = selectIncludedPaths(candidates, patterns)
         return buildCopyPlan(project.repoRoot, selected)
-      }),
+      })),
 
-      apply: (workspaceId, mode, opts) => Effect.gen(function* () {
+      apply: (workspaceId, mode, opts) => mapWorktreeEnvError(Effect.gen(function* () {
         const workspace = yield* workspaces.get(workspaceId)
         const project = yield* projects.get(workspace.projectId)
         const candidates = yield* git.listIgnoredUntracked(project.repoRoot)
@@ -90,7 +97,7 @@ export const WorktreeEnvironmentLive = Layer.effect(
         })
 
         return result
-      }),
+      })),
     }
   }),
 )

@@ -620,7 +620,7 @@ export const createApp = ({ runtime, token, onShutdown, onError, bus, sseHeartbe
         }
         const projectEnvPreview = url.pathname.match(/^\/projects\/([^/]+)\/environment\/preview$/)
         if (req.method === "GET" && projectEnvPreview) {
-          return handleEnvironmentPreview(res, runtime, projectEnvPreview[1]!, onError)
+          return handleEnvironmentPreview(res, runtime, projectEnvPreview[1]!, (_res, cause) => { onError?.(cause) })
         }
         if (route === "POST /projects") {
           const body = await readJson(req)
@@ -865,7 +865,7 @@ export const createApp = ({ runtime, token, onShutdown, onError, bus, sseHeartbe
         }
         const wsEnvRecopy = url.pathname.match(/^\/workspaces\/([^/]+)\/environment\/recopy$/)
         if (req.method === "POST" && wsEnvRecopy) {
-          return handleEnvironmentRecopy(req, res, runtime, wsEnvRecopy[1]!, readJson, onError)
+          return handleEnvironmentRecopy(req, res, runtime, wsEnvRecopy[1]!, readJson, (_res, cause) => { onError?.(cause) })
         }
         const wsEnsure = url.pathname.match(/^\/workspaces\/([^/]+)\/ensure$/)
         if (req.method === "POST" && wsEnsure) {

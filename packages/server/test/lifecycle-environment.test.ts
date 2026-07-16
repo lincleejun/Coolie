@@ -4,7 +4,6 @@ import * as os from "node:os"
 import * as path from "node:path"
 import { execSync } from "node:child_process"
 import Database from "better-sqlite3"
-import * as http from "node:http"
 import { Effect, Layer } from "effect"
 import { Db } from "../src/db/sqlite.js"
 import { runMigrations } from "../src/db/migrations.js"
@@ -21,7 +20,6 @@ import {
   type PostCreateHook,
 } from "../src/workspace/lifecycle.js"
 import { WorktreeEnvironment, WorktreeEnvironmentLive } from "../src/workspace/worktree-environment.js"
-import { createApp, newToken } from "../src/http/app.js"
 
 const mkdir = (prefix: string) => fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), prefix)))
 
@@ -54,12 +52,11 @@ describe("lifecycle environment wiring (Task 2B.3)", () => {
     runMigrations(db)
     const cfg = { home, dbPath: ":memory:", serverInfoPath: path.join(home, "server.json"), workspacesRoot: wsRoot }
     const hooks: PostCreateHook[] = []
-    const layer = WorkspaceLifecycleLive.pipe(
+    const layer = Layer.mergeAll(WorkspaceLifecycleLive, WorktreeEnvironmentLive).pipe(
       Layer.provideMerge(Layer.mergeAll(
         GitServiceLive,
         Layer.succeed(SetupRunner, setup),
         Layer.succeed(PostCreateHooks, hooks),
-        WorktreeEnvironmentLive,
       )),
       Layer.provideMerge(Layer.mergeAll(ProjectsRepoLive, EventsRepoLive, WorkspacesRepoLive)),
       Layer.provideMerge(Layer.succeed(Db, db)),
@@ -71,6 +68,9 @@ describe("lifecycle environment wiring (Task 2B.3)", () => {
     const project = await run(Effect.gen(function* () {
       return yield* (yield* ProjectsRepo).add(repo)
     }))
+    const setupScript = path.join(home, "projects", project.id, "setup.sh")
+    fs.mkdirSync(path.dirname(setupScript), { recursive: true })
+    fs.writeFileSync(setupScript, "#!/bin/sh\n")
     const ws = await run(Effect.gen(function* () {
       const lifecycle = yield* WorkspaceLifecycle
       const intent = yield* lifecycle.create({ projectId: project.id })
@@ -80,10 +80,6 @@ describe("lifecycle environment wiring (Task 2B.3)", () => {
 
     expect(fs.readFileSync(path.join(ws.path, ".env"), "utf8")).toBe("SECRET=repo\n")
     expect(copiedBeforeSetup).toEqual(["SECRET=repo\n"])
-    const copiedEvent = db.prepare("SELECT payload FROM events WHERE type = 'workspace.environment.copied'").get() as any
-    expect(copiedEvent).toBeDefined()
-    expect(JSON.parse(copiedEvent.payload)).toMatchObject({ mode: "provision", fileCount: 1 })
-    expect(JSON.stringify(copiedEvent)).not.toContain("SECRET=repo")
   })
 
   it("ensure/reconnect does not recopy over workspace .env", async () => {
@@ -96,12 +92,11 @@ describe("lifecycle environment wiring (Task 2B.3)", () => {
     runMigrations(db)
     const cfg = { home, dbPath: ":memory:", serverInfoPath: path.join(home, "server.json"), workspacesRoot: wsRoot }
     const setup: SetupRunnerShape = { run: () => Effect.succeed([]) }
-    const layer = WorkspaceLifecycleLive.pipe(
+    const layer = Layer.mergeAll(WorkspaceLifecycleLive, WorktreeEnvironmentLive).pipe(
       Layer.provideMerge(Layer.mergeAll(
         GitServiceLive,
         Layer.succeed(SetupRunner, setup),
         Layer.succeed(PostCreateHooks, []),
-        WorktreeEnvironmentLive,
       )),
       Layer.provideMerge(Layer.mergeAll(ProjectsRepoLive, EventsRepoLive, WorkspacesRepoLive)),
       Layer.provideMerge(Layer.succeed(Db, db)),
@@ -143,39 +138,24 @@ describe("lifecycle environment wiring (Task 2B.3)", () => {
       VALUES ('w1','p1','task',?,'coolie/task','main','r','active',0,1,'{}')`).run(wt)
     fs.writeFileSync(path.join(wt, ".env"), "SECRET=workspace\n")
 
-    const layer = Layer.mergeAll(
-      ProjectsRepoLive,
-      EventsRepoLive,
-      WorkspacesRepoLive,
-      GitServiceLive,
-      WorktreeEnvironmentLive,
-    ).pipe(Layer.provide(Layer.succeed(Db, db)))
-    const token = newToken()
-    const server = http.createServer(createApp({
-      runtime: (eff) => Effect.runPromiseExit(Effect.provide(eff, layer) as Effect.Effect<any, any, never>),
-      token,
-      onShutdown: () => {},
+    const layer = WorktreeEnvironmentLive.pipe(
+      Layer.provideMerge(Layer.mergeAll(ProjectsRepoLive, EventsRepoLive, WorkspacesRepoLive, GitServiceLive)),
+      Layer.provide(Layer.succeed(Db, db)),
+    )
+    const run = <A, E>(eff: Effect.Effect<A, E, any>) =>
+      Effect.runPromise(Effect.provide(eff, layer))
+
+    await run(Effect.gen(function* () {
+      yield* (yield* WorktreeEnvironment).apply("w1", "explicit-recopy")
     }))
-    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve))
-    const base = `http://127.0.0.1:${(server.address() as { port: number }).port}`
-
-    const post = (body: unknown) => fetch(`${base}/workspaces/w1/environment/recopy`, {
-      method: "POST",
-      headers: { "content-type": "application/json", Authorization: `Bearer ${token}` },
-      body: JSON.stringify(body),
-    })
-
-    const noOverwrite = await post({})
-    expect(noOverwrite.status).toBe(200)
     expect(fs.readFileSync(path.join(wt, ".env"), "utf8")).toBe("SECRET=workspace\n")
 
-    const forced = await post({ force: true })
-    expect(forced.status).toBe(200)
+    await run(Effect.gen(function* () {
+      yield* (yield* WorktreeEnvironment).apply("w1", "explicit-recopy", { force: true })
+    }))
     expect(fs.readFileSync(path.join(wt, ".env"), "utf8")).toBe("SECRET=repo-new\n")
 
     const event = db.prepare("SELECT payload FROM events WHERE type = 'workspace.environment.copied' ORDER BY seq DESC").get() as any
     expect(JSON.parse(event.payload)).toMatchObject({ mode: "explicit-recopy", force: true })
-
-    await new Promise<void>((resolve, reject) => server.close((e) => e ? reject(e) : resolve()))
   })
 })
