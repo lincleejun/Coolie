@@ -70,6 +70,7 @@ export const ROUTES = [
     name: "get.health",
     description: "存活探测（免 token）",
     auth: "none",
+    request: "none",
     response: "{ok:true}",
     sideEffects: "read-only",
   },
