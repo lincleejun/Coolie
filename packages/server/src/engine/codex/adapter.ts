@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto"
 import * as fs from "node:fs"
 import type { TabStatus } from "@coolie/protocol"
 import type { Engine } from "../types.js"
-import { codexTranscriptPath, codexDeriveTitle } from "./transcript.js"
+import { codexTranscriptPath, codexDeriveTitle, codexTranscriptReader } from "./transcript.js"
 import { seedCodexTrust, defaultCodexConfigPath } from "./trust.js"
 
 /** codex 二进制多路径发现（opcode 路线，同 claude binary.ts）。 */
@@ -120,4 +120,5 @@ export const codexEngine: Engine = {
   resumeArgs: (sessionId) => ["resume", sessionId],
   // Coolie 自建 worktree 隐式受信：起 session 前预置 config.toml project trust，跳过 TUI 首启信任对话框。
   prepareWorkspace: ({ cwd, codexConfigPath }) => seedCodexTrust(codexConfigPath ?? defaultCodexConfigPath(defaultCodexHome()), cwd),
+  transcriptReader: codexTranscriptReader,
 }
