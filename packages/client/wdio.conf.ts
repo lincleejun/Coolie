@@ -11,11 +11,15 @@ const suite = suiteArg >= 0 ? process.argv[suiteArg + 1] : "all"
 
 const mockSpecs = ["./e2e/tauri/mock/**/*.spec.ts"]
 const realSpecs = ["./e2e/tauri/real/**/*.spec.ts"]
+const visualSpecs = ["./e2e/tauri/visual/**/*.spec.ts"]
 const allSpecs = ["./e2e/tauri/mock/**/*.spec.ts", "./e2e/tauri/smoke.spec.ts"]
 
 export const config: WebdriverIO.Config = {
   runner: "local",
-  specs: suite === "mock" ? mockSpecs : suite === "real" ? realSpecs : allSpecs,
+  specs: suite === "mock" ? mockSpecs
+    : suite === "real" ? realSpecs
+      : suite === "visual" ? visualSpecs
+        : allSpecs,
   exclude: ["./e2e/tauri/fixtures/**"],
   maxInstances: suite === "real" ? 1 : 1,
   capabilities: [{
@@ -59,6 +63,10 @@ export const config: WebdriverIO.Config = {
       await ensureMockHarness()
       process.env.VITE_COOLIE_MOCK_SERVER = `${MOCK_E2E_PORT}:${MOCK_E2E_TOKEN}`
     }
+    if (suite === "visual") {
+      await ensureMockHarness()
+      process.env.VITE_COOLIE_MOCK_SERVER = `${MOCK_E2E_PORT}:${MOCK_E2E_TOKEN}`
+    }
   },
   before: async () => {
     process.env.TZ = "UTC"
@@ -69,6 +77,7 @@ export const config: WebdriverIO.Config = {
       return
     }
     if (suite === "mock" || suite === "all") await ensureMockHarness()
+    if (suite === "visual") await ensureMockHarness()
   },
   afterTest: async (_test, _context, { error }) => {
     if (!error) return
