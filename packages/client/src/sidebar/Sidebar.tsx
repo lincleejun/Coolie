@@ -93,8 +93,10 @@ const WsRowMenu = ({ ws, onClose }: { ws: Workspace; onClose: () => void }) => {
     if (!api) throw new Error(t("sidebar.apiUnavailable"))
     const title = await promptDialog(t("dialog.createPr"), t("dialog.prTitle"), ws.branch) ?? undefined
     const out = await api.req("POST", `/workspaces/${ws.id}/finish`, { createPr: true, title })
-    if (out.prUrl) showToast("workspace.pr.created", out.prUrl)
     for (const warning of out.warnings ?? []) showToast("workspace.finish", warning)
+    await useData.getState().refreshWorkspaces()
+    useUi.getState().selectWs(ws.id)
+    useUi.getState().setRightPanel("checks")
   })
   const mergeBack = (): void => {
     run(async () => {
@@ -104,6 +106,9 @@ const WsRowMenu = ({ ws, onClose }: { ws: Workspace; onClose: () => void }) => {
       const api = useData.getState().getApi()
       if (!api) throw new Error(t("sidebar.apiUnavailable"))
       await api.req("POST", `/workspaces/${ws.id}/finish`, { mergeBack: true })
+      await useData.getState().refreshWorkspaces()
+      useUi.getState().selectWs(ws.id)
+      useUi.getState().setRightPanel("checks")
     })
   }
   return (

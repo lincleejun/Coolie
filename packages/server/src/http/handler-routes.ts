@@ -45,6 +45,7 @@ export const HANDLER_ROUTES = [
   { method: "POST", path: "/workspaces/:id/engine" },
   { method: "POST", path: "/workspaces/:id/zen" },
   { method: "POST", path: "/workspaces/:id/finish" },
+  { method: "DELETE", path: "/workspaces/:id/finish-result" },
   { method: "POST", path: "/workspaces/:id/checkpoints" },
   { method: "GET", path: "/workspaces/:id/checkpoints" },
   { method: "DELETE", path: "/workspaces/:id/checkpoints/:checkpointId" },

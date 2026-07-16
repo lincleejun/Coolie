@@ -13,6 +13,7 @@ export const EXPECTED_PUBLIC_ENDPOINTS = [
   "DELETE /projects/:id",
   "DELETE /workspaces/:id",
   "DELETE /workspaces/:id/checkpoints/:checkpointId",
+  "DELETE /workspaces/:id/finish-result",
   "DELETE /workspaces/:id/queue/:queueId",
   "DELETE /workspaces/:id/tabs/:tabId",
   "GET /attention",

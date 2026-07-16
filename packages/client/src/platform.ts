@@ -108,6 +108,27 @@ export const openInEditor = async (
   }
 }
 
+/** Open a URL in the system browser (desktop) or a new tab (web). */
+export const openExternalUrl = async (
+  url: string,
+  scope: object = globalThis,
+): Promise<void> => {
+  if (!/^https?:\/\//i.test(url)) throw new Error("only http(s) URLs can be opened")
+  if (isDesktop(scope)) {
+    try {
+      const { invoke } = await import("@tauri-apps/api/core")
+      await invoke("plugin:opener|open_url", { url })
+      return
+    } catch {
+      // Fall through to window.open when opener plugin is unavailable.
+    }
+  }
+  const opened = (scope as Window).open?.(url, "_blank", "noopener,noreferrer")
+  if (!opened && typeof (scope as Window).location !== "undefined") {
+    ;(scope as Window).location.href = url
+  }
+}
+
 export const capabilities = platformCapabilities()
 
 type DialogModule = {

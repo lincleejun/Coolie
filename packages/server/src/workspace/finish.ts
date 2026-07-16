@@ -127,6 +127,13 @@ export const WorkspaceFinisherLive = Layer.effect(
         mergedBack: request.mergeBack === true,
         warnings,
       }
+      // Persist finish result; never archive or remove the worktree (Task 3.8).
+      yield* workspaces.setFinishResult(ws.id, {
+        ...outcome,
+        finishedAt: Date.now(),
+        createPr: request.createPr === true,
+        mergeBack: request.mergeBack === true,
+      })
       yield* events.append({
         workspaceId: ws.id, type: "workspace.finished",
         payload: { createPr: request.createPr === true, mergeBack: request.mergeBack === true, ...outcome },
