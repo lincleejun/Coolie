@@ -107,6 +107,19 @@ export const setSessionWebServer = (raw: string): boolean => {
 const webServerInfo = (): ServerInfo | null => sessionWebServerInfo
 
 const readInfo = async (): Promise<ServerInfo | null> => {
+  // Packaged WDIO can inject a loopback mock without baking it into the release frontend.
+  if (capabilities.daemonDiscovery) {
+    try {
+      const { invoke } = await import("@tauri-apps/api/core")
+      const override = await invoke<string | null>("read_e2e_server_override")
+      if (typeof override === "string" && override !== "") {
+        const parsed = parseServerSpecifier(override)
+        if (parsed) return parsed
+      }
+    } catch {
+      /* command unavailable outside Tauri */
+    }
+  }
   const mockServer = import.meta.env.VITE_COOLIE_MOCK_SERVER
   if (typeof mockServer === "string" && mockServer !== "") {
     const parsed = parseServerSpecifier(mockServer)
