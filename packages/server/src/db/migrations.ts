@@ -148,6 +148,23 @@ const MIGRATIONS: Migration[] = [
       db.prepare("UPDATE workspaces SET base_ref = 'HEAD' WHERE kind = 'main' AND base_ref <> 'HEAD'").run()
     },
   },
+  {
+    id: "m0008-input-receipts",
+    up: (db) => {
+      db.exec(`
+        CREATE TABLE input_receipts (
+          workspace_id TEXT NOT NULL,
+          idempotency_key TEXT NOT NULL,
+          body_hash TEXT NOT NULL,
+          response_json TEXT NOT NULL,
+          created_at INTEGER NOT NULL,
+          expires_at INTEGER NOT NULL,
+          PRIMARY KEY (workspace_id, idempotency_key)
+        );
+        CREATE INDEX idx_input_receipts_expires_at ON input_receipts(expires_at);
+      `)
+    },
+  },
 ]
 
 export const runMigrations = (db: Database.Database): void => {
