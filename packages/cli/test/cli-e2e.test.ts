@@ -224,4 +224,30 @@ describe("coolie CLI e2e", () => {
     expect(has.status).toBe(0) // session 回来了
     coolie("delete", id, "--force") // 清场
   })
+  it("send --idempotency-key survives daemon restart without duplicating queue items", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "coolie-cli-idem-"))
+    execFileSync("git", ["init", "-b", "main"], { cwd: dir })
+    execFileSync("git", ["-c", "user.email=t@t", "-c", "user.name=t", "commit", "--allow-empty", "-m", "init"], { cwd: dir })
+    const created = coolie("create", dir, "--name", "idem-queue", "--engine", "codex")
+    const id = /\(([^)]+)\)/.exec(created)![1]!
+    let db = new Database(path.join(home, "coolie.db"))
+    const tab = db.prepare("SELECT id FROM tabs WHERE workspace_id = ? AND kind = 'engine'").get(id) as { id: string }
+    db.prepare("UPDATE tabs SET status = 'working' WHERE id = ?").run(tab.id)
+    db.close()
+
+    const key = "cli-restart-key"
+    const first = coolie("send", id, "queued prompt", "--idempotency-key", key)
+    expect(first).toContain("queued")
+    db = new Database(path.join(home, "coolie.db"), { readonly: true })
+    expect((db.prepare("SELECT COUNT(*) AS n FROM prompt_queue WHERE workspace_id = ?").get(id) as { n: number }).n).toBe(1)
+    db.close()
+
+    coolie("server", "stop")
+    const second = coolie("send", id, "queued prompt", "--idempotency-key", key)
+    expect(second).toContain("queued")
+    db = new Database(path.join(home, "coolie.db"), { readonly: true })
+    expect((db.prepare("SELECT COUNT(*) AS n FROM prompt_queue WHERE workspace_id = ?").get(id) as { n: number }).n).toBe(1)
+    db.close()
+    coolie("delete", id, "--force")
+  })
 })

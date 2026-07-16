@@ -23,6 +23,7 @@ import {
 } from "@coolie/server"
 import * as path from "node:path"
 import * as fs from "node:fs"
+import { randomUUID } from "node:crypto"
 import { fileURLToPath } from "node:url"
 import { spawnSync } from "node:child_process"
 import Database from "better-sqlite3"
@@ -276,13 +277,15 @@ const addDeliveryCommand = (name: "send" | "dispatch", description: string) =>
     .description(description)
     .option("--tab <tabId>", "目标 engine tab")
     .option("--interrupt", "中断当前 turn 后投递")
-    .action(async (id: string, text: string, opts: { tab?: string; interrupt?: boolean }) => {
+    .option("--idempotency-key <key>", "幂等 key；缺省自动生成")
+    .action(async (id: string, text: string, opts: { tab?: string; interrupt?: boolean; idempotencyKey?: string }) => {
       try {
+        const idempotencyKey = opts.idempotencyKey ?? randomUUID()
         const result: any = await api("POST", `/workspaces/${encodeURIComponent(id)}/input`, {
           text,
           mode: opts.interrupt ? "interrupt-send" : "send",
           ...(opts.tab ? { tabId: opts.tab } : {}),
-        })
+        }, { headers: { "Idempotency-Key": idempotencyKey } })
         if (result.queued) {
           const contract = typeof result.messageId === "string" && typeof result.deliveryGuarantee === "string"
             ? ` message=${result.messageId} delivery=${result.deliveryGuarantee}`

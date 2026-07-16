@@ -44,6 +44,7 @@ interface RawResponse { status: number; text: string }
 /** unix socket 优先（设计文档 §2.1：本地零端口依赖）；sock 缺席/失联回退 TCP。token 两路一致。 */
 const rawRequest = (
   info: ServerInfo, method: string, p: string, body: string | undefined, forceTcp: boolean,
+  extraHeaders?: Record<string, string>,
 ): Promise<RawResponse> =>
   new Promise((resolve, reject) => {
     const viaSock = !forceTcp && info.sock !== undefined && fs.existsSync(info.sock)
@@ -54,6 +55,7 @@ const rawRequest = (
         "content-type": "application/json",
         Authorization: `Bearer ${info.token}`,
         ...(body !== undefined ? { "content-length": Buffer.byteLength(body) } : {}),
+        ...extraHeaders,
       },
     }, (res) => {
       let buf = ""
@@ -66,14 +68,20 @@ const rawRequest = (
     req.end()
   })
 
-export const api = async (method: string, p: string, body?: unknown): Promise<any> => {
+export const api = async (
+  method: string,
+  p: string,
+  body?: unknown,
+  options?: { headers?: Record<string, string> },
+): Promise<any> => {
   const info = await ensureServer()
   const payload = body === undefined ? undefined : JSON.stringify(body)
+  const headers = options?.headers
   let r: RawResponse
   try {
-    r = await rawRequest(info, method, p, payload, false)
+    r = await rawRequest(info, method, p, payload, false, headers)
   } catch {
-    r = await rawRequest(info, method, p, payload, true) // 陈旧 sock → TCP 重试一次
+    r = await rawRequest(info, method, p, payload, true, headers) // 陈旧 sock → TCP 重试一次
   }
   if (r.status === 204) return undefined
   let json: any = {}

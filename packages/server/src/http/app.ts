@@ -22,6 +22,12 @@ import { EngineRegistry, engineHome } from "../engine/registry.js"
 import { CustomEngineStore, detectArgvAvailability, detectCustomEngine, copilotPreset } from "../engine/custom-store.js"
 import { makeCustomEngine } from "../engine/custom-adapter.js"
 import { ConflictError, NotFoundError } from "../repo/errors.js"
+import {
+  InputReceiptsRepo,
+  canonicalInputIdempotencyBody,
+  hashInputBody,
+  inputReceiptStatus,
+} from "../repo/input-receipts.js"
 import { tmuxSessionName } from "@coolie/protocol"
 import type { ComposerOps, InputMode } from "../tmux/ops.js"
 import type { TabsRepoShape } from "../repo/tabs.js"
@@ -47,7 +53,7 @@ export { newToken } from "./token.js"
 // on it is not a reliable way to recover the original TaggedError. Running via
 // `Effect.runPromiseExit` and unwrapping with `Exit.match` + `Cause.failureOption`
 // (mirrors the pattern already used in test/projects-repo.test.ts) is robust.
-export type AppServices = ProjectsRepo | EventsRepo | WorkspacesRepo | WorkspaceLifecycle | TabsRepo | QueueRepo | EngineRegistry | CustomEngineStore | SessionEnsurer | WorkspaceAdopter | WorkspaceFinisher | WorkspaceCheckpoints
+export type AppServices = ProjectsRepo | EventsRepo | WorkspacesRepo | WorkspaceLifecycle | TabsRepo | QueueRepo | InputReceiptsRepo | EngineRegistry | CustomEngineStore | SessionEnsurer | WorkspaceAdopter | WorkspaceFinisher | WorkspaceCheckpoints
 export type Runtime = <A, E>(eff: Effect.Effect<A, E, AppServices>) => Promise<Exit.Exit<A, E>>
 export interface AppDeps {
   readonly runtime: Runtime
@@ -321,7 +327,7 @@ export const createApp = ({ runtime, token, onShutdown, onError, bus, sseHeartbe
       if (req.method === "OPTIONS") {
         res.writeHead(204, {
           "access-control-allow-methods": "GET, POST, DELETE, OPTIONS",
-          "access-control-allow-headers": "authorization, content-type",
+          "access-control-allow-headers": "authorization, content-type, idempotency-key",
           "access-control-max-age": "86400",
         }).end()
         return
@@ -1380,10 +1386,35 @@ export const createApp = ({ runtime, token, onShutdown, onError, bus, sseHeartbe
           if (typeof body.text !== "string") return err(res, 400, "Validation", "text 必须是 string")
           if (mode !== "interrupt" && body.text.trim() === "")
             return err(res, 400, "Validation", "非 interrupt 模式 text 不能为空")
+          const workspaceId = inputRoute[1]!
+          const headerKey = req.headers["idempotency-key"]
+          const idempotencyKey = typeof body.idempotencyKey === "string" ? body.idempotencyKey
+            : typeof headerKey === "string" ? headerKey
+            : Array.isArray(headerKey) ? headerKey[0]
+            : undefined
+          const idempotencyBody = canonicalInputIdempotencyBody({
+            text: body.text,
+            mode,
+            ...(typeof body.tabId === "string" ? { tabId: body.tabId } : {}),
+            ...(body.skipStable === true ? { skipStable: true } : {}),
+          })
+          const bodyHash = hashInputBody(idempotencyBody)
+          const bodyByteLength = Buffer.byteLength(idempotencyBody, "utf8")
           const handleInput = () => runRoute(
             res, runtime,
             Effect.gen(function* () {
-              const ws = yield* (yield* WorkspacesRepo).get(inputRoute[1]!)
+              if (idempotencyKey) {
+                const check = yield* (yield* InputReceiptsRepo).check({
+                  workspaceId, key: idempotencyKey, bodyHash, bodyByteLength,
+                })
+                if (check.replay) {
+                  return {
+                    kind: "replay" as const,
+                    response: JSON.parse(check.responseJson) as Record<string, unknown>,
+                  }
+                }
+              }
+              const ws = yield* (yield* WorkspacesRepo).get(workspaceId)
               if (ws.status !== "active")
                 return yield* new ConflictError({ message: `workspace 非 active（当前 ${ws.status}）` })
               const tabs = yield* TabsRepo
@@ -1395,9 +1426,30 @@ export const createApp = ({ runtime, token, onShutdown, onError, bus, sseHeartbe
                 return yield* new NotFoundError({ message: "engine tab 不属于该 workspace" })
               const engine = (yield* EngineRegistry).get(tab.engineId ?? "claude")
               const queuedCount = (yield* (yield* QueueRepo).listQueued(ws.id, tab.id)).length
-              return { ws, tab, engine, queuedCount }
+              return { kind: "deliver" as const, ws, tab, engine, queuedCount }
             }),
-            async ({ ws, tab, engine, queuedCount }) => {
+            async (result) => {
+              if (result.kind === "replay") {
+                return send(res, inputReceiptStatus(result.response), result.response)
+              }
+              const { ws, tab, engine, queuedCount } = result
+              const saveReceipt = async (response: Record<string, unknown>): Promise<boolean> => {
+                if (!idempotencyKey) return true
+                const exit = await runtime(Effect.gen(function* () {
+                  yield* (yield* InputReceiptsRepo).put({
+                    workspaceId: ws.id, key: idempotencyKey, bodyHash, response,
+                  })
+                }))
+                Exit.match(exit, {
+                  onSuccess: () => {},
+                  onFailure: (cause) => {
+                    const mapped = errorFromCause(cause, onError)
+                    if (!res.headersSent) send(res, mapped.status, mapped.body)
+                  },
+                })
+                if (Exit.isFailure(exit)) return false
+                return true
+              }
               const shouldQueue = mode === "send" && engine?.capabilities.nativeQueue === false &&
                 (tab.status === "working" || queuedCount > 0)
               if (shouldQueue) {
@@ -1405,14 +1457,18 @@ export const createApp = ({ runtime, token, onShutdown, onError, bus, sseHeartbe
                   return yield* (yield* QueueRepo).enqueue({ workspaceId: ws.id, tabId: tab.id, text: body.text })
                 }))
                 return Exit.match(exit, {
-                  onSuccess: (queued) => send(res, 202, {
-                    queued: true,
-                    id: queued.id,
-                    queueId: queued.queueId,
-                    messageId: queued.messageId,
-                    position: queued.position,
-                    deliveryGuarantee: queued.deliveryGuarantee,
-                  } satisfies QueueAcceptedResponse),
+                  onSuccess: async (queued) => {
+                    const response = {
+                      queued: true,
+                      id: queued.id,
+                      queueId: queued.queueId,
+                      messageId: queued.messageId,
+                      position: queued.position,
+                      deliveryGuarantee: queued.deliveryGuarantee,
+                    } satisfies QueueAcceptedResponse
+                    if (!(await saveReceipt(response))) return
+                    send(res, 202, response)
+                  },
                   onFailure: (cause) => {
                     const mapped = errorFromCause(cause, onError)
                     send(res, mapped.status, mapped.body)
@@ -1443,7 +1499,9 @@ export const createApp = ({ runtime, token, onShutdown, onError, bus, sseHeartbe
                     payload: { mode, tabId: tab.id, chars: body.text.length },
                   })
                 }))
-                send(res, 200, { ok: true })
+                const response = { ok: true }
+                if (!(await saveReceipt(response))) return
+                send(res, 200, response)
               } catch (e: any) {
                 if (!res.headersSent) err(res, 500, "TmuxError", e?.message ?? String(e))
               }
@@ -1451,7 +1509,7 @@ export const createApp = ({ runtime, token, onShutdown, onError, bus, sseHeartbe
             onError,
           )
           return await (workspaceSerial
-            ? workspaceSerial.run(inputRoute[1]!, handleInput)
+            ? workspaceSerial.run(workspaceId, handleInput)
             : handleInput())
         }
         return err(res, 404, "NotFound", `no route: ${route}`)
