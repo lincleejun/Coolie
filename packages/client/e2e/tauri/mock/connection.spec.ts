@@ -1,12 +1,16 @@
-import { applyTestStabilization, waitForAppRoot } from "../fixtures/app.js"
-import { ensureMockHarness, mockRequestLog, resetMockHarness } from "../fixtures/harness.js"
+import { reloadAppAfterSeed } from "../fixtures/app.js"
+import {
+  emitMockEvent,
+  ensureMockHarness,
+  mockRequestLog,
+  resetMockHarness,
+} from "../fixtures/harness.js"
 
 describe("mock-daemon connection journey", () => {
   before(async () => {
     await ensureMockHarness()
     await resetMockHarness()
-    await waitForAppRoot()
-    await applyTestStabilization()
+    await reloadAppAfterSeed()
   })
 
   it("connects to the mock daemon and renders onboarding (pointer)", async () => {
@@ -26,7 +30,7 @@ describe("mock-daemon connection journey", () => {
   it("shows offline/replay status after SSE disconnect (keyboard)", async () => {
     const daemon = await ensureMockHarness()
     await fetch(`${daemon.baseUrl}/__test__/disconnect-sse`, { method: "POST" })
-    daemon.emitEvent({ type: "workspace.created", workspaceId: "w-replay", payload: { id: "w-replay" } })
+    await emitMockEvent({ type: "workspace.created", workspaceId: "w-replay", payload: { id: "w-replay" } })
 
     await browser.keys(["Escape"])
     const body = await browser.getPageSource()

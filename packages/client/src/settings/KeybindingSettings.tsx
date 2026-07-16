@@ -71,7 +71,12 @@ export const KeybindingSettings = ({ forceOpen = false }: { forceOpen?: boolean 
   }
 
   return (
-    <div className="modal-backdrop" onClick={close}>
+    // Prefer mousedown-on-backdrop (same as Inbox/project picker): a click that opens
+    // Settings must not hit a freshly mounted backdrop onClick and immediately close it.
+    <div
+      className="modal-backdrop"
+      onMouseDown={(event) => { if (event.target === event.currentTarget) close() }}
+    >
       <div
         ref={dialog}
         className="modal keybinding-settings settings-shell"

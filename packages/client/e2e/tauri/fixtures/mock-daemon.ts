@@ -129,6 +129,13 @@ export const startMockDaemon = async (opts?: { token?: string; port?: number }):
   const workspaces: MockWorkspace[] = []
   const tabsByWs = new Map<string, MockTab[]>()
   const attentionItems: MockAttentionItem[] = []
+  const defaultCapabilities = () => ({
+    nativeQueue: false,
+    midSessionModelSwitch: false,
+    resume: false,
+    hooks: false,
+    effort: false,
+  })
   const defaultEngines = () => ([
     {
       id: "claude",
@@ -136,6 +143,7 @@ export const startMockDaemon = async (opts?: { token?: string; port?: number }):
       models: ["default"],
       enabled: true,
       custom: false,
+      capabilities: defaultCapabilities(),
       availability: { available: true, accountHint: "ok", error: null },
     },
     {
@@ -144,13 +152,7 @@ export const startMockDaemon = async (opts?: { token?: string; port?: number }):
       models: [],
       enabled: true,
       custom: false,
-      capabilities: {
-        nativeQueue: false,
-        midSessionModelSwitch: false,
-        resume: false,
-        hooks: false,
-        effort: false,
-      },
+      capabilities: defaultCapabilities(),
       availability: {
         available: false,
         accountHint: null,
@@ -210,7 +212,7 @@ export const startMockDaemon = async (opts?: { token?: string; port?: number }):
       return json(res, 200, {
         tmuxSocket: "coolie-mock",
         engines,
-        namePools: { national_parks: { id: "national_parks", label: "National Parks" } },
+        namePools: [{ id: "national_parks", displayName: "National Parks" }],
       })
     }
     if (req.method === "GET" && url.pathname === "/state") return json(res, 200, snapshot())

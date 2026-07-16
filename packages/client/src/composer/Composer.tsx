@@ -215,7 +215,7 @@ export const Composer = ({ wsId, onSubmitOverride, placeholder, disabled = false
       if (e.key === "Escape") { e.preventDefault(); useUi.getState().setDispatchMode(false) }
       return
     }
-    const nativeQueue = engine?.capabilities.nativeQueue === true
+    const nativeQueue = engine?.capabilities?.nativeQueue === true
     const action = planComposerKey(e, { engineWorking: engineWorking === true, nativeQueue })
     switch (action.kind) {
       case "newline": return // textarea 默认行为
@@ -249,7 +249,7 @@ export const Composer = ({ wsId, onSubmitOverride, placeholder, disabled = false
   const switchModel = (m: string): void => {
     setModel(m)
     if (m === "default") return
-    if (engine?.capabilities.midSessionModelSwitch)
+    if (engine?.capabilities?.midSessionModelSwitch)
       void deliverModelSwitch(wsId, m, engineWorking === true)
         .catch((e) => useData.getState().pushWarning(
           "engine.switch",
@@ -310,7 +310,7 @@ export const Composer = ({ wsId, onSubmitOverride, placeholder, disabled = false
           }}
         />
         <div className="cbox-bar">
-          {engine && engine.capabilities.midSessionModelSwitch && !onSubmitOverride && (
+          {engine && engine.capabilities?.midSessionModelSwitch && !onSubmitOverride && (
             <Dropdown
               className="model-chip"
               title={tr("composer.model")}

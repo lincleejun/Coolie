@@ -1,4 +1,4 @@
-import { applyTestStabilization, waitForAppRoot } from "../fixtures/app.js"
+import { reloadAppAfterSeed } from "../fixtures/app.js"
 import {
   ensureMockHarness,
   resetMockHarness,
@@ -10,8 +10,7 @@ describe("mock-daemon dispatcher journey", () => {
     await ensureMockHarness()
     await resetMockHarness()
     await seedMockProject({ name: "dispatcher-demo", repoRoot: "/tmp/dispatcher-demo" })
-    await waitForAppRoot()
-    await applyTestStabilization()
+    await reloadAppAfterSeed()
   })
 
   it("opens the dispatcher panel from the sidebar (pointer)", async () => {
@@ -20,9 +19,8 @@ describe("mock-daemon dispatcher journey", () => {
       return html.includes("dispatcher-demo")
     }, { timeout: 20000 })
 
-    const newButton = await browser.$('[aria-label="New workspace"]')
-    await newButton.waitForClickable({ timeout: 15000 })
-    await newButton.click()
+    const { clickByAriaLabel } = await import("../fixtures/app.js")
+    await clickByAriaLabel(["New workspace", "新建 workspace"])
 
     const dispatchTitle = await browser.$("h2")
     await dispatchTitle.waitForDisplayed({ timeout: 15000 })

@@ -91,6 +91,13 @@ if (!existsSync(packagedTestApp)) {
     { COOLIE_SIDECAR_NODE: node, PATH: `${dirname(node)}:${process.env.PATH ?? ""}` },
   ) || failed
 }
+// Artifact smoke / prior WDIO can leave coolie-client or mock ports occupied.
+spawnSync("pkill", ["-f", "coolie-client"], { encoding: "utf8" })
+for (const port of [45123, 4445, 4446]) {
+  spawnSync("bash", ["-lc", `lsof -tiTCP:${port} -sTCP:LISTEN | xargs kill -9 2>/dev/null || true`], {
+    encoding: "utf8",
+  })
+}
 if (existsSync(packagedTestApp)) {
   failed = !run(
     "north-star-ui",

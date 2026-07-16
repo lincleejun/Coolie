@@ -134,7 +134,11 @@ const NoWorkspaceHint = () => {
         <h1 className="onboarding-title" role="heading">{tr("onboarding.newTitle")}</h1>
         <p className="onboarding-sub">{tr("onboarding.newSubtitle")}</p>
         <div className="onboarding-actions">
-          <button className="ob-action wide" onClick={() => useUi.getState().setDispatchMode(true, projects[0]?.id ?? null)}>
+          <button
+            className="ob-action wide"
+            aria-label={tr("sidebar.new")}
+            onClick={() => useUi.getState().setDispatchMode(true, projects[0]?.id ?? null)}
+          >
             <span className="ob-icon">＋</span>
             <span className="ob-label">{tr("sidebar.new")}</span>
             <span className="ob-hint">{tr("onboarding.newHint")}</span>

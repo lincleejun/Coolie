@@ -1,4 +1,4 @@
-import { applyTestStabilization, waitForAppRoot } from "../fixtures/app.js"
+import { reloadAppAfterSeed } from "../fixtures/app.js"
 import {
   ensureMockHarness,
   resetMockHarness,
@@ -17,8 +17,7 @@ describe("mock-daemon archive journey", () => {
     const workspace = await seedMockWorkspace(project.id, { name: "glacier" })
     workspaceId = workspace.id
     workspaceName = workspace.name
-    await waitForAppRoot()
-    await applyTestStabilization()
+    await reloadAppAfterSeed()
   })
 
   it("archives an active workspace from the task menu (pointer)", async () => {
@@ -31,17 +30,14 @@ describe("mock-daemon archive journey", () => {
     await task.waitForClickable({ timeout: 15000 })
     await task.click()
 
-    const more = await browser.$('[aria-label="More actions"]')
-    await more.waitForClickable({ timeout: 15000 })
-    await more.click()
-
-    const archive = await browser.$('[role="menuitem"]')
-    await archive.waitForClickable({ timeout: 15000 })
-    await archive.click()
+    const { clickByAriaLabel, clickByText } = await import("../fixtures/app.js")
+    await clickByAriaLabel(["More actions", "更多动作"])
+    // First menuitem is Pin — select Archive by label text (not CSS+*= which WDIO rejects).
+    await clickByText(["Archive task", "归档任务"])
 
     await browser.waitUntil(async () => {
       const html = await browser.getPageSource()
-      return html.includes("archived") || html.includes("Archived")
+      return /Archived|已归档/.test(html)
     }, { timeout: 20000 })
   })
 
@@ -57,9 +53,10 @@ describe("mock-daemon archive journey", () => {
     })
 
     await browser.keys(["Escape"])
+    await reloadAppAfterSeed()
     await browser.waitUntil(async () => {
       const html = await browser.getPageSource()
-      return html.includes(workspaceName) && !html.includes("archived")
+      return html.includes(workspaceName) && !/archived|Archived|已归档/i.test(html)
     }, { timeout: 20000 })
   })
 })

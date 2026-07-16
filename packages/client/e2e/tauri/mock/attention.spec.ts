@@ -1,4 +1,4 @@
-import { applyTestStabilization, waitForAppRoot } from "../fixtures/app.js"
+import { reloadAppAfterSeed } from "../fixtures/app.js"
 import {
   ensureMockHarness,
   resetMockHarness,
@@ -19,8 +19,7 @@ describe("mock-daemon attention inbox journey", () => {
       tabId: "t-attention",
       summary: "Review the diff",
     })
-    await waitForAppRoot()
-    await applyTestStabilization()
+    await reloadAppAfterSeed()
   })
 
   it("opens inbox, filters items, and jumps to workspace+tab (pointer)", async () => {
@@ -33,7 +32,7 @@ describe("mock-daemon attention inbox journey", () => {
     await inboxButton.waitForClickable({ timeout: 15000 })
     await inboxButton.click()
 
-    const panel = await browser.$('[aria-label="Attention inbox"]')
+    const panel = await browser.$(".inbox-panel")
     await panel.waitForDisplayed({ timeout: 15000 })
     expect(await panel.getText()).toContain("Review the diff")
 

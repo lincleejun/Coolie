@@ -3,10 +3,23 @@ import {
   MOCK_E2E_TOKEN,
   startMockDaemon,
   type MockDaemonControl,
+  type MockEmitEvent,
 } from "./mock-daemon.js"
 
 let sharedDaemon: MockDaemonControl | null = null
 let ownsDaemon = false
+
+const httpEmit = async (port: number, token: string, event: MockEmitEvent): Promise<void> => {
+  const response = await fetch(`http://127.0.0.1:${port}/__test__/emit`, {
+    method: "POST",
+    headers: {
+      authorization: `Bearer ${token}`,
+      "content-type": "application/json",
+    },
+    body: JSON.stringify(event),
+  })
+  if (!response.ok) throw new Error(`emit failed: ${response.status}`)
+}
 
 /** Attach to an already-listening mock (launcher onPrepare) without rebinding the port. */
 const attachMockDaemon = (port: number, token: string): MockDaemonControl => ({
@@ -14,11 +27,23 @@ const attachMockDaemon = (port: number, token: string): MockDaemonControl => ({
   token,
   baseUrl: `http://127.0.0.1:${port}`,
   serverInfo: JSON.stringify({ port, token, pid: process.pid }),
-  emitEvent: () => {
-    throw new Error("attach-only mock cannot emitEvent; use HTTP __test__ helpers")
+  emitEvent: (event) => {
+    // Best-effort sync facade; prefer emitMockEvent() when the test must await delivery.
+    void httpEmit(port, token, event)
+    return {
+      seq: event.seq ?? 0,
+      ts: event.ts ?? Date.now(),
+      workspaceId: event.workspaceId ?? null,
+      type: event.type,
+      payload: event.payload,
+    } as ReturnType<MockDaemonControl["emitEvent"]>
   },
-  disconnectSseClients: () => {},
-  restoreSse: () => {},
+  disconnectSseClients: () => {
+    void fetch(`http://127.0.0.1:${port}/__test__/disconnect-sse`, { method: "POST" })
+  },
+  restoreSse: () => {
+    void fetch(`http://127.0.0.1:${port}/__test__/restore-sse`, { method: "POST" })
+  },
   requestLog: () => [],
   reset: () => {
     void fetch(`http://127.0.0.1:${port}/__test__/reset`, { method: "POST" })
@@ -51,7 +76,6 @@ export const ensureMockHarness = async (): Promise<MockDaemonControl> => {
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error)
     if (message.includes("EADDRINUSE") || (error as NodeJS.ErrnoException)?.code === "EADDRINUSE") {
-      // Launcher onPrepare likely owns the listener; attach over HTTP.
       sharedDaemon = attachMockDaemon(MOCK_E2E_PORT, MOCK_E2E_TOKEN)
       ownsDaemon = false
       return sharedDaemon
@@ -63,6 +87,11 @@ export const ensureMockHarness = async (): Promise<MockDaemonControl> => {
 export const resetMockHarness = async (): Promise<void> => {
   const daemon = await ensureMockHarness()
   await fetch(`${daemon.baseUrl}/__test__/reset`, { method: "POST" })
+}
+
+export const emitMockEvent = async (event: MockEmitEvent): Promise<void> => {
+  const daemon = await ensureMockHarness()
+  await httpEmit(daemon.port, daemon.token, event)
 }
 
 export const seedMockProject = async (overrides?: Record<string, unknown>): Promise<{ id: string }> => {

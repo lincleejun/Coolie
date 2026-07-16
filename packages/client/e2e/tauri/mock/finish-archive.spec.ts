@@ -1,4 +1,4 @@
-import { applyTestStabilization, waitForAppRoot } from "../fixtures/app.js"
+import { reloadAppAfterSeed } from "../fixtures/app.js"
 import {
   ensureMockHarness,
   resetMockHarness,
@@ -32,8 +32,7 @@ describe("mock-daemon finish→archive journey (Task 3.8)", () => {
     })
     workspaceName = workspace.name
     workspaceId = workspace.id
-    await waitForAppRoot()
-    await applyTestStabilization()
+    await reloadAppAfterSeed()
   })
 
   it("shows Open PR / Archive / Keep working on finish success surface", async () => {
