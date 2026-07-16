@@ -38,7 +38,7 @@ beforeAll(() => {
   execFileSync("git", ["-c", "user.email=t@t", "-c", "user.name=t", "commit", "--allow-empty", "-m", "init"], { cwd: repo })
   coolie("project", "add", repo)
   coolie("create", repo, "--name", "agent-api-state", "--engine", "claude", "--prompt", "noop")
-})
+}, 60_000)
 
 afterAll(() => {
   try { coolie("server", "stop") } catch {}
