@@ -1,4 +1,5 @@
 import { execFile } from "node:child_process"
+import type { EngineAvailability } from "@coolie/protocol"
 import { discoverCopilotBinary } from "./binary.js"
 
 /** Split availability probes — binary / version / auth are independent. */
@@ -106,4 +107,53 @@ export const probeCopilot = async (opts?: {
     ...(opts?.exec ? { exec: opts.exec } : {}),
   })
   return { binary, version, auth }
+}
+
+/** Flat EngineAvailability for GET /config and UI/CLI product surfaces. */
+export const COPILOT_LOGIN_HINT = "Run `gh auth login` to authenticate GitHub Copilot"
+
+export const copilotToEngineAvailability = (
+  probe: CopilotProbeResult,
+): EngineAvailability => {
+  if (!probe.binary.available) {
+    return {
+      available: false,
+      accountHint: null,
+      error: probe.binary.error ?? "copilot binary not found",
+    }
+  }
+  if (!probe.version.ok) {
+    return {
+      available: false,
+      accountHint: null,
+      error: probe.version.error ?? "copilot version check failed",
+    }
+  }
+  if (!probe.auth.ok) {
+    const detail = probe.auth.error ?? "not authenticated"
+    return {
+      available: false,
+      accountHint: null,
+      error: detail.includes("gh auth login") ? detail : `${detail}. ${COPILOT_LOGIN_HINT}`,
+    }
+  }
+  return {
+    available: true,
+    accountHint: probe.auth.accountHint,
+    error: null,
+  }
+}
+
+/** Throw when Copilot must not start a tmux engine session (no auth / missing binary). */
+export const assertCopilotReadyToLaunch = async (opts?: {
+  readonly env?: NodeJS.ProcessEnv
+  readonly probe?: (p: string) => boolean
+  readonly which?: () => string | null
+  readonly exec?: CopilotExec
+  readonly ghArgv?: readonly string[]
+}): Promise<void> => {
+  const availability = copilotToEngineAvailability(await probeCopilot(opts))
+  if (!availability.available) {
+    throw new Error(availability.error ?? "Copilot unavailable")
+  }
 }

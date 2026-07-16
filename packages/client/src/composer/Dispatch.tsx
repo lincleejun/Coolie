@@ -40,14 +40,27 @@ export const buildCreateBody = (i: CreateBodyInput): Record<string, unknown> => 
   ...(i.namePool === "custom" ? { customNames: [...(i.customNames ?? [])] } : {}),
 })
 
+export const isEngineUsable = (candidate: EngineInfo): boolean =>
+  candidate.enabled !== false && candidate.availability?.available !== false
+
+export const engineSelectLabel = (candidate: EngineInfo): string => {
+  if (isEngineUsable(candidate)) return candidate.displayName
+  const reason = candidate.availability?.error?.split(".")[0]?.trim()
+  return reason ? `${candidate.displayName} — ${reason}` : `${candidate.displayName} — unavailable`
+}
+
+export const copilotLoginHint = (candidate: EngineInfo | undefined): string | null => {
+  if (!candidate || candidate.id !== "copilot") return null
+  if (isEngineUsable(candidate)) return null
+  return candidate.availability?.error ?? "Run `gh auth login` to authenticate GitHub Copilot"
+}
+
 export const resolveDispatchDefaults = (
   engines: readonly EngineInfo[],
   preferences: { defaultEngine: string; defaultModel: string },
 ): { engineId: string; model: string } => {
-  const usable = (candidate: EngineInfo): boolean =>
-    candidate.enabled !== false && candidate.availability?.available !== false
-  const engine = engines.find((candidate) => candidate.id === preferences.defaultEngine && usable(candidate))
-    ?? engines.find(usable)
+  const engine = engines.find((candidate) => candidate.id === preferences.defaultEngine && isEngineUsable(candidate))
+    ?? engines.find(isEngineUsable)
     ?? engines[0]
   return {
     engineId: engine?.id ?? preferences.defaultEngine ?? "",
@@ -187,6 +200,10 @@ export const DispatchPanel = () => {
     const api = useData.getState().getApi()
     // Only gate on the cheap intent POST — ensure runs in the background so create-more stays open.
     if (!api || !projectId || !baseBranch || !engine || postingIntent) return
+    if (!isEngineUsable(engine)) {
+      setErr(copilotLoginHint(engine) ?? engine.availability?.error ?? tr("dispatch.engineUnavailable"))
+      return
+    }
     setPostingIntent(true); setErr(null)
     void (async () => {
       try {
@@ -212,6 +229,7 @@ export const DispatchPanel = () => {
       }
     })()
   }
+  const loginHint = copilotLoginHint(engine)
 
   return (
     <div className="dispatch">
@@ -247,12 +265,17 @@ export const DispatchPanel = () => {
               : tr("dispatch.branchCount").replace("{count}", String(branches.length))}
         </span>
         <label>{tr("dispatch.engine")}</label>
-        <select value={engine?.id ?? ""} onChange={(event) => {
-          setEngineId(event.target.value)
-          setModel("default")
-        }}>
+        <select
+          value={engine?.id ?? ""}
+          aria-label={tr("dispatch.engine")}
+          data-testid="dispatch-engine"
+          onChange={(event) => {
+            setEngineId(event.target.value)
+            setModel("default")
+          }}
+        >
           {engines.map((candidate) => (
-            <option key={candidate.id} value={candidate.id}>{candidate.displayName}</option>
+            <option key={candidate.id} value={candidate.id}>{engineSelectLabel(candidate)}</option>
           ))}
         </select>
         <label>{tr("dispatch.model")}</label>
@@ -263,6 +286,11 @@ export const DispatchPanel = () => {
           ))}
         </select>
       </div>
+      {loginHint && (
+        <div className="dispatch-err" role="status" data-testid="dispatch-copilot-auth">
+          {tr("dispatch.copilotLogin").replace("{detail}", loginHint)}
+        </div>
+      )}
       {err && <div className="dispatch-err">{tr("dispatch.createFailed").replace("{error}", err)}</div>}
       <DispatchProgressList progressByWs={progressByWs} workspaces={workspaces} />
       <Composer wsId={`dispatch:${projectId ?? "none"}`} onSubmitOverride={submit}

@@ -2,7 +2,14 @@ import { afterEach, describe, it, expect } from "vitest"
 import { Effect } from "effect"
 import { copilotEngine } from "../src/engine/copilot/adapter.js"
 import { discoverCopilotBinary } from "../src/engine/copilot/binary.js"
-import { probeCopilot, probeCopilotAuth, probeCopilotBinary, probeCopilotVersion } from "../src/engine/copilot/account.js"
+import {
+  assertCopilotReadyToLaunch,
+  copilotToEngineAvailability,
+  probeCopilot,
+  probeCopilotAuth,
+  probeCopilotBinary,
+  probeCopilotVersion,
+} from "../src/engine/copilot/account.js"
 import { EngineRegistry, EngineRegistryLive, makeEngineRegistry } from "../src/engine/registry.js"
 
 /**
@@ -127,6 +134,42 @@ describe("copilot account probes (split unavailable / version / auth)", () => {
       probe: (p) => p === "/opt/copilot",
       which: () => null,
     })).toEqual({ available: true, path: "/opt/copilot", error: null })
+  })
+})
+
+describe("copilotToEngineAvailability / launch gate (Task 3.3)", () => {
+  it("maps probe failures to unavailable EngineAvailability with login hint", () => {
+    const mapped = copilotToEngineAvailability({
+      binary: { available: true, path: "/bin/copilot", error: null },
+      version: { ok: true, version: "1.0", error: null },
+      auth: { ok: false, accountHint: null, error: "not logged in" },
+    })
+    expect(mapped.available).toBe(false)
+    expect(mapped.error).toMatch(/gh auth login/i)
+  })
+
+  it("maps full success to available with account hint", () => {
+    expect(copilotToEngineAvailability({
+      binary: { available: true, path: "/bin/copilot", error: null },
+      version: { ok: true, version: "1.0", error: null },
+      auth: { ok: true, accountHint: "coolie-dev", error: null },
+    })).toEqual({ available: true, accountHint: "coolie-dev", error: null })
+  })
+
+  it("assertCopilotReadyToLaunch rejects unauthenticated hosts", async () => {
+    await expect(assertCopilotReadyToLaunch({
+      env: { COOLIE_COPILOT_BIN: "/tmp/fake-copilot" },
+      probe: (p) => p === "/tmp/fake-copilot",
+      which: () => null,
+      exec: async (argv) => {
+        if (argv.includes("--version")) return "copilot 1.0"
+        throw new Error("not logged in")
+      },
+    })).rejects.toThrow(/gh auth login|not logged in/i)
+  })
+
+  it("uses durable non-native queue path (nativeQueue=false)", () => {
+    expect(copilotEngine.capabilities.nativeQueue).toBe(false)
   })
 })
 

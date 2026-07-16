@@ -12,6 +12,17 @@ import { NotFoundError, ConflictError } from "../repo/errors.js"
 import { startEngineSession } from "../engine/session.js"
 import { ensureKeepAliveScript, wrapEngineCommand } from "../engine/keepalive.js"
 import { labelTmuxWindow, makeTmuxLayout } from "../tmux/layout.js"
+import { assertCopilotReadyToLaunch } from "../engine/copilot/account.js"
+
+const requireCopilotLaunchable = (engineId: string): Effect.Effect<void, ConflictError> =>
+  engineId !== "copilot"
+    ? Effect.void
+    : Effect.tryPromise({
+        try: () => assertCopilotReadyToLaunch(),
+        catch: (e) => new ConflictError({
+          message: e instanceof Error ? e.message : String(e),
+        }),
+      })
 
 /** observe→decide 的纯决策（设计文档 §十）：apply 之外可独立单测。 */
 export type HealPlan =
@@ -105,6 +116,7 @@ export const SessionEnsurerLive = Layer.effect(
           return { action: "none", resumed: false, sessionName, tabId: tab?.id ?? null, sessionId: tab?.engineSessionId ?? null } satisfies HealOutcome
         }
         // ---- apply ----
+        yield* requireCopilotLaunchable(engine.id)
         const project = yield* projects.get(ws.projectId)
         const healingTab = plan.needsTabRow
           ? yield* tabs.insert({
@@ -212,6 +224,7 @@ export const SessionEnsurerLive = Layer.effect(
         if (!ws.materialized) return yield* new ConflictError({ message: "未 materialize 的 task 不支持 engine chat tab" })
         if (ws.status !== "active") return yield* new ConflictError({ message: `只能在 active task 创建 engine tab（当前 ${ws.status}）` })
         const engine = yield* validateEngineOptions(engineId, opts)
+        yield* requireCopilotLaunchable(engine.id)
         const sessionName = tmuxSessionName(ws.id)
         if (!(yield* tmux.hasSession(sessionName))) yield* ensure(wsId)
         const sessionId = engine.serverGeneratedId === true ? null : engine.newSessionId()
@@ -250,6 +263,7 @@ export const SessionEnsurerLive = Layer.effect(
           return yield* new ConflictError({ message: `tab ${tabId} 不是该 workspace 的 engine tab` })
         if (!tab || tab.tmuxWindow === null) return yield* new ConflictError({ message: "task 没有可切换的 engine tab" })
         const engine = yield* validateEngineOptions(engineId, opts)
+        yield* requireCopilotLaunchable(engine.id)
         const sessionName = tmuxSessionName(ws.id)
         if (!(yield* tmux.hasSession(sessionName)))
           return yield* new ConflictError({ message: "tmux session 不存在；请先 ensure task" })

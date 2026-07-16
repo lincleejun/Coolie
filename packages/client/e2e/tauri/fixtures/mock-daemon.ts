@@ -111,6 +111,36 @@ export const startMockDaemon = async (opts?: { token?: string; port?: number }):
   const workspaces: MockWorkspace[] = []
   const tabsByWs = new Map<string, MockTab[]>()
   const attentionItems: MockAttentionItem[] = []
+  const defaultEngines = () => ([
+    {
+      id: "claude",
+      displayName: "Claude",
+      models: ["default"],
+      enabled: true,
+      custom: false,
+      availability: { available: true, accountHint: "ok", error: null },
+    },
+    {
+      id: "copilot",
+      displayName: "GitHub Copilot",
+      models: [],
+      enabled: true,
+      custom: false,
+      capabilities: {
+        nativeQueue: false,
+        midSessionModelSwitch: false,
+        resume: false,
+        hooks: false,
+        effort: false,
+      },
+      availability: {
+        available: false,
+        accountHint: null,
+        error: "not logged in. Run `gh auth login` to authenticate GitHub Copilot",
+      },
+    },
+  ])
+  let engines = defaultEngines()
 
   const snapshot = () => ({
     asOfSeq: seq,
@@ -155,7 +185,7 @@ export const startMockDaemon = async (opts?: { token?: string; port?: number }):
     if (req.method === "GET" && url.pathname === "/config") {
       return json(res, 200, {
         tmuxSocket: "coolie-mock",
-        engines: [{ id: "claude", displayName: "Claude", models: ["default"], enabled: true, availability: { available: true } }],
+        engines,
         namePools: { national_parks: { id: "national_parks", label: "National Parks" } },
       })
     }
@@ -389,6 +419,11 @@ export const startMockDaemon = async (opts?: { token?: string; port?: number }):
     }
     if (req.method === "GET" && url.pathname === "/__test__/requests")
       return json(res, 200, requests)
+    if (req.method === "POST" && url.pathname === "/__test__/set-config") {
+      const body = JSON.parse(await readBody(req) || "{}") as { engines?: typeof engines }
+      if (Array.isArray(body.engines)) engines = body.engines
+      return json(res, 200, { engines })
+    }
     if (req.method === "POST" && url.pathname === "/__test__/reset") {
       events.length = 0
       requests.length = 0
@@ -396,6 +431,7 @@ export const startMockDaemon = async (opts?: { token?: string; port?: number }):
       workspaces.length = 0
       tabsByWs.clear()
       attentionItems.length = 0
+      engines = defaultEngines()
       seq = 0
       sseBlocked = false
       idCounter = 0

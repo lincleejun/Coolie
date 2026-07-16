@@ -75,3 +75,80 @@ describe("GET /config engines", () => {
     expect("efforts" in claude).toBe(false)
   })
 })
+
+describe("GET /config Copilot availability (Task 3.3)", () => {
+  afterEach(() => server?.close())
+
+  it("reports built-in Copilot with auth failure without claiming available", async () => {
+    const reg = new Map<string, Engine>([
+      ["claude", fakeEngine("claude", ["default"])],
+      ["copilot", {
+        ...fakeEngine("copilot", []),
+        displayName: "GitHub Copilot",
+        capabilities: {
+          nativeQueue: false,
+          midSessionModelSwitch: false,
+          resume: false,
+          hooks: false,
+          effort: false,
+        },
+      }],
+    ])
+    token = newToken()
+    const app = createApp({
+      runtime: (eff) => Effect.runPromiseExit(Effect.provide(eff, Layer.succeed(EngineRegistry, reg)) as Effect.Effect<any, any, never>),
+      token,
+      onShutdown: () => {},
+      config: { tmuxSocket: "coolie-test" },
+      probeCopilotAvailability: async () => ({
+        available: false,
+        accountHint: null,
+        error: "gh: not logged in. Run `gh auth login` to authenticate GitHub Copilot",
+      }),
+    })
+    server = http.createServer(app)
+    await new Promise<void>((r) => server.listen(0, "127.0.0.1", r))
+    base = `http://127.0.0.1:${(server.address() as { port: number }).port}`
+
+    const body = await get(base, "/config", token)
+    const copilot = body.engines.find((e: any) => e.id === "copilot")
+    expect(copilot).toMatchObject({
+      id: "copilot",
+      displayName: "GitHub Copilot",
+      custom: false,
+      capabilities: { nativeQueue: false },
+      availability: {
+        available: false,
+        error: expect.stringMatching(/gh auth login/i),
+      },
+    })
+  })
+
+  it("reports available Copilot with account hint when probe succeeds", async () => {
+    const reg = new Map<string, Engine>([
+      ["copilot", { ...fakeEngine("copilot", []), displayName: "GitHub Copilot" }],
+    ])
+    token = newToken()
+    const app = createApp({
+      runtime: (eff) => Effect.runPromiseExit(Effect.provide(eff, Layer.succeed(EngineRegistry, reg)) as Effect.Effect<any, any, never>),
+      token,
+      onShutdown: () => {},
+      config: { tmuxSocket: "coolie-test" },
+      probeCopilotAvailability: async () => ({
+        available: true,
+        accountHint: "Logged in to github.com as coolie-dev",
+        error: null,
+      }),
+    })
+    server = http.createServer(app)
+    await new Promise<void>((r) => server.listen(0, "127.0.0.1", r))
+    base = `http://127.0.0.1:${(server.address() as { port: number }).port}`
+
+    const body = await get(base, "/config", token)
+    expect(body.engines.find((e: any) => e.id === "copilot")?.availability).toEqual({
+      available: true,
+      accountHint: "Logged in to github.com as coolie-dev",
+      error: null,
+    })
+  })
+})

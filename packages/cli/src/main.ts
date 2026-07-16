@@ -91,17 +91,37 @@ engine.command("delete <id>").action(async (id: string) => {
 })
 engine.command("detect <id>").action(async (id: string) => {
   try {
+    if (id === "copilot") {
+      const config: any = await api("GET", "/config")
+      const engineRow = (config.engines ?? []).find((item: any) => item.id === "copilot")
+      const result = engineRow?.availability ?? { available: false, accountHint: null, error: "copilot not in config" }
+      console.log(`${result.available ? "available" : "unavailable"}\t${result.accountHint ?? result.error ?? ""}`)
+      if (!result.available) process.exitCode = 1
+      return
+    }
     const result: any = await api("POST", `/engines/custom/${encodeURIComponent(id)}/detect`, {})
     console.log(`${result.available ? "available" : "unavailable"}\t${result.accountHint ?? result.error ?? ""}`)
     if (!result.available) process.exitCode = 1
   } catch (error) { fail(error) }
 })
-engine.command("copilot").option("--id <id>", "custom engine id", "copilot").action(async (opts: { id: string }) => {
-  try {
-    const definition: any = await api("POST", "/engines/custom/presets/copilot", { id: opts.id })
-    console.log(`saved ${definition.id}`)
-  } catch (error) { fail(error) }
-})
+engine.command("copilot")
+  .description("deprecated: Copilot is built-in (engineId=copilot)")
+  .option("--id <id>", "legacy custom engine id", "copilot")
+  .action(async (opts: { id: string }) => {
+    try {
+      if (opts.id === "copilot") {
+        console.log("deprecated: Copilot is built-in. Use engineId=copilot. Detect with: coolie engine detect copilot")
+        const config: any = await api("GET", "/config")
+        const engineRow = (config.engines ?? []).find((item: any) => item.id === "copilot")
+        const result = engineRow?.availability ?? { available: false, error: "copilot not in config" }
+        console.log(`${result.available ? "available" : "unavailable"}\t${result.accountHint ?? result.error ?? ""}`)
+        if (!result.available) process.exitCode = 1
+        return
+      }
+      const definition: any = await api("POST", "/engines/custom/presets/copilot", { id: opts.id })
+      console.log(`saved ${definition.id} (legacy preset path; prefer built-in engineId=copilot)`)
+    } catch (error) { fail(error) }
+  })
 engine.command("switch <wsId> <engineId>")
   .option("--tab <tabId>", "要切换的 engine tab（缺省为兼容 primary）")
   .option("--model <model>")
