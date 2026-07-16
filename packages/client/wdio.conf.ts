@@ -12,6 +12,7 @@ const suite = suiteArg >= 0 ? process.argv[suiteArg + 1] : "all"
 const mockSpecs = ["./e2e/tauri/mock/**/*.spec.ts"]
 const realSpecs = ["./e2e/tauri/real/**/*.spec.ts"]
 const visualSpecs = ["./e2e/tauri/visual/**/*.spec.ts"]
+const nativeSpecs = ["./e2e/tauri/native-contract.spec.ts"]
 const allSpecs = ["./e2e/tauri/mock/**/*.spec.ts", "./e2e/tauri/smoke.spec.ts"]
 
 export const config: WebdriverIO.Config = {
@@ -19,7 +20,8 @@ export const config: WebdriverIO.Config = {
   specs: suite === "mock" ? mockSpecs
     : suite === "real" ? realSpecs
       : suite === "visual" ? visualSpecs
-        : allSpecs,
+        : suite === "native" ? nativeSpecs
+          : allSpecs,
   exclude: ["./e2e/tauri/fixtures/**"],
   maxInstances: suite === "real" ? 1 : 1,
   capabilities: [{

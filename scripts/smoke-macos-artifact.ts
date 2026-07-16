@@ -61,9 +61,14 @@ execFileSync(
   { cwd: repo, stdio: "ignore" },
 )
 
-const binary = join(app, "Contents/MacOS/Coolie")
-if (!existsSync(binary)) {
-  console.error(`Coolie binary missing in app bundle: ${binary}`)
+const macOS = join(app, "Contents/MacOS")
+const binary = existsSync(join(macOS, "Coolie"))
+  ? join(macOS, "Coolie")
+  : existsSync(join(macOS, "coolie-client"))
+    ? join(macOS, "coolie-client")
+    : ""
+if (!binary) {
+  console.error(`Coolie binary missing in app bundle under ${macOS}`)
   process.exit(1)
 }
 

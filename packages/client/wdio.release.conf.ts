@@ -9,24 +9,27 @@ import { MOCK_E2E_PORT, MOCK_E2E_TOKEN } from "./e2e/tauri/fixtures/mock-daemon.
 import { ensureMockHarness } from "./e2e/tauri/fixtures/harness.js"
 
 const rootDir = path.dirname(fileURLToPath(import.meta.url))
-const suiteArg = process.argv.indexOf("--suite")
-const suite = suiteArg >= 0 ? process.argv[suiteArg + 1] : "packaged"
+const suite = process.env.COOLIE_PACKAGED_SUITE ?? "packaged"
 
-const packagedApp =
+const packagedAppBundle =
   process.env.COOLIE_PACKAGED_TEST_APP ??
   path.join(rootDir, "src-tauri/target/debug/bundle/macos/Coolie.app")
 
-if (!existsSync(packagedApp)) {
+const packagedBinaryCandidates = [
+  process.env.COOLIE_PACKAGED_TEST_BIN,
+  path.join(packagedAppBundle, "Contents/MacOS/coolie-client"),
+  path.join(packagedAppBundle, "Contents/MacOS/Coolie"),
+  packagedAppBundle,
+].filter((value): value is string => typeof value === "string" && value.length > 0)
+
+const packagedApp = packagedBinaryCandidates.find((candidate) => existsSync(candidate))
+if (!packagedApp) {
   throw new Error(
-    `packaged test app missing at ${packagedApp}. Run: COOLIE_SIDECAR_NODE=... bun run build:packaged-test-app`,
+    `packaged test app missing at ${packagedAppBundle}. Run: COOLIE_SIDECAR_NODE=... bun run build:packaged-test-app`,
   )
 }
 
-const nativeSpecs = [
-  "./e2e/tauri/sidecar.spec.ts",
-  "./e2e/tauri/deeplink.spec.ts",
-  "./e2e/tauri/native-commands.spec.ts",
-]
+const nativeSpecs = ["./e2e/tauri/native-contract.spec.ts"]
 const mockSmoke = ["./e2e/tauri/smoke.spec.ts", "./e2e/tauri/mock/connection.spec.ts"]
 const specs =
   suite === "native" ? nativeSpecs
@@ -41,7 +44,10 @@ export const config: WebdriverIO.Config = {
   exclude: ["./e2e/tauri/fixtures/**"],
   maxInstances: 1,
   capabilities: [{
-    browserName: "webkit",
+    browserName: "tauri",
+    "tauri:options": {
+      application: packagedApp,
+    },
     "wdio:tauriOptions": {
       application: packagedApp,
     },
@@ -84,6 +90,7 @@ export const config: WebdriverIO.Config = {
   before: async () => {
     process.env.TZ = "UTC"
     process.env.LANG = "en_US.UTF-8"
+    // Prefer attach to launcher-owned mock; do not race a second bind.
     await ensureMockHarness()
   },
   afterTest: async (_test, _context, { error }) => {

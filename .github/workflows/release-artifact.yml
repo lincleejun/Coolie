@@ -51,7 +51,7 @@ jobs:
       - name: Build packaged test app + native journeys
         run: |
           bun run build:packaged-test-app
-          bun run --cwd packages/client test:tauri:release -- --suite native
+          bun run --cwd packages/client test:tauri:release:native
 
       - name: Checksums
         run: |
