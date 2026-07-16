@@ -39,6 +39,8 @@ export interface GitServiceShape {
   readonly renameBranch: (worktreePath: string, oldBranch: string, newBranch: string) => Effect.Effect<void, GitError>
   /** git ls-files --others --ignored --exclude-standard -- <pathspecs>：用 git 自己做 gitignore 匹配 */
   readonly listIgnoredMatching: (repoRoot: string, patterns: readonly string[]) => Effect.Effect<string[], GitError>
+  /** All ignored, untracked files under repo root (copy eligibility candidates). */
+  readonly listIgnoredUntracked: (repoRoot: string) => Effect.Effect<string[], GitError>
 }
 export class GitService extends Context.Tag("GitService")<GitService, GitServiceShape>() {}
 
@@ -112,4 +114,8 @@ export const GitServiceLive = Layer.succeed(GitService, {
       ["ls-files", "--others", "--ignored", "--exclude-standard", "-z", "--", ...pathspecs],
       repoRoot).pipe(Effect.map((out) => out.split("\0").filter((s) => s !== "")))
   },
+  listIgnoredUntracked: (repoRoot) =>
+    runGit("ls-files",
+      ["ls-files", "--others", "--ignored", "--exclude-standard", "-z", "--"],
+      repoRoot).pipe(Effect.map((out) => out.split("\0").filter((s) => s !== ""))),
 } satisfies GitServiceShape)
