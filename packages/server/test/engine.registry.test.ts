@@ -27,4 +27,17 @@ describe("custom registry merge", () => {
     expect(registry.get("copilot")?.displayName).toBe("GitHub Copilot")
     expect(registry.get("work-copilot")?.displayName).toBe("GitHub Copilot")
   })
+
+  it("ignores stale custom rows that collide with built-in ids", () => {
+    const stale = {
+      ...copilotPreset("work-copilot"),
+      id: "copilot",
+      displayName: "Stale Custom Copilot",
+      enabled: true,
+      presetId: undefined,
+    }
+    const registry = makeEngineRegistry([stale as any])
+    expect(registry.get("copilot")?.displayName).toBe("GitHub Copilot")
+    expect(registry.get("copilot")?.capabilities.nativeQueue).toBe(false)
+  })
 })
