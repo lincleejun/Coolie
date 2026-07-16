@@ -69,9 +69,13 @@ const comparable = (snapshot: WorkspaceSnapshot): string => JSON.stringify({
   errors: snapshot.errors,
 })
 
+const isArchivedStatus = (status: string): boolean =>
+  status === "archived" || status === "archiving"
+
 export class BackgroundCollector {
   readonly #snapshots = new Map<string, WorkspaceSnapshot>()
   readonly #fingerprints = new Map<string, string>()
+  readonly #inflight = new Map<string, Promise<WorkspaceSnapshot[]>>()
   readonly #deps: CollectorDeps
   #timer: NodeJS.Timeout | undefined
 
@@ -81,7 +85,19 @@ export class BackgroundCollector {
     return [...this.#snapshots.values()].sort((a, b) => a.workspaceId.localeCompare(b.workspaceId))
   }
 
+  /** Overlapping ticks for the same key share one in-flight promise (Task 3.7). */
   async collect(workspaceId?: string): Promise<WorkspaceSnapshot[]> {
+    const key = workspaceId ?? "*"
+    const existing = this.#inflight.get(key)
+    if (existing) return existing
+    const promise = this.#collectInner(workspaceId).finally(() => {
+      if (this.#inflight.get(key) === promise) this.#inflight.delete(key)
+    })
+    this.#inflight.set(key, promise)
+    return promise
+  }
+
+  async #collectInner(workspaceId?: string): Promise<WorkspaceSnapshot[]> {
     const listed = await this.#deps.listWorkspaces()
     if (workspaceId === undefined) {
       const liveIds = new Set(listed.map((workspace) => workspace.id))
@@ -102,6 +118,30 @@ export class BackgroundCollector {
     await Promise.all(Array.from({ length: Math.min(concurrency, workspaces.length) }, async () => {
       while (cursor < workspaces.length) {
         const workspace = workspaces[cursor++]!
+        // Archived workspaces keep a quiet snapshot — no git/gh probes, no recurring errors.
+        if (isArchivedStatus(workspace.status)) {
+          const snapshot: WorkspaceSnapshot = {
+            workspaceId: workspace.id,
+            collectedAt: (this.#deps.now ?? Date.now)(),
+            runtime: {
+              running: false,
+              status: workspace.status,
+              taskStatus: workspace.taskStatus,
+            },
+            diffstat: null,
+            pullRequest: null,
+            transcript: { active: false, updatedAt: null, title: null },
+            errors: [],
+          }
+          this.#snapshots.set(workspace.id, snapshot)
+          output.push(snapshot)
+          const fingerprint = comparable(snapshot)
+          if (this.#fingerprints.get(workspace.id) !== fingerprint) {
+            this.#fingerprints.set(workspace.id, fingerprint)
+            await this.#deps.appendEvent(workspace.id, "collector.snapshot.changed", snapshot)
+          }
+          continue
+        }
         const [diff, pr, transcript] = await Promise.all([
           settled("diffstat", () => this.#deps.diffstat(workspace), timeoutMs),
           settled("pull request", () => this.#deps.pullRequest(workspace), timeoutMs),

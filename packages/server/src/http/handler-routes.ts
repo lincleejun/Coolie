@@ -66,6 +66,7 @@ export const HANDLER_ROUTES = [
   { method: "GET", path: "/workspaces/:id/files" },
   { method: "GET", path: "/workspaces/:id/pr-instructions" },
   { method: "POST", path: "/workspaces/:id/review" },
+  { method: "GET", path: "/workspaces/:id/checks" },
   { method: "GET", path: "/workspaces/:id/commands" },
   { method: "POST", path: "/hooks/:engine" },
   { method: "POST", path: "/notify/:engine" },

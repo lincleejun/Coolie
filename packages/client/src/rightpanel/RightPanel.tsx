@@ -5,6 +5,7 @@ import { makeDrafts, type DraftStorage } from "../composer/drafts"
 import type { DiffSection, FileChange } from "../stores/types"
 import { t, useT } from "../i18n"
 import { RunPanel } from "../runs/RunPanel"
+import { ChecksPanel } from "./ChecksPanel"
 import { CaretRightIcon, ChevronDownIcon, FolderIcon, PanelRightIcon } from "../chrome/icons"
 import { capabilities, openInEditor } from "../platform"
 import { shouldApplyAsyncResult } from "./stale"
@@ -116,7 +117,7 @@ const ChangeSection = ({ title, section, list, onOpen, wsId }: {
 export const RightPanel = ({ wsId, forcePanel }: {
   wsId: string
   /** Deterministic server-render/test seam; production follows the UI store. */
-  forcePanel?: "collapsed" | "changes" | "files"
+  forcePanel?: "collapsed" | "changes" | "files" | "checks"
 }) => {
   const tr = useT()
   const storedPanel = useUi((s) => s.rightPanel)
@@ -165,6 +166,8 @@ export const RightPanel = ({ wsId, forcePanel }: {
         </button>
         <button type="button" className="right-entry" aria-label={tr("right.files")} aria-expanded="false"
           onClick={() => useUi.getState().setRightPanel("files")}>{tr("right.files")}</button>
+        <button type="button" className="right-entry" aria-label={tr("right.checks")} aria-expanded="false"
+          onClick={() => useUi.getState().setRightPanel("checks")}>{tr("right.checks")}</button>
       </div>
     )
 
@@ -176,6 +179,8 @@ export const RightPanel = ({ wsId, forcePanel }: {
           className={panel === "changes" ? "active" : ""} onClick={() => useUi.getState().setRightPanel("changes")}>{tr("right.changes")}</button>
         <button type="button" role="tab" aria-selected={panel === "files"} aria-controls={panelId}
           className={panel === "files" ? "active" : ""} onClick={() => useUi.getState().setRightPanel("files")}>{tr("right.files")}</button>
+        <button type="button" role="tab" aria-selected={panel === "checks"} aria-controls={panelId}
+          className={panel === "checks" ? "active" : ""} onClick={() => useUi.getState().setRightPanel("checks")}>{tr("right.checks")}</button>
         <span className="tabsbar-spacer" />
         {panel === "changes" && <button type="button" className="btn-secondary" disabled={loadingPrPrompt}
           onClick={createPrPrompt}>{tr("right.createPrPrompt")}</button>}
@@ -185,7 +190,8 @@ export const RightPanel = ({ wsId, forcePanel }: {
         </button>
       </div>
       <div className="right-body" id={panelId} role="tabpanel">
-        <RunPanel wsId={wsId} />
+        {panel === "changes" && <RunPanel wsId={wsId} />}
+        {panel === "checks" && <ChecksPanel wsId={wsId} />}
         {panel === "changes" && (
           changes ? (
             <>

@@ -679,6 +679,15 @@ export const ROUTES = [
   },
   {
     method: "GET",
+    path: "/workspaces/:id/checks",
+    name: "get.workspaces.checks",
+    description: "Local Checks projection: git, runs, PR/CI, unsent comments",
+    request: "path: id; query: unsentComments?",
+    response: "WorkspaceChecksSnapshot",
+    sideEffects: "read-only; gh failures degrade to unavailable",
+  },
+  {
+    method: "GET",
     path: "/workspaces/:id/commands",
     name: "get.workspaces.commands",
     description: "扫描 slash commands",
