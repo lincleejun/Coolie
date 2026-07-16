@@ -23,7 +23,6 @@ import { EngineRegistry, engineHome } from "../engine/registry.js"
 import { CustomEngineStore, detectArgvAvailability, detectCustomEngine, copilotPreset } from "../engine/custom-store.js"
 import { isBuiltinEngineId } from "../engine/copilot-migration.js"
 import { makeCustomEngine } from "../engine/custom-adapter.js"
-import { isBuiltinEngineId } from "../engine/copilot-migration.js"
 import { ConflictError, NotFoundError } from "../repo/errors.js"
 import {
   InputReceiptsRepo,
