@@ -3,7 +3,7 @@ import { execFileSync } from "node:child_process"
 import * as fs from "node:fs"; import * as os from "node:os"; import * as path from "node:path"
 import {
   parseShortstat, parseNumstat, diffShortstat, collectChanges, listFiles,
-  parseBranches, sectionDiffArgs, fileDiff, isSafeRelPath,
+  parseBranches, sectionDiffArgs, fileDiff, isSafeRelPath, UNTRACKED_DIFF_MAX_BYTES,
 } from "../src/git/inspect.js"
 
 describe("parsers", () => {
@@ -84,6 +84,9 @@ describe("sectionDiffArgs", () => {
     expect(sectionDiffArgs("committed", "BASE", "src/a.ts")).toEqual(["diff", "--no-renames", "--unified=3", "BASE", "HEAD", "--", "src/a.ts"])
     expect(sectionDiffArgs("staged", "BASE", "src/a.ts")).toEqual(["diff", "--no-renames", "--unified=3", "--cached", "--", "src/a.ts"])
     expect(sectionDiffArgs("unstaged", "BASE", "src/a.ts")).toEqual(["diff", "--no-renames", "--unified=3", "--", "src/a.ts"])
+    expect(sectionDiffArgs("untracked", "BASE", "new.txt")).toEqual([
+      "diff", "--no-index", "--no-renames", "--unified=3", "--", "/dev/null", "new.txt",
+    ])
   })
 })
 
@@ -144,6 +147,54 @@ describe("fileDiff against real repo", () => {
       ])
       expect((await fileDiff(repo, base, "committed", "new name.txt")).unified).toContain("+++ b/new name.txt")
       expect((await fileDiff(repo, base, "committed", "old name.txt")).unified).toContain("--- a/old name.txt")
+    } finally {
+      fs.rmSync(repo, { recursive: true, force: true })
+    }
+  })
+
+  it("reviews untracked text content via --no-index", async () => {
+    const repo = fs.mkdtempSync(path.join(os.tmpdir(), "coolie-untracked-"))
+    const git = (...args: string[]) => execFileSync("git", args, { cwd: repo, encoding: "utf8" })
+    try {
+      git("init", "-q")
+      git("config", "user.email", "t@t")
+      git("config", "user.name", "t")
+      fs.writeFileSync(path.join(repo, "tracked.txt"), "keep\n")
+      git("add", ".")
+      git("commit", "-qm", "init")
+      const base = git("rev-parse", "HEAD").trim()
+      fs.writeFileSync(path.join(repo, "fresh.txt"), "hello\nworld\n")
+
+      const result = await fileDiff(repo, base, "untracked", "fresh.txt")
+      expect(result).toMatchObject({ path: "fresh.txt", section: "untracked", binary: false })
+      expect(result.unified).toContain("+++ b/fresh.txt")
+      expect(result.unified).toContain("+hello")
+      expect(result.unified).toContain("+world")
+    } finally {
+      fs.rmSync(repo, { recursive: true, force: true })
+    }
+  })
+
+  it("degrades binary and oversized untracked files without dumping contents", async () => {
+    const repo = fs.mkdtempSync(path.join(os.tmpdir(), "coolie-untracked-bin-"))
+    const git = (...args: string[]) => execFileSync("git", args, { cwd: repo, encoding: "utf8" })
+    try {
+      git("init", "-q")
+      git("config", "user.email", "t@t")
+      git("config", "user.name", "t")
+      fs.writeFileSync(path.join(repo, "t.txt"), "x\n")
+      git("add", ".")
+      git("commit", "-qm", "init")
+      const base = git("rev-parse", "HEAD").trim()
+      fs.writeFileSync(path.join(repo, "blob.bin"), Buffer.from([0x00, 0x01, 0x02, 0xff]))
+      const big = path.join(repo, "huge.txt")
+      fs.writeFileSync(big, Buffer.alloc(UNTRACKED_DIFF_MAX_BYTES + 1, 0x61))
+
+      const binary = await fileDiff(repo, base, "untracked", "blob.bin")
+      expect(binary).toEqual({ path: "blob.bin", section: "untracked", unified: "", binary: true })
+
+      const large = await fileDiff(repo, base, "untracked", "huge.txt")
+      expect(large).toEqual({ path: "huge.txt", section: "untracked", unified: "", binary: true })
     } finally {
       fs.rmSync(repo, { recursive: true, force: true })
     }

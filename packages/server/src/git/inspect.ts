@@ -4,6 +4,8 @@
  * 不值得为其扩 AppServices union（避免波及全部既有 http 测试的 runtime 类型）。
  */
 import { execFile } from "node:child_process"
+import * as fs from "node:fs"
+import * as path from "node:path"
 
 export interface DiffStat { filesChanged: number; insertions: number; deletions: number }
 export interface FileChange { path: string; insertions: number; deletions: number }
@@ -72,8 +74,11 @@ export const parseBranches = (out: string): string[] =>
 export const listBranches = (repoRoot: string): Promise<string[]> =>
   run(repoRoot, ["branch", "--all", "--format=%(refname:short)"]).then(parseBranches)
 
-export type DiffSection = "againstBase" | "committed" | "staged" | "unstaged"
+export type DiffSection = "againstBase" | "committed" | "staged" | "unstaged" | "untracked"
 export interface FileDiff { path: string; section: DiffSection; unified: string; binary: boolean }
+
+/** Soft degrade threshold for untracked content review (bytes). */
+export const UNTRACKED_DIFF_MAX_BYTES = 1 * 1024 * 1024
 
 /** Build one-file read-only diff arguments. `--` terminates options before the pathspec. */
 export const sectionDiffArgs = (section: DiffSection, baseRef: string, filePath: string): string[] => {
@@ -83,10 +88,11 @@ export const sectionDiffArgs = (section: DiffSection, baseRef: string, filePath:
     case "committed": return ["diff", "--no-renames", unified, baseRef, "HEAD", "--", filePath]
     case "staged": return ["diff", "--no-renames", unified, "--cached", "--", filePath]
     case "unstaged": return ["diff", "--no-renames", unified, "--", filePath]
+    case "untracked": return ["diff", "--no-index", "--no-renames", unified, "--", "/dev/null", filePath]
   }
 }
 
-const DIFF_SECTIONS: ReadonlySet<string> = new Set(["againstBase", "committed", "staged", "unstaged"])
+const DIFF_SECTIONS: ReadonlySet<string> = new Set(["againstBase", "committed", "staged", "unstaged", "untracked"])
 export const isDiffSection = (value: string): value is DiffSection => DIFF_SECTIONS.has(value)
 
 /** Reject absolute, traversal, platform-ambiguous, NUL, and option-shaped pathspecs. */
@@ -96,15 +102,56 @@ export const isSafeRelPath = (filePath: string): boolean => {
   return !filePath.split("/").some((segment) => segment === "..")
 }
 
+const isBinaryUnified = (unified: string): boolean =>
+  /^Binary files .* differ$/m.test(unified) || unified.includes("GIT binary patch")
+
+/** git diff --no-index exits 1 when files differ; treat that as success. */
+const runDiffAllowDiff = (cwd: string, args: readonly string[]): Promise<string> =>
+  new Promise((resolve, reject) => {
+    execFile("git", [...args], { cwd, maxBuffer: 16 * 1024 * 1024 }, (error: any, stdout, stderr) => {
+      if (!error) return resolve(stdout)
+      if (error.code === 1) return resolve(stdout)
+      reject(new Error(`git ${args[0]} 失败：${String(stderr || error.message).trim()}`))
+    })
+  })
+
+const untrackedFileDiff = async (worktree: string, filePath: string): Promise<FileDiff> => {
+  const abs = path.resolve(worktree, filePath)
+  const root = path.resolve(worktree)
+  if (abs !== root && !abs.startsWith(root + path.sep))
+    throw new Error(`path escapes worktree: ${filePath}`)
+  let stat: fs.Stats
+  try { stat = fs.statSync(abs) } catch {
+    throw new Error(`untracked file missing: ${filePath}`)
+  }
+  if (!stat.isFile()) throw new Error(`untracked path is not a regular file: ${filePath}`)
+  if (stat.size > UNTRACKED_DIFF_MAX_BYTES) {
+    return { path: filePath, section: "untracked", unified: "", binary: true }
+  }
+  // NUL in the first chunk ⇒ treat as binary without dumping contents.
+  const fd = fs.openSync(abs, "r")
+  try {
+    const sample = Buffer.alloc(Math.min(8192, stat.size))
+    const n = fs.readSync(fd, sample, 0, sample.length, 0)
+    if (sample.subarray(0, n).includes(0)) {
+      return { path: filePath, section: "untracked", unified: "", binary: true }
+    }
+  } finally {
+    fs.closeSync(fd)
+  }
+  const unified = await runDiffAllowDiff(worktree, sectionDiffArgs("untracked", "", filePath))
+  return { path: filePath, section: "untracked", unified, binary: isBinaryUnified(unified) }
+}
+
 export const fileDiff = async (
   worktree: string,
   baseRef: string,
   section: DiffSection,
   filePath: string,
 ): Promise<FileDiff> => {
+  if (section === "untracked") return untrackedFileDiff(worktree, filePath)
   const unified = await run(worktree, sectionDiffArgs(section, baseRef, filePath))
-  const binary = /^Binary files .* differ$/m.test(unified) || unified.includes("GIT binary patch")
-  return { path: filePath, section, unified, binary }
+  return { path: filePath, section, unified, binary: isBinaryUnified(unified) }
 }
 
 export interface GitReadOps {

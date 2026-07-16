@@ -1297,7 +1297,7 @@ export const createApp = ({ runtime, token, onShutdown, onError, bus, sseHeartbe
             const section = url.searchParams.get("section") ?? ""
             diffPath = url.searchParams.get("path") ?? ""
             if (!isDiffSection(section))
-              return err(res, 400, "Validation", "section 必须是 againstBase|committed|staged|unstaged")
+              return err(res, 400, "Validation", "section 必须是 againstBase|committed|staged|unstaged|untracked")
             if (diffPath === "") return err(res, 400, "Validation", "path required")
             if (!isSafeRelPath(diffPath))
               return err(res, 400, "Validation", "path 非法（禁绝对路径 / .. 穿越 / 前导 -）")

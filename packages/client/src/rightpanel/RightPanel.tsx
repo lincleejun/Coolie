@@ -7,6 +7,7 @@ import { t, useT } from "../i18n"
 import { RunPanel } from "../runs/RunPanel"
 import { CaretRightIcon, ChevronDownIcon, FolderIcon, PanelRightIcon } from "../chrome/icons"
 import { capabilities, openInEditor } from "../platform"
+import { shouldApplyAsyncResult } from "./stale"
 
 // node 测试环境（filetree.test）会 import 本模块取 buildTree；此处不能裸引 localStorage（node 无此全局会 ReferenceError）。
 const storage: DraftStorage =
@@ -135,9 +136,15 @@ export const RightPanel = ({ wsId, forcePanel }: {
 
   useEffect(() => {
     if (panel === "changes") void useData.getState().refreshChanges(wsId).catch(() => {})
-    if (panel === "files")
-      void useData.getState().getApi()?.req("GET", `/workspaces/${wsId}/files`)
-        .then((r) => setFiles(r.files)).catch(() => {})
+    if (panel !== "files") return
+    let cancelled = false
+    const requestedWs = wsId
+    void useData.getState().getApi()?.req("GET", `/workspaces/${wsId}/files`)
+      .then((r) => {
+        if (!shouldApplyAsyncResult(requestedWs, wsId, cancelled)) return
+        setFiles(r.files)
+      }).catch(() => {})
+    return () => { cancelled = true }
   }, [panel, wsId])
 
   // 展开时跟随 turn 结束刷新（changes 已由 data store 的 engine.turn.finished → refreshDiffstat 带动；这里补 changes）
@@ -194,10 +201,13 @@ export const RightPanel = ({ wsId, forcePanel }: {
               <ChangeSection title={tr("right.unstaged")} section="unstaged" list={changes.unstaged} wsId={wsId}
                 onOpen={(section, path) => useUi.getState().openCenterDiff({ wsId, section, path })} />
               {changes.untracked.length > 0 && (
-                <section className="chg-section">
-                  <h4>{tr("right.untracked")} ({changes.untracked.length})</h4>
-                  {changes.untracked.map((p) => <div className="chg-row" key={p}><span className="chg-path">{p}</span></div>)}
-                </section>
+                <ChangeSection
+                  title={tr("right.untracked")}
+                  section="untracked"
+                  list={changes.untracked.map((p) => ({ path: p, insertions: 0, deletions: 0 }))}
+                  wsId={wsId}
+                  onOpen={(section, path) => useUi.getState().openCenterDiff({ wsId, section, path })}
+                />
               )}
             </>
           ) : <div className="dim">{tr("right.loading")}</div>
