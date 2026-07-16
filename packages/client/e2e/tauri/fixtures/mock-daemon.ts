@@ -475,6 +475,137 @@ export const startMockDaemon = async (opts?: { token?: string; port?: number }):
       }
       return json(res, 204, null)
     }
+    const wsDiffstat = url.pathname.match(/^\/workspaces\/([^/]+)\/git\/diffstat$/)
+    if (req.method === "GET" && wsDiffstat) {
+      return json(res, 200, { filesChanged: 1, insertions: 3, deletions: 1 })
+    }
+    const wsChanges = url.pathname.match(/^\/workspaces\/([^/]+)\/git\/changes$/)
+    if (req.method === "GET" && wsChanges) {
+      return json(res, 200, {
+        againstBase: [{ path: "src/app.ts", insertions: 3, deletions: 1 }],
+        committed: [],
+        staged: [],
+        unstaged: [{ path: "src/app.ts", insertions: 3, deletions: 1 }],
+        untracked: [],
+      })
+    }
+    const wsDiff = url.pathname.match(/^\/workspaces\/([^/]+)\/git\/diff$/)
+    if (req.method === "GET" && wsDiff) {
+      return json(res, 200, {
+        path: url.searchParams.get("path") ?? "src/app.ts",
+        section: url.searchParams.get("section") ?? "againstBase",
+        unified: "@@ -1 +1 @@\n-old\n+new\n",
+        binary: false,
+      })
+    }
+    const wsRuns = url.pathname.match(/^\/workspaces\/([^/]+)\/runs$/)
+    if (req.method === "GET" && wsRuns) {
+      return json(res, 200, [{
+        id: `runinst-${wsRuns[1]}`,
+        workspaceId: wsRuns[1],
+        runId: "test",
+        scriptType: "run",
+        status: "exited",
+        startedAt: Date.now() - 1000,
+        exitedAt: Date.now(),
+        exitCode: 0,
+      }])
+    }
+    const wsRunStart = url.pathname.match(/^\/workspaces\/([^/]+)\/runs\/([^/]+)\/start$/)
+    if (req.method === "POST" && wsRunStart) {
+      return json(res, 200, {
+        id: `runinst-${wsRunStart[1]}`,
+        workspaceId: wsRunStart[1],
+        runId: wsRunStart[2],
+        scriptType: "run",
+        status: "running",
+        startedAt: Date.now(),
+        exitedAt: null,
+        exitCode: null,
+      })
+    }
+    const wsChecks = url.pathname.match(/^\/workspaces\/([^/]+)\/checks$/)
+    if (req.method === "GET" && wsChecks) {
+      return json(res, 200, {
+        workspaceId: wsChecks[1],
+        collectedAt: Date.now(),
+        degraded: true,
+        items: [
+          {
+            id: "git-dirty",
+            category: "git",
+            status: "warn",
+            label: "Working tree dirty",
+            detail: "1 path(s) changed",
+            updatedAt: Date.now(),
+            action: { kind: "view-diff", label: "View changes" },
+          },
+          {
+            id: "run-test",
+            category: "run",
+            status: "pass",
+            label: "Run test",
+            detail: "exit 0",
+            updatedAt: Date.now(),
+            action: { kind: "run-script", label: "Re-run", runId: "test" },
+          },
+          {
+            id: "ci",
+            category: "ci",
+            status: "unavailable",
+            label: "GitHub checks",
+            detail: "gh CLI unavailable",
+            updatedAt: Date.now(),
+          },
+        ],
+      })
+    }
+    const wsReview = url.pathname.match(/^\/workspaces\/([^/]+)\/review$/)
+    if (req.method === "POST" && wsReview) {
+      const workspaceId = wsReview[1]!
+      const tabs = tabsByWs.get(workspaceId) ?? []
+      const reviewTab = {
+        id: nextId("t-review"),
+        workspaceId,
+        kind: "engine" as const,
+        engineId: "claude",
+        engineSessionId: "review-sess",
+        tmuxWindow: tabs.length,
+        title: "Review",
+        status: "working",
+      }
+      tabs.push(reviewTab)
+      tabsByWs.set(workspaceId, tabs)
+      append({
+        type: "workspace.tabs.changed",
+        workspaceId,
+        payload: { tabId: reviewTab.id, title: reviewTab.title },
+      })
+      return json(res, 200, {
+        tabId: reviewTab.id,
+        title: "Review",
+        queued: true,
+        promptSource: "project",
+        engineId: "claude",
+      })
+    }
+    const wsTranscript = url.pathname.match(/^\/workspaces\/([^/]+)\/tabs\/([^/]+)\/transcript$/)
+    if (req.method === "GET" && wsTranscript) {
+      return json(res, 200, {
+        capability: "available",
+        reset: true,
+        cursor: null,
+        truncated: false,
+        entries: [{
+          id: "e1",
+          role: "assistant",
+          rawType: "message",
+          timestamp: Date.now(),
+          blocks: [{ kind: "text", text: "Mock transcript entry for daily flow" }],
+        }],
+      })
+    }
+
     if (req.method === "GET" && url.pathname === "/__test__/requests")
       return json(res, 200, requests)
     if (req.method === "POST" && url.pathname === "/__test__/set-config") {

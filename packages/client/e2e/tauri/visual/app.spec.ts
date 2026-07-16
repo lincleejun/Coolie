@@ -31,7 +31,7 @@ describe("desktop structure diagnostics", () => {
     await assertWithinViewport("h2", "dispatcher title")
   })
 
-  it("asserts settings and diff panel structure on keyboard path", async () => {
+  it("asserts settings, Checks, and diff panel structure on keyboard path", async () => {
     await browser.keys(["Escape"])
     const workspaceRow = await browser.$('[data-workspace-id="w-structure"]')
     await workspaceRow.waitForClickable({ timeout: 15000 })
@@ -41,6 +41,12 @@ describe("desktop structure diagnostics", () => {
     await changesButton.waitForClickable({ timeout: 15000 })
     await changesButton.click()
     await assertWithinViewport(".col-right", "diff panel")
+
+    const checksButton = await browser.$("button*=Checks")
+    if (await checksButton.isExisting()) {
+      await checksButton.click()
+      await assertWithinViewport(".checks-panel, .col-right", "checks panel")
+    }
 
     const settingsButton = await browser.$('[aria-label="Settings"]')
     await settingsButton.waitForClickable({ timeout: 15000 })
