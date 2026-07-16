@@ -18,7 +18,7 @@ export const ROUTES = [
   {
     method: "GET",
     path: "/state",
-    description: "读取 canonical current-state snapshot；可选 workspace scope",
+    description: "读取 canonical current-state snapshot；可选 workspace scope；消费流程：GET /state → asOfSeq=N，再 GET /events/stream?after=N 订阅 live 增量",
     request: "query: workspace?",
     response: "CoolieStateSnapshot {asOfSeq,generatedAt,scope,projects,workspaces,tabs,openAttention,queuedPrompts,activeRuns}",
     example: "GET /state?workspace=WORKSPACE_ID",

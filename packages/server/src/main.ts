@@ -13,6 +13,7 @@ import { EventsRepo, EventsRepoLive } from "./repo/events.js"
 import { WorkspacesRepo, WorkspacesRepoLive } from "./repo/workspaces.js"
 import { TabsRepo, TabsRepoLive } from "./repo/tabs.js"
 import { QueueRepo, QueueRepoLive } from "./repo/queue.js"
+import { StateRepoLive } from "./repo/state.js"
 import { EventsBus, EventsBusLive } from "./events/bus.js"
 import { WorkspaceLifecycle, WorkspaceLifecycleLive } from "./workspace/lifecycle.js"
 import { GitServiceLive } from "./git/service.js"
@@ -85,7 +86,7 @@ const cmdStart = async (): Promise<void> => {
       TmuxServiceLive,
       EngineRegistryLive.pipe(Layer.provide(CustomEngineStoreLive)),
     )),
-    Layer.provideMerge(Layer.mergeAll(ProjectsRepoLive, EventsRepoLive, WorkspacesRepoLive, TabsRepoLive, QueueRepoLive, CustomEngineStoreLive)),
+    Layer.provideMerge(Layer.mergeAll(ProjectsRepoLive, EventsRepoLive, WorkspacesRepoLive, TabsRepoLive, QueueRepoLive, StateRepoLive, CustomEngineStoreLive)),
     Layer.provideMerge(EventsBusLive), // Plan 2 的 dead export 转正：单一构造点
     Layer.provideMerge(DbLive),
     Layer.provideMerge(CoolieConfigLive),

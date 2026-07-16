@@ -201,12 +201,24 @@ coolie finish <wsId> --merge-back
 
 ### 事件流（SSE）
 
+先取 canonical snapshot，再用 `asOfSeq` 作为 SSE 游标，避免 snapshot 与 live stream 之间的丢失窗口：
+
 ```bash
 INFO=~/.coolie/server.json
-curl -N -H "Authorization: Bearer $(jq -r .token $INFO)" \
-  "http://127.0.0.1:$(jq -r .port $INFO)/events/stream?after=0"
-# durable 回放 + live 推送；?workspace=<id> 过滤；15s 心跳注释行
+TOKEN=$(jq -r .token $INFO)
+PORT=$(jq -r .port $INFO)
+
+# 1) 读取 current-state snapshot
+SNAPSHOT=$(curl -s -H "Authorization: Bearer $TOKEN" "http://127.0.0.1:$PORT/state")
+AS_OF=$(echo "$SNAPSHOT" | jq -r .asOfSeq)
+
+# 2) 从 asOfSeq 订阅 durable replay + live 推送
+curl -N -H "Authorization: Bearer $TOKEN" \
+  "http://127.0.0.1:$PORT/events/stream?after=$AS_OF"
+# ?workspace=<id> 过滤；15s 心跳注释行
 ```
+
+CLI 等价：`coolie state` 或 `coolie state <taskId>` 输出 JSON snapshot；`coolie events tail --after <asOfSeq> --follow` 轮询增量事件。
 
 ## 排查与导出
 

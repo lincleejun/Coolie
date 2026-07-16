@@ -11,6 +11,7 @@ import {
   decodeProject,
   decodeWorkspace,
   decodeCoolieEvent,
+  decodeCoolieStateSnapshot,
   decodeHealOutcome,
   tmuxSessionName,
 } from "@coolie/protocol"
@@ -257,6 +258,17 @@ program.command("get <wsId>")
   .action(async (id: string) => {
     try { process.stdout.write(JSON.stringify(await api("GET", `/workspaces/${encodeURIComponent(id)}`), null, 2) + "\n") }
     catch (error) { fail(error) }
+  })
+
+program.command("state [wsId]")
+  .description("读取 canonical current-state snapshot；可选 workspace scope")
+  .option("--json", "输出 JSON（默认）")
+  .action(async (id: string | undefined) => {
+    try {
+      const path = id ? `/state?workspace=${encodeURIComponent(id)}` : "/state"
+      const snapshot = decodeCoolieStateSnapshot(await api("GET", path))
+      process.stdout.write(JSON.stringify(snapshot, null, 2) + "\n")
+    } catch (error) { fail(error) }
   })
 
 program.command("collect [wsId]")

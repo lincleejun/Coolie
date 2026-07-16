@@ -18,6 +18,7 @@ import { WorkspacesRepo } from "../repo/workspaces.js"
 import { WorkspaceLifecycle } from "../workspace/lifecycle.js"
 import { TabsRepo } from "../repo/tabs.js"
 import { QueueRepo } from "../repo/queue.js"
+import { StateRepo } from "../repo/state.js"
 import { EngineRegistry, engineHome } from "../engine/registry.js"
 import { CustomEngineStore, detectArgvAvailability, detectCustomEngine, copilotPreset } from "../engine/custom-store.js"
 import { makeCustomEngine } from "../engine/custom-adapter.js"
@@ -36,6 +37,7 @@ import { readPrInstructions } from "../workspace/pr-instructions.js"
 import { CUSTOM_NAMES_MAX, NAME_MAX_LENGTH, NAME_POOLS } from "../workspace/names.js"
 import { tokenEquals } from "./token.js"
 import { handleEventsStream } from "./sse.js"
+import { readStateSnapshot } from "./state.js"
 import type { WorkspaceLayoutState } from "../tmux/layout.js"
 import type { BackgroundCollector } from "../collector/background.js"
 import type { SessionReadinessShape } from "../engine/readiness.js"
@@ -47,7 +49,7 @@ export { newToken } from "./token.js"
 // on it is not a reliable way to recover the original TaggedError. Running via
 // `Effect.runPromiseExit` and unwrapping with `Exit.match` + `Cause.failureOption`
 // (mirrors the pattern already used in test/projects-repo.test.ts) is robust.
-export type AppServices = ProjectsRepo | EventsRepo | WorkspacesRepo | WorkspaceLifecycle | TabsRepo | QueueRepo | EngineRegistry | CustomEngineStore | SessionEnsurer | WorkspaceAdopter | WorkspaceFinisher | WorkspaceCheckpoints
+export type AppServices = ProjectsRepo | EventsRepo | WorkspacesRepo | WorkspaceLifecycle | TabsRepo | QueueRepo | StateRepo | EngineRegistry | CustomEngineStore | SessionEnsurer | WorkspaceAdopter | WorkspaceFinisher | WorkspaceCheckpoints
 export type Runtime = <A, E>(eff: Effect.Effect<A, E, AppServices>) => Promise<Exit.Exit<A, E>>
 export interface AppDeps {
   readonly runtime: Runtime
@@ -534,6 +536,16 @@ export const createApp = ({ runtime, token, onShutdown, onError, bus, sseHeartbe
               return yield* (yield* EventsRepo).listAfter({ after, limit, ...(ws ? { workspaceId: ws } : {}) })
             }),
             (events) => send(res, 200, events),
+            onError,
+          )
+        }
+        if (route === "GET /state") {
+          const workspaceRaw = url.searchParams.get("workspace")
+          const workspaceId = workspaceRaw === null || workspaceRaw === "" ? undefined : workspaceRaw
+          return await runRoute(
+            res, runtime,
+            readStateSnapshot(workspaceId),
+            (snapshot) => send(res, 200, snapshot),
             onError,
           )
         }

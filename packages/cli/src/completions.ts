@@ -1,7 +1,7 @@
 export type CompletionShell = "bash" | "zsh" | "fish"
 
 export const TOP_LEVEL_COMMANDS = [
-  "get", "collect", "send", "dispatch", "create", "list", "rename", "set-status", "set-branch",
+  "get", "state", "collect", "send", "dispatch", "create", "list", "rename", "set-status", "set-branch",
   "ensure-worktree", "adopt", "finish", "archive", "unarchive", "delete", "enter", "open", "resume",
   "project", "engine", "tab", "checkpoint", "server", "api", "events", "export", "doctor",
   "completion", "update", "skill",
