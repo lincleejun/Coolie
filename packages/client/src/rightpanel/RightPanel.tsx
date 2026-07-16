@@ -8,6 +8,7 @@ import { RunPanel } from "../runs/RunPanel"
 import { CaretRightIcon, ChevronDownIcon, FolderIcon, PanelRightIcon } from "../chrome/icons"
 import { capabilities, openInEditor } from "../platform"
 import { shouldApplyAsyncResult } from "./stale"
+import { ReviewAction } from "./ReviewAction"
 
 // node 测试环境（filetree.test）会 import 本模块取 buildTree；此处不能裸引 localStorage（node 无此全局会 ReferenceError）。
 const storage: DraftStorage =
@@ -178,6 +179,7 @@ export const RightPanel = ({ wsId, forcePanel }: {
         <span className="tabsbar-spacer" />
         {panel === "changes" && <button type="button" className="btn-secondary" disabled={loadingPrPrompt}
           onClick={createPrPrompt}>{tr("right.createPrPrompt")}</button>}
+        {panel === "changes" && <ReviewAction wsId={wsId} />}
         <button type="button" className="icobtn" title={tr("titlebar.toggleRight")} aria-label={tr("titlebar.toggleRight")} onClick={() => useUi.getState().setRightPanel("collapsed")}>
           <PanelRightIcon />
         </button>

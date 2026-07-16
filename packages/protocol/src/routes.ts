@@ -669,6 +669,15 @@ export const ROUTES = [
     sideEffects: "read-only",
   },
   {
+    method: "POST",
+    path: "/workspaces/:id/review",
+    name: "post.workspaces.review",
+    description: "Start Agent Review on a dedicated Review tab with project review prompt + against-base diff",
+    request: "{engineId?,model?,focus?:{section,path},reviewPrompt?}",
+    response: "{tabId,title,queued,promptSource,engineId,queueId?}",
+    sideEffects: "may create Review tab; sends or queues prompt to that tab only",
+  },
+  {
     method: "GET",
     path: "/workspaces/:id/commands",
     name: "get.workspaces.commands",
