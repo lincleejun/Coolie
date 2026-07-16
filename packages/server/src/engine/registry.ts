@@ -2,6 +2,7 @@ import { Context, Data, Effect, Layer } from "effect"
 import type { Engine } from "./types.js"
 import { claudeEngine } from "./claude/adapter.js"
 import { codexEngine } from "./codex/adapter.js"
+import { copilotEngine } from "./copilot/adapter.js"
 import { resolveCodexHooks } from "./codex/version.js"
 import { CustomEngineStore } from "./custom-store.js"
 import { makeCustomEngine } from "./custom-adapter.js"
@@ -16,7 +17,11 @@ export const makeEngineRegistry = (custom: readonly CustomEngineDefinition[] = [
   const codex: Engine = resolveCodexHooks()
     ? { ...codexEngine, capabilities: { ...codexEngine.capabilities, hooks: true } }
     : codexEngine
-  const registry = new Map<string, Engine>([[claudeEngine.id, claudeEngine], [codex.id, codex]])
+  const registry = new Map<string, Engine>([
+    [claudeEngine.id, claudeEngine],
+    [codex.id, codex],
+    [copilotEngine.id, copilotEngine],
+  ])
   for (const definition of custom)
     if (definition.enabled) registry.set(definition.id, makeCustomEngine(definition))
   return registry
