@@ -47,6 +47,7 @@ import { readStateSnapshot } from "./state.js"
 import type { WorkspaceLayoutState } from "../tmux/layout.js"
 import type { BackgroundCollector } from "../collector/background.js"
 import type { SessionReadinessShape } from "../engine/readiness.js"
+import { AttentionCompletion } from "../attention/service.js"
 export { newToken } from "./token.js"
 
 // `runtime` runs an AppServices-dependent Effect to completion and hands
@@ -55,7 +56,7 @@ export { newToken } from "./token.js"
 // on it is not a reliable way to recover the original TaggedError. Running via
 // `Effect.runPromiseExit` and unwrapping with `Exit.match` + `Cause.failureOption`
 // (mirrors the pattern already used in test/projects-repo.test.ts) is robust.
-export type AppServices = ProjectsRepo | EventsRepo | WorkspacesRepo | WorkspaceLifecycle | TabsRepo | QueueRepo | StateRepo | InputReceiptsRepo | EngineRegistry | CustomEngineStore | SessionEnsurer | WorkspaceAdopter | WorkspaceFinisher | WorkspaceCheckpoints
+export type AppServices = ProjectsRepo | EventsRepo | WorkspacesRepo | WorkspaceLifecycle | TabsRepo | QueueRepo | StateRepo | InputReceiptsRepo | EngineRegistry | CustomEngineStore | SessionEnsurer | WorkspaceAdopter | WorkspaceFinisher | WorkspaceCheckpoints | AttentionCompletion
 export type Runtime = <A, E>(eff: Effect.Effect<A, E, AppServices>) => Promise<Exit.Exit<A, E>>
 export interface AppDeps {
   readonly runtime: Runtime
@@ -434,11 +435,27 @@ export const createApp = ({ runtime, token, onShutdown, onError, bus, sseHeartbe
               if (hookSid !== null && hookSid !== tab.engineSessionId)
                 yield* tabs.setEngineSessionId(tab.id, hookSid)
               const status = engine.statusFromHookEvent(body)
-              if (status !== null) yield* tabs.setStatus(tab.id, status, "hook")
               const evtName = (body as any)?.hook_event_name
+              if (status === "awaiting-input") {
+                yield* (yield* AttentionCompletion).apply({
+                  tabId: tab.id,
+                  workspaceId: wsId,
+                  status: "awaiting-input",
+                  statusSource: "hook",
+                  kind: "turn-finished",
+                  attentionSource: "hook",
+                  sessionTurnId: sid,
+                  summary: tab.title ?? "Awaiting input",
+                  ...(evtName === "Stop" ? {
+                    turnFinished: { sessionId: sid },
+                  } : {}),
+                })
+              } else if (status !== null) {
+                yield* tabs.setStatus(tab.id, status, "hook")
+              }
               const evType =
                 evtName === "UserPromptSubmit" ? "engine.turn.started"
-                : evtName === "Stop" ? "engine.turn.finished"
+                : evtName === "Stop" ? null
                 : evtName === "Notification" ? "engine.notification"
                 : evtName === "SessionEnd" ? "engine.session.ended"
                 // SessionStart：Plan3 Task15——冷启动就绪信号，bootstrap 订阅 EventsBus 等它再投首条 prompt
@@ -507,11 +524,19 @@ export const createApp = ({ runtime, token, onShutdown, onError, bus, sseHeartbe
                 yield* tabs.setEngineSessionId(tab.id, notifiedSessionId)
               // Notify gets the short authority window and remains distinguishable from native hooks.
               yield* tabs.touchHookAt(tab.id, Date.now())
-              yield* tabs.setStatus(tab.id, "awaiting-input", "notify")
-              yield* (yield* EventsRepo).append({
+              yield* (yield* AttentionCompletion).apply({
+                tabId: tab.id,
                 workspaceId: wsId,
-                type: "engine.turn.finished",
-                payload: { tabId: tab.id, sessionId: notifiedSessionId ?? tab.engineSessionId, source: "notify" },
+                status: "awaiting-input",
+                statusSource: "notify",
+                kind: "turn-finished",
+                attentionSource: "notify",
+                sessionTurnId: notifiedSessionId ?? tab.engineSessionId,
+                summary: tab.title ?? "Awaiting input",
+                turnFinished: {
+                  sessionId: notifiedSessionId ?? tab.engineSessionId,
+                  source: "notify",
+                },
               })
               return { ok: true }
             }),

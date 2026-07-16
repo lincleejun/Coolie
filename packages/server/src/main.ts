@@ -33,6 +33,7 @@ import { FinishOpsLive, WorkspaceFinisherLive } from "./workspace/finish.js"
 import { WorkspaceCheckpointsLive } from "./workspace/checkpoint.js"
 import { ensureHookScript } from "./engine/claude/hooks.js"
 import { startTranscriptPoller } from "./engine/monitor.js"
+import { AttentionCompletion, AttentionCompletionLive } from "./attention/service.js"
 import { createWorkspaceSerial, resumeQueuedWorkspaces, startQueueDrainer, type DrainDeps } from "./engine/queue-drain.js"
 import { attachTerminalWs } from "./http/ws.js"
 import { createApp, newToken } from "./http/app.js"
@@ -87,7 +88,7 @@ const cmdStart = async (): Promise<void> => {
       TmuxServiceLive,
       EngineRegistryLive.pipe(Layer.provide(CustomEngineStoreLive)),
     )),
-    Layer.provideMerge(Layer.mergeAll(ProjectsRepoLive, EventsRepoLive, WorkspacesRepoLive, TabsRepoLive, QueueRepoLive, StateRepoLive, InputReceiptsRepoLive, CustomEngineStoreLive)),
+    Layer.provideMerge(Layer.mergeAll(ProjectsRepoLive, EventsRepoLive, WorkspacesRepoLive, TabsRepoLive, QueueRepoLive, StateRepoLive, InputReceiptsRepoLive, CustomEngineStoreLive, AttentionCompletionLive)),
     Layer.provideMerge(EventsBusLive), // Plan 2 的 dead export 转正：单一构造点
     Layer.provideMerge(DbLive),
     Layer.provideMerge(CoolieConfigLive),
@@ -136,6 +137,24 @@ const cmdStart = async (): Promise<void> => {
     },
     statMtimeMs: (p) => { try { return fs.statSync(p).mtimeMs } catch { return null } },
     setStatus: async (tabId, status) => {
+      if (status === "awaiting-input") {
+        const exit = await runtime(Effect.gen(function* () {
+          const tabs = yield* TabsRepo
+          const tab = yield* tabs.get(tabId)
+          yield* (yield* AttentionCompletion).apply({
+            tabId,
+            workspaceId: tab.workspaceId,
+            status: "awaiting-input",
+            statusSource: "poller",
+            kind: "inferred",
+            attentionSource: "transcript-poller",
+            sessionTurnId: tab.engineSessionId,
+            summary: tab.title ?? "Awaiting input",
+          })
+        }))
+        if (Exit.isFailure(exit)) return
+        return
+      }
       await runtime(Effect.gen(function* () { yield* (yield* TabsRepo).setStatus(tabId, status, "poller") }))
     },
     resolveEngine: (engineId) => registry.get(engineId ?? "claude"),
