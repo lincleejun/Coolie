@@ -3,7 +3,7 @@ import { tmuxSessionName, type Workspace } from "@coolie/protocol"
 import { TmuxError, type TmuxServiceShape } from "../tmux/service.js"
 import type { Engine } from "./types.js"
 import { ensureKeepAliveScript, wrapEngineCommand } from "./keepalive.js"
-import { portEnv } from "../workspace/ports.js"
+import { buildWorkspaceEnv } from "../workspace/env.js"
 import { labelTmuxWindow } from "../tmux/layout.js"
 
 export interface StartEngineSessionInput {
@@ -58,7 +58,7 @@ export const startEngineSession = (
       yield* tmux.newSession({
         name: sessionName, cwd: i.ws.path, windowName: "engine",
         command,
-        env: { COOLIE_ROOT: i.repoRoot, COOLIE_WORKSPACE: i.ws.id, ...portEnv(i.ws.portBase) },
+        env: buildWorkspaceEnv({ workspace: i.ws, repoRoot: i.repoRoot }),
       })
     }
     yield* labelTmuxWindow(tmux, sessionName, i.tmuxWindow ?? 0, {
