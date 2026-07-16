@@ -70,6 +70,7 @@ export const EXPECTED_PUBLIC_ENDPOINTS = [
   "POST /workspaces/:id/pin",
   "POST /workspaces/:id/rename",
   "POST /workspaces/:id/retry",
+  "POST /workspaces/:id/review",
   "POST /workspaces/:id/runs/:runId/start",
   "POST /workspaces/:id/runs/:runId/stop",
   "POST /workspaces/:id/tabs",

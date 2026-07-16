@@ -53,6 +53,7 @@ import { handleEnvironmentPreview, handleEnvironmentRecopy } from "./worktree-en
 import { handleAttentionAck, acknowledgeAttention, getAttention, listAttention } from "./attention.js"
 import { readTabTranscript } from "./transcript.js"
 import { listWorkspaceRuns, readWorkspaceRunLog, startWorkspaceRun, stopWorkspaceRun } from "./runs.js"
+import { handleWorkspaceReview } from "./review.js"
 export { newToken } from "./token.js"
 
 // `runtime` runs an AppServices-dependent Effect to completion and hands
@@ -622,6 +623,14 @@ export const createApp = ({ runtime, token, onShutdown, onError, bus, sseHeartbe
         const workspaceRunLog = url.pathname.match(/^\/workspaces\/([^/]+)\/runs\/([^/]+)\/log$/)
         if (req.method === "GET" && workspaceRunLog)
           return await runRoute(res, runtime, readWorkspaceRunLog(workspaceRunLog[1]!, workspaceRunLog[2]!), (log) => send(res, 200, log), onError)
+        const workspaceReview = url.pathname.match(/^\/workspaces\/([^/]+)\/review$/)
+        if (req.method === "POST" && workspaceReview) {
+          const workspaceId = workspaceReview[1]!
+          const handleReview = () => handleWorkspaceReview({
+            res, req, runtime, workspaceId, composerOps, send, err, onError, runRoute,
+          })
+          return await (workspaceSerial ? workspaceSerial.run(workspaceId, handleReview) : handleReview())
+        }
         if (route === "GET /attention")
           return await runRoute(res, runtime, listAttention(url), (items) => send(res, 200, items), onError)
         const attentionItem = url.pathname.match(/^\/attention\/([^/]+)$/)
