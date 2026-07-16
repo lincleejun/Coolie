@@ -107,6 +107,11 @@ export const setSessionWebServer = (raw: string): boolean => {
 const webServerInfo = (): ServerInfo | null => sessionWebServerInfo
 
 const readInfo = async (): Promise<ServerInfo | null> => {
+  const mockServer = import.meta.env.VITE_COOLIE_MOCK_SERVER
+  if (typeof mockServer === "string" && mockServer !== "") {
+    const parsed = parseServerSpecifier(mockServer)
+    if (parsed) return parsed
+  }
   if (!capabilities.daemonDiscovery) return null
   const { invoke } = await import("@tauri-apps/api/core")
   const raw = await invoke<string | null>("read_server_info")
