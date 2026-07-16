@@ -1,5 +1,12 @@
 import { describe, expect, it } from "vitest"
-import { ROUTES } from "../src/routes.js"
+import { HANDLER_ROUTES } from "../../server/src/http/handler-routes.js"
+import {
+  ROUTES,
+  routeKeys,
+  validateRouteFilter,
+  RouteFilterError,
+  buildAgentApiSchema,
+} from "../src/routes.js"
 
 export const EXPECTED_PUBLIC_ENDPOINTS = [
   "DELETE /engines/custom/:id",
@@ -16,6 +23,7 @@ export const EXPECTED_PUBLIC_ENDPOINTS = [
   "GET /events/stream",
   "GET /health",
   "GET /projects",
+  "GET /projects/:id/branches",
   "GET /projects/:id/worktrees/adoptable",
   "GET /state",
   "GET /workspaces",
@@ -63,11 +71,20 @@ export const EXPECTED_PUBLIC_ENDPOINTS = [
   "POST /workspaces/reorder",
 ] as const
 
+const handlerKeys = (): string[] =>
+  HANDLER_ROUTES.map(({ method, path }) => `${method} ${path}`)
+
 describe("public route contract", () => {
   it("indexes the complete HTTP and WebSocket endpoint set exactly once", () => {
-    const actual = ROUTES.map(({ method, path }) => `${method} ${path}`)
+    const actual = routeKeys()
     expect(new Set(actual).size).toBe(actual.length)
     expect([...actual].sort()).toEqual(EXPECTED_PUBLIC_ENDPOINTS)
+  })
+
+  it("matches every HTTP handler template without ghost routes", () => {
+    const schemaKeys = [...routeKeys()].sort()
+    const handlers = [...handlerKeys()].sort()
+    expect(schemaKeys).toEqual(handlers)
   })
 
   it("uses one template row for each dynamic hook family", () => {
@@ -79,5 +96,23 @@ describe("public route contract", () => {
     expect(paths.filter((route) => route.startsWith("POST /notify/"))).toEqual([
       "POST /notify/:engine",
     ])
+  })
+
+  it("rejects unknown schema filters", () => {
+    expect(() => validateRouteFilter({ group: "ghost" })).toThrow(RouteFilterError)
+    expect(() => validateRouteFilter({ verb: "PATCH" })).toThrow(RouteFilterError)
+  })
+
+  it("builds agent JSON documents with explicit request/response metadata", () => {
+    const schema = buildAgentApiSchema()
+    expect(schema.version).toBe(1)
+    expect(schema.routes).toHaveLength(ROUTES.length)
+    const input = schema.routes.find((route) => route.path === "/workspaces/:id/input")
+    expect(input?.idempotency).toContain("Idempotency-Key")
+    expect(input?.request).toContain("idempotencyKey")
+    const state = schema.routes.find((route) => route.path === "/state")
+    expect(state?.request).toBe("query: workspace?")
+    expect(state?.response).toContain("CoolieStateSnapshot")
+    expect(new Set(schema.routes.map((route) => route.name)).size).toBe(schema.routes.length)
   })
 })

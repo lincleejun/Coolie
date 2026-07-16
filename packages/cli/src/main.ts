@@ -1,18 +1,13 @@
 #!/usr/bin/env node
 import { Command } from "commander"
 import {
-  ROUTES,
-  routeExample,
-  routeGroup,
-  routeRequestShape,
-  routeResponseShape,
-  selectRoutes,
   buildCoolieUrl,
   decodeProject,
   decodeWorkspace,
   decodeCoolieEvent,
   decodeCoolieStateSnapshot,
   decodeHealOutcome,
+  RouteFilterError,
   tmuxSessionName,
 } from "@coolie/protocol"
 import {
@@ -34,6 +29,7 @@ import { expandAgents, parseAgentsSpec } from "./fanout.js"
 import { generateCompletion, type CompletionShell } from "./completions.js"
 import { checkForUpdate } from "./update-check.js"
 import { resetRuntime, stopDaemon } from "./server-control.js"
+import { renderSchema } from "./schema.js"
 
 const program = new Command("coolie").showHelpAfterError()
 const fail = (e: unknown): never => { console.error(String(e instanceof Error ? e.message : e)); process.exit(1) }
@@ -543,23 +539,18 @@ program.command("api").command("schema")
   .option("--group <group>", "system|projects|events|workspaces|engines|hooks|terminal")
   .option("--verb <verb>", "GET|POST|DELETE")
   .option("--all", "显示 request/response shape 与 example")
-  .action((opts: { group?: string; verb?: string; all?: boolean }) => {
-  const validGroups = new Set(["system", "projects", "events", "workspaces", "engines", "hooks", "terminal"])
-  if (opts.group && !validGroups.has(opts.group)) return fail(`unknown schema group: ${opts.group}`)
-  if (opts.verb && !["GET", "POST", "DELETE"].includes(opts.verb.toUpperCase()))
-    return fail(`unknown schema verb: ${opts.verb}`)
-  // "METHOD PATH" must appear as a literal single-space substring (tests assert
-  // toContain("GET /health") etc.) — pad the combined head, not method/path
-  // separately, or the column padding inserts extra spaces between them.
-  for (const r of selectRoutes({ ...(opts.group ? { group: opts.group } : {}), ...(opts.verb ? { verb: opts.verb } : {}) })) {
-    const head = `${r.method} ${r.path}`
-    console.log(`${head.padEnd(28)} ${r.description}`)
-    if (opts.all) {
-      console.log(`  group: ${routeGroup(r)}`)
-      console.log(`  request: ${routeRequestShape(r)}`)
-      console.log(`  response: ${routeResponseShape(r)}`)
-      console.log(`  example: ${routeExample(r)}`)
-    }
+  .option("--json", "输出 agent 可解析 JSON schema")
+  .action((opts: { group?: string; verb?: string; all?: boolean; json?: boolean }) => {
+  try {
+    console.log(renderSchema({
+      ...(opts.group ? { group: opts.group } : {}),
+      ...(opts.verb ? { verb: opts.verb } : {}),
+      ...(opts.all ? { all: true } : {}),
+      ...(opts.json ? { json: true } : {}),
+    }))
+  } catch (error) {
+    if (error instanceof RouteFilterError) return fail(error.message)
+    throw error
   }
 })
 
