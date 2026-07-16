@@ -9,6 +9,14 @@ import { runMigrations } from "./migrations.js"
 // which tsc cannot name in declaration emit. Interface alias makes it nameable.
 interface SqliteDatabase extends Database.Database {}
 
+/** True when a migration-backed table is present (optional tables stay empty until later waves). */
+export const sqliteTableExists = (db: Database.Database, tableName: string): boolean =>
+  !!db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?").get(tableName)
+
+/** Run snapshot reads under one SQLite deferred transaction (FR-8.1). */
+export const readSnapshotTransaction = <T>(db: Database.Database, read: () => T): T =>
+  db.transaction(read).deferred()
+
 export class Db extends Context.Tag("Db")<Db, SqliteDatabase>() {}
 
 export const DbLive = Layer.scoped(
