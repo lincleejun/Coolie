@@ -16,7 +16,7 @@ describe("migrations", () => {
     const db = new Database(":memory:")
     runMigrations(db)
     expect(() => runMigrations(db)).not.toThrow()
-    expect(db.prepare("SELECT COUNT(*) c FROM schema_migrations").get()).toEqual({ c: 10 })
+    expect(db.prepare("SELECT COUNT(*) c FROM schema_migrations").get()).toEqual({ c: 11 })
   })
 
   it("adds queue state to databases that already ran the original m0003", () => {

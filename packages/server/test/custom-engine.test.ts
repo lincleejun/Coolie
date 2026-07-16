@@ -25,13 +25,14 @@ describe("custom engine public definition", () => {
   })
 
   it("rejects unknown template variables and built-in ids", () => {
-    const base = copilotPreset()
+    const base = copilotPreset("work-copilot")
     expect(() => validateCustomEngine({ ...base, id: "claude" })).toThrow(/不能覆盖/)
+    expect(() => validateCustomEngine({ ...base, id: "copilot" })).toThrow(/不能覆盖/)
     expect(() => validateCustomEngine({ ...base, command: ["agent", "{danger}"] })).toThrow(/argv template/)
   })
 
   it("requires a fixed executable and rejects a missing post-expansion argv[0]", () => {
-    const base = copilotPreset()
+    const base = copilotPreset("work-copilot")
     expect(() => validateCustomEngine({ ...base, command: ["{model}"] }))
       .toThrow(CustomEngineValidationError)
     expect(() => validateCustomEngine({ ...base, command: ["{model}"] }))
@@ -44,7 +45,7 @@ describe("custom engine public definition", () => {
       .toThrow(/missing argv\[0\]/)
   })
 
-  it("models Copilot as a regular preset definition", () => {
+  it("models Copilot as a regular preset definition under a non-reserved id", () => {
     const preset = copilotPreset("work-copilot")
     expect(preset).toMatchObject({ id: "work-copilot", presetId: "copilot", command: ["copilot", "--allow-all-tools"] })
     expect(makeCustomEngine(preset).id).toBe("work-copilot")
@@ -52,7 +53,7 @@ describe("custom engine public definition", () => {
 
   it("reports a missing account path as typed availability data", async () => {
     const result = await detectCustomEngine({
-      ...copilotPreset(), accountDetectionPath: "/definitely/missing/coolie-account",
+      ...copilotPreset("work-copilot"), accountDetectionPath: "/definitely/missing/coolie-account",
     })
     expect(result).toMatchObject({ available: false, accountHint: null })
     expect(result.error).toMatch(/path not found/)
@@ -64,10 +65,10 @@ describe("custom engine public definition", () => {
     const storeLayer = CustomEngineStoreLive.pipe(Layer.provide(Layer.succeed(Db, db)))
     const result = await Effect.runPromise(Effect.provide(Effect.gen(function* () {
       const store = yield* CustomEngineStore
-      yield* store.put(copilotPreset())
-      const saved = yield* store.get("copilot")
+      yield* store.put(copilotPreset("work-copilot"))
+      const saved = yield* store.get("work-copilot")
       const listed = yield* store.list()
-      yield* store.remove("copilot")
+      yield* store.remove("work-copilot")
       return { saved, listed, after: yield* store.list() }
     }), storeLayer))
     expect(result.saved.presetId).toBe("copilot")

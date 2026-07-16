@@ -162,10 +162,10 @@ export const ROUTES = [
     method: "POST",
     path: "/engines/custom/presets/copilot",
     name: "post.engines.custom.presets.copilot",
-    description: "应用 Copilot custom-engine preset",
+    description: "Deprecated: Copilot is built-in. Returns deprecation notice; optional non-reserved id still installs a custom preset copy",
     request: "{id?}",
-    response: "CustomEngineDefinition",
-    sideEffects: "writes custom engine store",
+    response: "{deprecated,message,engineId} | CustomEngineDefinition&{deprecated}",
+    sideEffects: "may write custom engine store for non-reserved ids",
   },
   {
     method: "POST",

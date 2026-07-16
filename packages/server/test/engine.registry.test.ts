@@ -21,8 +21,10 @@ describe("custom registry merge", () => {
 
   it("keeps built-ins and merges only enabled custom engines", () => {
     const disabled = { ...copilotPreset("disabled-agent"), enabled: false }
-    const registry = makeEngineRegistry([copilotPreset(), disabled])
-    expect([...registry.keys()]).toEqual(expect.arrayContaining(["claude", "codex", "copilot"]))
+    const registry = makeEngineRegistry([copilotPreset("work-copilot"), disabled])
+    expect([...registry.keys()]).toEqual(expect.arrayContaining(["claude", "codex", "copilot", "work-copilot"]))
     expect(registry.has("disabled-agent")).toBe(false)
+    expect(registry.get("copilot")?.displayName).toBe("GitHub Copilot")
+    expect(registry.get("work-copilot")?.displayName).toBe("GitHub Copilot")
   })
 })
