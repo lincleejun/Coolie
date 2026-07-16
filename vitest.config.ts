@@ -17,6 +17,8 @@ const runtimeTests = [
   "packages/client/test/real-daemon.fixture.test.ts",
   "packages/cli/test/cli-e2e.test.ts",
   "packages/cli/test/workspace-e2e.test.ts",
+  "packages/cli/test/agent-api.test.ts",
+  "packages/cli/test/inbox.test.ts",
   "packages/server/test/runtime-env.test.ts",
 ]
 
