@@ -4,6 +4,7 @@ import { useUi } from "../stores/ui"
 import { makeDrafts, type DraftStorage } from "../composer/drafts"
 import type { DiffSection, FileChange } from "../stores/types"
 import { t, useT } from "../i18n"
+import { RunPanel } from "../runs/RunPanel"
 import { CaretRightIcon, ChevronDownIcon, FolderIcon, PanelRightIcon } from "../chrome/icons"
 import { capabilities, openInEditor } from "../platform"
 
@@ -174,6 +175,7 @@ export const RightPanel = ({ wsId, forcePanel }: {
         </button>
       </div>
       <div className="right-body" id={panelId} role="tabpanel">
+        <RunPanel wsId={wsId} />
         {panel === "changes" && (
           changes ? (
             <>

@@ -7,6 +7,7 @@ import {
   decodeCoolieEvent,
   decodeCoolieStateSnapshot,
   decodeAttentionItem,
+  decodeRunInstanceRecord,
   decodeHealOutcome,
   RouteFilterError,
   tmuxSessionName,
@@ -314,6 +315,46 @@ inbox.command("ack <ids...>")
         results.push(decodeAttentionItem(await api("POST", `/attention/${encodeURIComponent(id)}/ack`, body)))
       }
       process.stdout.write(JSON.stringify(results.length === 1 ? results[0] : results, null, 2) + "\n")
+    } catch (error) { fail(error) }
+  })
+
+const runs = program.command("runs").description("workspace run scripts")
+runs.command("list <wsId>")
+  .description("列出 workspace run 实例状态")
+  .action(async (wsId: string) => {
+    try {
+      const items = await api("GET", `/workspaces/${encodeURIComponent(wsId)}/runs`)
+      if (!Array.isArray(items)) throw new Error("unexpected runs list response")
+      process.stdout.write(JSON.stringify(items.map((item) => decodeRunInstanceRecord(item)), null, 2) + "\n")
+    } catch (error) { fail(error) }
+  })
+runs.command("start <wsId> <runId>")
+  .description("启动命名 run script")
+  .action(async (wsId: string, runId: string) => {
+    try {
+      process.stdout.write(JSON.stringify(
+        decodeRunInstanceRecord(await api("POST", `/workspaces/${encodeURIComponent(wsId)}/runs/${encodeURIComponent(runId)}/start`, {})),
+        null,
+        2,
+      ) + "\n")
+    } catch (error) { fail(error) }
+  })
+runs.command("stop <wsId> <runId>")
+  .description("停止命名 run script")
+  .action(async (wsId: string, runId: string) => {
+    try {
+      process.stdout.write(JSON.stringify(
+        decodeRunInstanceRecord(await api("POST", `/workspaces/${encodeURIComponent(wsId)}/runs/${encodeURIComponent(runId)}/stop`, {})),
+        null,
+        2,
+      ) + "\n")
+    } catch (error) { fail(error) }
+  })
+runs.command("log <wsId> <runId>")
+  .description("读取 bounded run log tail")
+  .action(async (wsId: string, runId: string) => {
+    try {
+      process.stdout.write(JSON.stringify(await api("GET", `/workspaces/${encodeURIComponent(wsId)}/runs/${encodeURIComponent(runId)}/log`), null, 2) + "\n")
     } catch (error) { fail(error) }
   })
 
